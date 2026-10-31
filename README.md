@@ -113,3 +113,7 @@ open index.html
 ## 開発者向け情報
 
 ファイルの構成、実装の方針、各作品の調整用の定数は [DEVELOPMENT.md](DEVELOPMENT.md) にまとめています。
+
+## ライセンス
+
+[MIT License](LICENSE)
