@@ -18,6 +18,7 @@
 
 - [index.html](index.html) の作品一覧にリンクを追加・更新する。
 - README.md の作品ごとの節（1 行の概要・操作）を更新する。
+- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
 - `docs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作り、下の「作品ごとの仕様」に追加する。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。
 
