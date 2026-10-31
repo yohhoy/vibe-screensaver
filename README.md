@@ -1,6 +1,6 @@
 # vibe-screensaver — Web スクリーンセーバ集
 
-Webブラウザで動く、昔懐かしいスクリーンセーバ風のアニメーション集です。
+Webブラウザで動く、スクリーンセーバ風のアニメーション集です。
 
 **▶ ブラウザですぐに見る: https://yohhoy.github.io/vibe-screensaver/**
 
