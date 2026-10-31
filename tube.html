@@ -42,11 +42,11 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 // ---- 設定 ----
 // トンネル形状
-const TUBE_RADIUS = 4;
+const TUBE_RADIUS = 4;            // チューブの半径
 const CONTROL_POINTS = 36;        // コースの制御点の数
 const COURSE_RADIUS = 140;        // コース全体の基準半径
-const TUBULAR_SEGMENTS = 3000;
-const RADIAL_SEGMENTS = 48;
+const TUBULAR_SEGMENTS = 3000;    // チューブの長さ方向の分割数
+const RADIAL_SEGMENTS = 48;       // チューブの円周方向の分割数
 const RING_SPACING = 2;           // 長さ方向のグリッド間隔
 const AROUND_LINES = 16;          // 円周方向のグリッド本数
 
@@ -62,8 +62,8 @@ const MAX_SPEED = 120;
 const SPEED_STEP = 1.25;          // ↑↓ 1回あたりの倍率
 
 // 放射ブラー
-const BLUR_STRENGTH = 0.04;       // 初期速度での強さ（速度に比例）
-const MAX_BLUR = 0.15;
+const BLUR_STRENGTH = 0.04;       // 初期速度での強さ（速度に比例。0 で無効）
+const MAX_BLUR = 0.15;            // 速度を上げたときの強さの上限
 
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
@@ -71,7 +71,7 @@ const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
 
 // 隠しキャラ（壁のハッチから跳び出すマスコット）
 const HATCH_SIZE = new THREE.Vector2(1, 1);  // ハッチの大きさ（マス数: 長さ方向, 円周方向）
-const HATCH_HALF = HATCH_SIZE.clone().multiplyScalar(0.5);
+const HATCH_HALF = HATCH_SIZE.clone().multiplyScalar(0.5);  // ハッチの大きさの半分（計算用）
 const HATCH_DEPTH = 1.2;          // ハッチの穴の深さ
 const HATCH_OPEN_TIME = 0.3;      // 開閉にかかる時間 (秒)
 const HATCH_MAX_AHEAD = 250;      // ハッチを出す最大距離（これより先は霧で見えない）

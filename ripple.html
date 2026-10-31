@@ -113,7 +113,7 @@ const UFO_HAZE = 0.3;             // 空の色に溶かす割合（遠くに霞�
 // 遊覧船（boat: true の景色だけ）。遠くを 1 隻だけ横切る
 const BOAT_LENGTH = 0.07;         // 船の長さ（空の角度 rad）
 const BOAT_SPEED = 0.005;         // 横切る速さ (rad/秒)。画面を横切るのに数分かかる
-const BOAT_RANGE = 0.9;           // この方位 (rad) まで進んだら、反対側から出直す
+const BOAT_RANGE = 0.9;           // この方位 (rad) まで進んだら、向きを選び直して反対側から出直す
 const BOAT_HULL = [0.012, 0.014, 0.024];   // 船体の影の色
 const BOAT_WINDOW = [1.0, 0.82, 0.55];     // 客室の窓の色
 const BOAT_GARLAND = [[1.0, 0.85, 0.4], [1.0, 0.35, 0.3], [0.45, 1.0, 0.55], [0.5, 0.7, 1.0]];  // 電飾の色（順に繰り返す）
@@ -133,7 +133,7 @@ const SPLASH_RIPPLE_CHANCE = 0.3; // 落ちた粒が小さな波紋を立てる�
 const SPLASH_COLOR = [0.85, 0.88, 0.9];
 
 // 街並み（city: true の景色だけ）
-const CITY_SCALE = 2.5;              // 手前のビル群の大きさ（1 で実際の遠景と同じ見かけの大きさ）
+const CITY_SCALE = 2.5;              // 手前のビル群の大きさ（1 で実際の遠景と同じ見かけの大きさ。奥の列はその 0.55 倍）
 const CITY_SILHOUETTE = [0.014, 0.018, 0.03];  // ビルの影の色
 const CITY_GLOW = [0.22, 0.17, 0.06];           // 地平線近くの空ににじむ街明かりの色（黄色）
 const CITY_GLOW_HEIGHT = 0.05;                 // 街明かりのにじみが 1/e になる高さ（空の角度 rad）

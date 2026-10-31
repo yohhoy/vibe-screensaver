@@ -74,7 +74,7 @@ Webブラウザで動く、スクリーンセーバ風のアニメーション�
 
 ## 開発者向け情報
 
-実装の方針・仕様・調整用の定数は [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/](docs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
 
 ## ライセンス
 

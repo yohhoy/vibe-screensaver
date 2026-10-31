@@ -41,6 +41,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ---- 設定 ----
+// 炎・火の粉・おき火の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
+
 // カメラ（焚き火のまわりをゆっくり回る）
 const CAM_DIST = [4.5, 6.5];      // 焚き火からの距離の範囲（ゆっくり寄ったり離れたりする）
 const CAM_HEIGHT = 1.3;           // 地面からの高さ
@@ -80,7 +82,7 @@ const FLAME_COLORS = [            // 生まれてから消えるまでの色
 // 火の粉
 const MAX_EMBERS = 600;
 const EMBER_RATE = 10;            // 1 秒に生まれる数（火の強さ 1 のとき）
-const EMBER_LIFE = [1.5, 4.5];
+const EMBER_LIFE = [1.5, 4.5];    // 消えるまでの秒数の範囲
 const EMBER_RISE = [0.8, 2.0];    // 生まれたときの上る速さの範囲
 const EMBER_LIFT = 0.6;           // 熱いうちは上へ押し上げられる強さ
 const EMBER_DRAG = 0.8;           // 空気の抵抗
@@ -104,28 +106,28 @@ const CRACKLE_FLARE_TIME = 0.12;  // 明るさが 1/e に戻るまでの秒数
 // 煙
 const MAX_SMOKE = 120;
 const SMOKE_RATE = 7;             // 1 秒に生まれる数（火の強さ 1 のとき）
-const SMOKE_LIFE = 7;
+const SMOKE_LIFE = 7;             // 消えるまでの秒数
 const SMOKE_START = 1.1;          // 煙が出始める高さ（火の強さ 1 のときの炎の先。炎の背の高さに合わせて変える）
-const SMOKE_RISE = 0.35;
+const SMOKE_RISE = 0.35;          // 上る速さ
 const SMOKE_WIND = [0.12, 0.04];  // 横へ流れる速さ (x, z)
 const SMOKE_SIZE = [0.5, 2.4];    // 生まれたとき / 消えるときの大きさ
-const SMOKE_OPACITY = 0.07;
+const SMOKE_OPACITY = 0.07;       // 不透明度
 const SMOKE_COLOR = [0.05, 0.05, 0.06];   // 遠くの煙の色
 const SMOKE_LIT = [0.4, 0.16, 0.05];      // 炎に照らされた根もとの煙の色
 
 // おき火（薪の下で赤く光る炭）
 const COAL_COUNT = 70;
-const COAL_RADIUS = 0.42;
+const COAL_RADIUS = 0.42;         // 散らばる半径
 const COAL_SIZE = 0.06;
 const COAL_COLOR = [1.6, 0.35, 0.05];
 
 // 炎の明かり
-const FIRE_LIGHT_COLOR = 0xff9a4a;
+const FIRE_LIGHT_COLOR = 0xff9a4a;  // 明かりの色
 const FIRE_LIGHT_INTENSITY = 16;  // 火の強さ 1 のときの明るさ
 const FIRE_LIGHT_DECAY = 1.5;     // 距離による減衰（2 が現実どおり。小さいほど遠くの木まで照らす）
-const FIRE_LIGHT_HEIGHT = 1.1;
+const FIRE_LIGHT_HEIGHT = 1.1;    // 光源の高さ（火の強さ 1 のとき。炎の背に合わせて変える）
 const FLICKER = 0.18;             // 明るさの揺らぎの幅
-const SHADOW_MAP_SIZE = 1024;
+const SHADOW_MAP_SIZE = 1024;     // 影のテクスチャの大きさ
 
 // 焚き火の石と薪
 const STONE_COUNT = 14;
@@ -149,10 +151,10 @@ const SOIL_COLOR = [0.07, 0.06, 0.05];
 // 森
 const TREE_COUNT = 360;
 const FOREST_INNER = 9;           // 木を置く範囲の内側の半径（カメラの通り道より外）
-const FOREST_OUTER = 70;
-const TREE_HEIGHT = [4, 10];
-const TREE_COLOR = [0.12, 0.2, 0.13];
-const TRUNK_COLOR = [0.2, 0.13, 0.08];
+const FOREST_OUTER = 70;          // 木を置く範囲の外側の半径
+const TREE_HEIGHT = [4, 10];      // 木の高さの範囲（奥ほど大きくする）
+const TREE_COLOR = [0.12, 0.2, 0.13];     // 葉の色
+const TRUNK_COLOR = [0.2, 0.13, 0.08];    // 幹の色
 
 // 草むら（カメラの通り道と森のあいだ）
 const BUSH_COUNT = 140;
@@ -164,16 +166,18 @@ const BUSH_TIP_COLOR = [0.38, 0.48, 0.2];  // 葉先の色
 
 // 夜空
 const ZENITH = [0.05, 0.07, 0.26];      // 天頂はほのかな群青色
-const HORIZON = [0.08, 0.11, 0.18];
-const FOG_DENSITY = 0.03;
+const HORIZON = [0.08, 0.11, 0.18];     // 地平線の空の色（霧の色にも使う）
+const FOG_DENSITY = 0.03;         // 遠くを霞ませる霧の濃さ
 const STAR_COUNT = 1800;
 const STAR_BRIGHTNESS = [0.6, 3];  // 星の明るさの範囲（暗い星ほど多い。1 を超えるとブルームでにじむ）
-const STAR_SIZE = 4;              // 星の大きさ（画素。ふちのぼけた丸なので、見た目はこれより小さい）
+const STAR_SIZE = 4;              // 星の大きさ（画素。ブルームで四角くにじまないよう、ふちのぼけた丸にする。見た目はこれより小さい）
+// 夜空のほのかな明かり（空の色、地面の色、強さ）
 const AMBIENT = { sky: [0.25, 0.32, 0.5], ground: [0.08, 0.06, 0.05], intensity: 0.5 };
 const MOONLIGHT = { color: [0.55, 0.65, 0.9], intensity: 1.0, dir: [-0.5, 0.7, -0.4] };   // 背景の木の形が見えるよう、斜め上からの弱い寒色の光
 
 // 描画
 const MAX_PIXEL_RATIO = 1.5;      // 解像度の倍率の上限（高解像度画面での負荷を抑える）
+// ブルームの強さ・広がり・しきい値
 const BLOOM = { strength: 0.8, radius: 0.5, threshold: 0.7 };
 
 // UI

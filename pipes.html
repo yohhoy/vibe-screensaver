@@ -38,16 +38,17 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ---- 設定 ----
 const GRID = { x: 20, y: 14, z: 20 };     // グリッドのセル数
-const PIPE_RADIUS = 0.18;
-const JOINT_RADIUS = PIPE_RADIUS * 1.5;
+const PIPE_RADIUS = 0.18;                  // パイプの太さ（半径）
+const JOINT_RADIUS = PIPE_RADIUS * 1.5;    // 球ジョイントの半径
 const ELBOW_R = 0.5;                       // エルボーの曲げ半径
 const COLLAR_OFFSET = 0.24;                // ジョイント中心からカラー中心までの距離
-const FLANGE_R = PIPE_RADIUS * 2.2;
+const FLANGE_R = PIPE_RADIUS * 2.2;        // フランジ継手の外半径
 const PIPE_COUNT = 4;                      // 同時に伸びるパイプ本数
 const MAX_SEGMENTS = 1400;                 // これを超えたらリセット
 const STRAIGHT_BIAS = 0.75;                // 直進を続ける確率
 const FLANGE_CHANCE = 0.12;                // 直進時にフランジ継手を入れる確率
 const MIN_SCALE = 0.0001;                  // 長さ0のスケールを避けるための下限
+// パイプの色の候補
 const COLORS = [0xd03030, 0x30b030, 0x3060e0, 0xe0c020, 0xc040c0, 0x30c0c0,
                 0xe08020, 0xe0e0e0, 0x8080ff, 0xff70a0];
 const INITIAL_JOINT = 'sphere';            // 初期のジョイント: 'sphere' | 'elbow'
