@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Night Drone</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  body.idle { cursor: none; }
+  #fade {
+    position: fixed; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; transition: opacity 0.8s ease;
+  }
+  #hud {
+    position: fixed; left: 16px; bottom: 16px; color: #ccc;
+    font: 12px/1.6 ui-monospace, Menlo, monospace;
+    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+    transition: opacity 0.6s ease;
+  }
+  body.idle #hud { opacity: 0; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="fade"></div>
+<div id="hud">
+  Course: <span id="course-name"></span><br>
+  Space: 次のコース / F・ダブルクリック: 全画面 / ↑↓: 速度
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---- 設定 ----
+// 街
+const CITY_SIZE = 320;            // 街の半分の広さ（-CITY_SIZE..CITY_SIZE）
+const BLOCK = 40;                 // 区画の間隔（道路の中心から中心まで）
+const ROAD = 10;                  // 道路の幅
+const FLOOR = 3.5;                // 1 フロアの高さ
+const BAND_FLOORS = 4;            // 何フロアごとに水平線を引くか
+const MIN_HEIGHT = 6;             // これより低いビルは置かない
+const WINDOW_SPACING = 2.4;       // 窓の横方向の間隔
+const BIG_LOT_CHANCE = 0.15;      // 区画全体を 1 棟の大きなビルにする確率
+const WINDOW_LIT_MIN = 0.06;      // 窓が灯っている割合（ビルごとに MIN〜MIN+RANGE）
+const WINDOW_LIT_RANGE = 0.18;
+const LAMP_SPACING = 12;          // 街灯の間隔
+const CARS_PER_LANE = 6;          // 1 車線あたりの車の数
+
+// 遠景と星
+const SKYLINE_HEIGHT = 0.5;       // 遠くのビル群の高さの上限（その街の maxHeight に対する割合）
+const STAR_MIN_HEIGHT = 450;      // 星を置く高さの下限（遠くのビル群や街のビルより上の空にだけ置く）
+
+// 点の大きさ（ワールド単位。遠くほど小さくなる）
+const WINDOW_SIZE = 0.5;
+const LAMP_SIZE = 0.4;
+const CAR_SIZE = 0.6;
+const WATER_SIZE = 0.6;
+const SKYLINE_SIZE = 1.6;
+const STAR_SIZE = 2.5;
+
+// コースとビルの間隔
+const COURSE_CLEARANCE = 10;      // コースからこの水平距離内のビルは低くする
+const VERTICAL_MARGIN = 12;       // そのときビルの屋上をコースからどれだけ下げるか
+const SAMPLE_STEP = 2;            // 間隔チェックでコースを調べる刻み
+
+// 輪
+const RING_RADIUS = 4;
+const RING_INTERVAL = 80;         // コースに rings が無いときの輪の間隔
+const RING_TRIGGER_TIME = 0.1;    // ドローンが届く何秒前に、輪を破裂させるか
+const RING_BURST_TIME = 0.5;      // 破裂して消えるまでの秒数
+const RING_BURST_SCALE = 1.5;     // 破裂で何倍の大きさまで広がるか
+const RING_HUE_SPEED = 0.03;      // 虹色の移ろう速さ（1 秒あたりの色相の変化。0.03 で約 33 秒で一周）
+const RING_HUE_STEP = 0.05;       // 隣の輪との色相のずれ
+const RING_GLOW = 0.8;            // 輪の明るさ（大きいほどブルームで強く光る）
+
+// ドローン
+const DRONE_SIZE = 1.0;
+const BASE_SPEED = 60;            // 初期速度（単位/秒）
+const MIN_SPEED = 10;             // 最低速度（単位/秒）
+const MAX_SPEED = 150;            // 最高速度（単位/秒）
+const SPEED_STEP = 1.25;          // ↑↓ 1回あたりの倍率
+const SLOPE_EFFECT = 0.5;         // 下りで加速・上りで減速する強さ
+const BANK_STRENGTH = 25;         // 曲がり具合に対するバンク角の大きさ
+const MAX_BANK = 1.2;             // バンク角の上限 (rad)
+const BANK_LOOK = 6;              // 曲がり具合を測るために先読みする距離
+const TRAIL_LENGTH = 5.5;         // 翼端の光跡の長さ（CHASE_DIST より長いとカメラの下をくぐって画面下へ伸びる）
+const TRAIL_STEP = 0.25;          // 光跡の点の間隔
+const TRAIL_WIDTH = 0.05;         // 光跡の太さ（翼端側。カメラに近い側ほど細くする）
+
+// カメラ（後方追尾）
+const CHASE_DIST = 8;             // ドローンの何単位うしろのコース上に置くか
+const CHASE_HEIGHT = 2.0;         // ドローンの何単位上に置くか
+const CHASE_FOLLOW = 5;           // 追従の速さ（大きいほど遅れが少ない）
+const LOOK_AHEAD = 6;             // ドローンのどれだけ先を見るか
+const CAMERA_ROLL = 0.3;          // ドローンのバンクにどれだけ合わせて傾けるか
+
+// 見た目
+const FOG_DENSITY = 0.004;
+const WIRE_BRIGHTNESS = 0.45;
+
+// UI
+const FADE_MS = 850;              // #fade の transition より少し長く
+const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+
+// コース
+// - points: 閉じたコースの制御点 [x, 高さ, z]
+// - rings: 輪を置くコース上の位置 0..1 の配列（省略すると RING_INTERVAL ごと）
+// - hue: 街の色相、ringHue: 輪の虹色の始まりの色相
+// - city: 街のパラメータ。waterZ（海）、bridge（吊り橋）、landmark（電波塔）は任意
+const COURSES = [
+  {
+    name: 'Downtown',             // 大通りを低空で抜け、超高層ビルの谷間を急上昇して急降下
+    seed: 11,
+    hue: 0.55, ringHue: 0.08,
+    city: { density: 0.85, maxHeight: 170, center: [60, 80], spread: 220 },
+    points: [
+      [-220, 10, 0], [-110, 8, 0], [0, 9, 0], [100, 14, 0], [180, 40, 40], [180, 95, 130],
+      [100, 140, 190], [-20, 125, 200], [-120, 80, 160], [-170, 40, 110], [-230, 16, 70], [-270, 10, 20],
+    ],
+  },
+  {
+    name: 'Harbor',               // 水面すれすれの海沿いから、吊り橋の主塔をくぐって街の上へ
+    seed: 23,
+    hue: 0.08, ringHue: 0.5,
+    city: {
+      density: 0.7, maxHeight: 120, center: [0, -120], spread: 200,
+      waterZ: 120,                // これより奥（z が大きい側）は海
+      bridge: { z: 200, deckY: 20, halfWidth: 8, towers: [-70, 70], towerHeight: 100, anchor: 190 },
+    },
+    points: [
+      [-150, 6, 140], [0, 5, 135], [150, 6, 140], [240, 20, 170], [200, 34, 200], [70, 34, 200],
+      [-70, 34, 200], [-200, 34, 200], [-270, 50, 150], [-250, 80, 40], [-180, 100, -80], [-60, 95, -150],
+      [60, 70, -100], [20, 40, -20], [-80, 18, 50], [-210, 9, 110],
+    ],
+  },
+  {
+    name: 'Tower',                // 遠くから電波塔の全体を正面に見て近づき、おおまわりで周回する
+    seed: 37,
+    hue: 0.7, ringHue: 0.35,
+    city: {
+      density: 0.75, maxHeight: 60, center: [0, 100], spread: 300,
+      landmark: { x: 0, z: 100, height: 230, base: 34, top: 4, decks: [125, 205], antenna: 70 },
+    },
+    // 塔（z = 100）は街の北寄りに置き、南側を長い助走区間にする。
+    // 展望台くらいの高さで 400 ほど手前から塔へまっすぐ向かうと、アンテナの先まで画面に収まる。
+    // 助走 → 半径 170 ほどで塔の西・北・東をおおまわり → 低空で南へ抜ける → U ターンして再び助走へ
+    points: [
+      [-40, 145, -290], [-45, 150, -170],                       // 塔へ向かう助走
+      [-90, 125, -50], [-160, 100, 60], [-130, 75, 200],       // 周回しながら降りていく
+      [0, 60, 265], [130, 45, 200], [165, 30, 70],
+      [150, 20, -70], [130, 25, -200],                          // 低空で南へ抜ける
+      [100, 50, -290], [30, 100, -335],                         // 上昇しながら U ターン
+    ],
+  },
+];
+
+// ---- シェーダー ----
+// 街のワイヤーフレーム。頂点ごとの色に、距離で黒に溶けるフォグを掛ける
+const CityLineShader = {
+  uniforms: {
+    uFog: { value: FOG_DENSITY },
+  },
+  vertexShader: /* glsl */`
+    uniform float uFog;
+    attribute vec3 aColor;
+    varying vec3 vColor;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vColor = aColor * exp(mv.z * uFog);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vColor;
+    void main() {
+      gl_FragColor = vec4(vColor, 1.0);
+    }
+  `,
+};
+
+// 街の点群（窓・街灯・車・水面・遠景・星）。
+// aInfo: x=乱数, y=またたきの強さ, z=航空障害灯の点滅, w=フォグ無効
+// aMove: xyz=速度, w=ループする距離（0 なら動かない）
+const CityPointShader = {
+  uniforms: {
+    uTime: { value: 0 },
+    uFog: { value: FOG_DENSITY },
+    uScale: { value: 1 },         // ワールド単位 → 画素の換算（画面の高さと画角で決まる）
+  },
+  vertexShader: /* glsl */`
+    uniform float uTime, uFog, uScale;
+    attribute vec3 aColor;
+    attribute float aSize;
+    attribute vec4 aInfo;
+    attribute vec4 aMove;
+    varying vec3 vColor;
+    void main() {
+      vec3 p = position;
+      float fade = 1.0;
+      if (aMove.w > 0.0) {
+        // 道路に沿って流れ、端で消えて反対の端から現れる
+        float spd = length(aMove.xyz);
+        float s = mod(uTime * spd + aInfo.x * aMove.w, aMove.w);
+        p += aMove.xyz / spd * s;
+        fade = smoothstep(0.0, 10.0, s) * (1.0 - smoothstep(aMove.w - 10.0, aMove.w, s));
+      }
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      float depth = -mv.z;
+
+      float twinkle = 1.0 - aInfo.y * (0.5 + 0.5 * sin(uTime * (0.7 + aInfo.x * 2.5) + aInfo.x * 60.0));
+      if (aInfo.z > 0.0) twinkle = step(0.85, fract(uTime * 0.6 + aInfo.x));
+      float fog = aInfo.w > 0.0 ? 1.0 : exp(-depth * uFog);
+
+      vColor = aColor * twinkle * fog * fade;
+      gl_PointSize = clamp(aSize * uScale / depth, 1.5, 24.0);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vColor;
+    void main() {
+      float a = 1.0 - smoothstep(0.15, 0.5, length(gl_PointCoord - 0.5));
+      if (a <= 0.0) discard;
+      gl_FragColor = vec4(vColor * a, 1.0);
+    }
+  `,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+scene.fog = new THREE.FogExp2(0x000000, FOG_DENSITY);   // ドローンと輪用。街のシェーダーは自前で同じ霧を掛ける
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.9, 0.45, 0.1));
+composer.addPass(new OutputPass());
+
+// 光を重ねて描くので、どれも加算合成で深度は書かない
+const glow = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
+const lineMaterial = new THREE.ShaderMaterial({ ...CityLineShader, ...glow });
+const pointMaterial = new THREE.ShaderMaterial({ ...CityPointShader, ...glow });
+
+function updatePointScale() {
+  const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+  pointMaterial.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(halfFov));
+}
+
+// ---- 状態 ----
+let speed = BASE_SPEED;
+let velocity = BASE_SPEED;        // 坂で増減した実際の速度
+let courseIndex = 0;
+let course;                       // createCourse() の戻り値
+let droneDist = 0;                // コース上の距離
+let bank = 0;
+let clock = 0;
+
+// ---- ユーティリティ ----
+// シード付き乱数（mulberry32）。コースごとに毎回同じ街を作る
+function createRandom(seed) {
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const wrapDist = (d) => ((d % course.length) + course.length) % course.length;
+const courseT = (d) => wrapDist(d) / course.length;
+
+// 2 点 a, b（[x, z]）の間を f で補間する
+const lerp2 = ([ax, az], [bx, bz], f) => [ax + (bx - ax) * f, az + (bz - az) * f];
+
+// 中心 (x, z)・半幅 w の正方形の 4 隅
+const squareCorners = (x, z, w, d = w) => [[x - w, z - d], [x + w, z - d], [x + w, z + d], [x - w, z + d]];
+
+// 街の奥行き方向の端（海があれば海岸線まで）
+const cityZMax = (city) => city.waterZ ?? CITY_SIZE;
+
+// ---- 夜景 ----
+// 街の部品は線と点を配列に溜めていき、最後に LineSegments と Points 1 つずつにまとめる。
+// 部品を作る順番で乱数の引かれ方が決まるので、順番を変えると街の形も変わる
+function createCity(def, samples) {
+  const { city } = def;
+  const b = createCityBuilder(def.seed, def.hue);
+  addBuildings(b, city, samples);
+  addRoads(b, city);
+  if (city.waterZ !== undefined) addSea(b, city.waterZ);
+  if (city.bridge) addBridge(b, city.bridge);
+  if (city.landmark) addLandmark(b, city.landmark);
+  addSkyline(b, city);
+  addStars(b);
+  return b.build();
+}
+
+function createCityBuilder(seed, hue) {
+  const rng = createRandom(seed);
+  const lines = { pos: [], col: [] };
+  const pts = { pos: [], col: [], size: [], info: [], move: [] };
+
+  const wire = new THREE.Color().setHSL(hue, 0.75, 0.5).multiplyScalar(WIRE_BRIGHTNESS);
+  const colors = {
+    wire,
+    road: wire.clone().multiplyScalar(0.35),
+    warm: new THREE.Color(1.0, 0.75, 0.4),
+    cool: new THREE.Color(0.75, 0.85, 1.0),
+    tint: new THREE.Color().setHSL(hue, 0.9, 0.65),
+    red: new THREE.Color(1.0, 0.1, 0.05),
+    lamp: new THREE.Color(1.0, 0.6, 0.25),
+    headlight: new THREE.Color(1.0, 0.95, 0.8),
+    water: new THREE.Color().setHSL(0.6, 0.6, 0.35),
+  };
+
+  // color を省くと、高いところほど明るいワイヤーの色になる
+  function line(x0, y0, z0, x1, y1, z1, color) {
+    lines.pos.push(x0, y0, z0, x1, y1, z1);
+    for (const y of [y0, y1]) {
+      const c = color ?? wire;
+      const k = color ? 1 : 0.25 + 0.75 * Math.min(y / 150, 1);
+      lines.col.push(c.r * k, c.g * k, c.b * k);
+    }
+  }
+
+  function point(x, y, z, color, size, { twinkle = 0.15, blink = 0, noFog = 0, move = [0, 0, 0, 0] } = {}) {
+    pts.pos.push(x, y, z);
+    pts.col.push(color.r, color.g, color.b);
+    pts.size.push(size);
+    pts.info.push(rng(), twinkle, blink, noFog);
+    pts.move.push(...move);
+  }
+
+  // 箱形の建物 1 つ分の輪郭・フロアの線・窓
+  function box(cx, cz, hw, hd, y0, y1, litRate, winColor) {
+    const corners = squareCorners(cx, cz, hw, hd);
+    const band = FLOOR * BAND_FLOORS;
+    for (let i = 0; i < 4; i++) {
+      const a = corners[i];
+      const b = corners[(i + 1) % 4];
+      line(a[0], y0, a[1], a[0], y1, a[1]);
+      line(a[0], y1, a[1], b[0], y1, b[1]);
+      if (y0 > 0) line(a[0], y0, a[1], b[0], y0, b[1]);
+      for (let y = y0 + band; y < y1 - 1; y += band) line(a[0], y, a[1], b[0], y, b[1]);
+
+      const n = Math.floor(Math.hypot(b[0] - a[0], b[1] - a[1]) / WINDOW_SPACING);
+      for (let j = 0; j < n; j++) {
+        const [x, z] = lerp2(a, b, (j + 0.5) / n);
+        for (let y = y0 + FLOOR * 0.6; y < y1 - 1; y += FLOOR) {
+          if (rng() < litRate) point(x, y, z, rng() < 0.1 ? colors.tint : winColor, WINDOW_SIZE);
+        }
+      }
+    }
+  }
+
+  function build() {
+    const group = new THREE.Group();
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(lines.pos, 3));
+    lineGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(lines.col, 3));
+    group.add(new THREE.LineSegments(lineGeo, lineMaterial));
+
+    const pointGeo = new THREE.BufferGeometry();
+    pointGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts.pos, 3));
+    pointGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(pts.col, 3));
+    pointGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(pts.size, 1));
+    pointGeo.setAttribute('aInfo', new THREE.Float32BufferAttribute(pts.info, 4));
+    pointGeo.setAttribute('aMove', new THREE.Float32BufferAttribute(pts.move, 4));
+    const points = new THREE.Points(pointGeo, pointMaterial);
+    points.frustumCulled = false;   // 車がシェーダー内で動くので、境界球では判定できない
+    group.add(points);
+    return group;
+  }
+
+  return { rng, colors, line, point, box, build };
+}
+
+// ビル: 区画を 2×2 の敷地に分けて置く（ときどき区画まるごと 1 棟）
+function addBuildings({ rng, colors, line, point, box }, city, samples) {
+  // コースの近くでは、ビルの屋上をコースより VERTICAL_MARGIN 下に抑える
+  function heightCap(cx, cz, hw, hd) {
+    let cap = Infinity;
+    for (const p of samples) {
+      const dx = Math.max(Math.abs(p.x - cx) - hw, 0);
+      const dz = Math.max(Math.abs(p.z - cz) - hd, 0);
+      if (dx * dx + dz * dz < COURSE_CLEARANCE * COURSE_CLEARANCE) cap = Math.min(cap, p.y - VERTICAL_MARGIN);
+    }
+    return cap;
+  }
+
+  function building(cx, cz, hw, hd) {
+    const [ox, oz] = city.center;
+    const r = Math.hypot(cx - ox, cz - oz);
+    const falloff = Math.exp(-(r * r) / (city.spread * city.spread));
+    let h = MIN_HEIGHT + (city.maxHeight - MIN_HEIGHT) * falloff * (0.25 + 0.75 * rng() ** 1.5);
+    if (rng() < 0.05) h *= 1.5;                     // ときどき突き出た超高層
+    const cap = heightCap(cx, cz, hw, hd);
+    h = Math.min(h, cap);
+    if (h < MIN_HEIGHT) return;
+    // 電波塔の足元は広場にする
+    const lm = city.landmark;
+    if (lm && Math.max(Math.abs(cx - lm.x) - hw, Math.abs(cz - lm.z) - hd) < lm.base + 8) return;
+
+    const litRate = WINDOW_LIT_MIN + rng() * WINDOW_LIT_RANGE;
+    const pick = rng();
+    const winColor = pick < 0.6 ? colors.warm : pick < 0.9 ? colors.cool : colors.tint;
+    // 高いビルはときどき上半分を細くする
+    if (h > 60 && rng() < 0.4) {
+      const split = h * 0.65;
+      box(cx, cz, hw, hd, 0, split, litRate, winColor);
+      box(cx, cz, hw * 0.65, hd * 0.65, split, h, litRate, winColor);
+    } else {
+      box(cx, cz, hw, hd, 0, h, litRate, winColor);
+    }
+    // 屋上のアンテナと航空障害灯
+    if (h > 90 && h + 14 < cap && rng() < 0.5) {
+      line(cx, h, cz, cx, h + 12, cz);
+      point(cx, h + 12, cz, colors.red, 1.0, { blink: 1 });
+    }
+  }
+
+  const inner = BLOCK - ROAD;
+  const lot = inner / 2;
+  for (let bx = -CITY_SIZE; bx < CITY_SIZE; bx += BLOCK) {
+    for (let bz = -CITY_SIZE; bz < cityZMax(city); bz += BLOCK) {
+      const x0 = bx + ROAD / 2;
+      const z0 = bz + ROAD / 2;
+      if (rng() < BIG_LOT_CHANCE) {
+        building(x0 + inner / 2, z0 + inner / 2, inner / 2 - 1.5, inner / 2 - 1.5);
+        continue;
+      }
+      for (let i = 0; i < 2; i++) {
+        for (let j = 0; j < 2; j++) {
+          if (rng() > city.density) continue;
+          const hw = lot / 2 - 1 - rng() * 2.5;
+          const hd = lot / 2 - 1 - rng() * 2.5;
+          building(x0 + lot * (i + 0.5), z0 + lot * (j + 0.5), hw, hd);
+        }
+      }
+    }
+  }
+}
+
+// 道路: 両端の線、街灯、両方向に流れる車のライト
+function addRoads({ rng, colors, line, point }, city) {
+  // axis 方向に a0..a1 の範囲で走る、中心線が c の道路
+  function road(axis, c, a0, a1) {
+    const at = (a, offset, y = 0) => (axis === 'x' ? [a, y, c + offset] : [c + offset, y, a]);
+    for (const side of [-1, 1]) {
+      line(...at(a0, side * ROAD / 2), ...at(a1, side * ROAD / 2), colors.road);
+      for (let a = a0 + LAMP_SPACING / 2; a < a1; a += LAMP_SPACING) {
+        point(...at(a, side * ROAD / 2, 6), colors.lamp, LAMP_SIZE, { twinkle: 0.05 });
+      }
+    }
+    // 片側の車線はヘッドライト、反対の車線はテールランプ
+    for (const [dir, color] of [[1, colors.headlight], [-1, colors.red]]) {
+      for (let k = 0; k < CARS_PER_LANE; k++) {
+        const v = (8 + rng() * 6) * dir;
+        const start = at(dir > 0 ? a0 : a1, dir * ROAD / 4, 0.5);
+        const vel = axis === 'x' ? [v, 0, 0] : [0, 0, v];
+        point(...start, color, CAR_SIZE, { twinkle: 0, move: [...vel, a1 - a0] });
+      }
+    }
+  }
+
+  const zMax = cityZMax(city);
+  for (let k = -CITY_SIZE; k <= CITY_SIZE; k += BLOCK) {
+    if (k <= zMax) road('x', k, -CITY_SIZE, CITY_SIZE);
+    road('z', k, -CITY_SIZE, zMax);
+  }
+}
+
+// 海: きらめく点の格子と海岸線
+function addSea({ rng, colors, line, point }, waterZ) {
+  line(-CITY_SIZE * 1.5, 0, waterZ, CITY_SIZE * 1.5, 0, waterZ, colors.road);
+  for (let z = waterZ + 4; z < waterZ + 450; z += 5) {
+    for (let x = -500; x <= 500; x += 5) {
+      point(x + (rng() - 0.5) * 3, 0, z + (rng() - 0.5) * 3, colors.water, WATER_SIZE, { twinkle: 0.8 });
+    }
+  }
+}
+
+// 吊り橋: 橋桁、H 形の主塔、主ケーブルとハンガー
+function addBridge({ colors, line, point, box }, { z, deckY, halfWidth, towers, towerHeight, anchor }) {
+  const ends = [-CITY_SIZE * 1.2, CITY_SIZE * 1.2];
+  // 主ケーブルの高さ: アンカー → 塔頂 → 中央でたるむ → 塔頂 → アンカー
+  const [t0, t1] = towers;
+  const cableY = (x) => {
+    if (x <= t0) return deckY + 1 + (towerHeight - deckY - 1) * ((x + anchor) / (t0 + anchor)) ** 1.4;
+    if (x >= t1) return cableY(-x);
+    const u = (x - (t0 + t1) / 2) / ((t1 - t0) / 2);
+    return deckY + 4 + (towerHeight - deckY - 4) * u * u;
+  };
+  for (const side of [-1, 1]) {
+    const zs = z + side * halfWidth;
+    line(ends[0], deckY, zs, ends[1], deckY, zs);
+    for (let x = ends[0]; x < ends[1]; x += 6) point(x, deckY + 0.5, zs, colors.lamp, LAMP_SIZE, { twinkle: 0.05 });
+    for (let i = 0, x = -anchor; x < anchor; i++, x += 4) {
+      line(x, cableY(x), zs, x + 4, cableY(x + 4), zs);
+      if (i % 2 === 1) line(x, deckY, zs, x, cableY(x), zs, colors.road);   // ハンガー
+    }
+  }
+  for (let x = ends[0]; x < ends[1]; x += 12) line(x, deckY, z - halfWidth, x, deckY, z + halfWidth, colors.road);
+  for (const tx of towers) {
+    for (const side of [-1, 1]) box(tx, z + side * halfWidth, 1, 1, 0, towerHeight, 0, colors.warm);
+    for (const y of [towerHeight * 0.55, towerHeight]) line(tx, y, z - halfWidth, tx, y, z + halfWidth);
+    point(tx, towerHeight + 1, z, colors.red, 1.2, { blink: 1 });
+  }
+}
+
+// 鉄骨トラスの電波塔: 裾広がりの 4 本脚、X 字の筋交い、脚の間のアーチ、2 つの展望台、アンテナ。
+// 街のどこからでも目印になるよう、橙のライトアップで明るく描く
+function addLandmark({ colors, line, point, box }, { x, z, height, base, top, decks, antenna }) {
+  const steel = new THREE.Color(1.0, 0.42, 0.1).multiplyScalar(0.5);
+  const leg = steel.clone().multiplyScalar(2.2);
+  const half = (y) => top + (base - top) * (1 - Math.min(y, height) / height) ** 2.2;   // 下ほど急に広がる
+  const corners = (y) => squareCorners(x, z, half(y));
+
+  // 脚・水平材・筋交い
+  const STEP = 8;
+  for (let y = 0; y < height; y += STEP) {
+    const y1 = Math.min(y + STEP, height);
+    const c0 = corners(y);
+    const c1 = corners(y1);
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      line(c0[i][0], y, c0[i][1], c1[i][0], y1, c1[i][1], leg);
+      line(c1[i][0], y1, c1[i][1], c1[j][0], y1, c1[j][1], steel);
+      line(c0[i][0], y, c0[i][1], c1[j][0], y1, c1[j][1], steel);
+      line(c0[j][0], y, c0[j][1], c1[i][0], y1, c1[i][1], steel);
+      point(c1[i][0], y1, c1[i][1], colors.lamp, LAMP_SIZE * 2, { twinkle: 0.05 });
+    }
+  }
+
+  // 脚と脚の間のアーチ
+  const ARCH = 40;
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    let prev;
+    for (let u = -1; u <= 1.001; u += 0.1) {
+      const y = ARCH * (1 - u * u);
+      const c = corners(y);
+      const [px, pz] = lerp2(c[i], c[j], (u + 1) / 2);
+      if (prev) line(...prev, px, y, pz, leg);
+      prev = [px, y, pz];
+    }
+  }
+
+  // 展望台: 窓がたくさん灯った 2 階建ての箱
+  for (const y of decks) {
+    const w = half(y) + 4;
+    box(x, z, w, w, y, y + 8, 0.8, colors.cool);
+  }
+
+  // アンテナ
+  box(x, z, 1.5, 1.5, height, height + antenna * 0.5, 0, colors.warm);
+  line(x, height + antenna * 0.5, z, x, height + antenna, z, leg);
+  point(x, height + antenna, z, colors.red, 1.5, { blink: 1 });
+  point(x, height + antenna * 0.5, z, colors.red, 1.2, { blink: 1 });
+}
+
+// 遠景: 街の外側に、淡い輪郭（4 本の柱と屋上）とまばらな窓だけの細いビルを並べる。
+// 窓だけだと宙に浮いた点に見えるので輪郭も付け、高さは街のビルを超えないようにする
+function addSkyline({ rng, colors, line, point }, city) {
+  const outline = colors.wire.clone().multiplyScalar(0.6);
+  for (let n = 0; n < 400; n++) {
+    const a = rng() * Math.PI * 2;
+    const r = CITY_SIZE + 60 + rng() * 400;
+    const x = r * Math.cos(a);
+    const z = r * Math.sin(a);
+    if (city.waterZ !== undefined && z > city.waterZ && z < city.waterZ + 400) continue;   // 海の上には置かない
+    const h = 8 + rng() ** 2 * city.maxHeight * SKYLINE_HEIGHT;
+    const corners = squareCorners(x, z, 4);
+    for (let i = 0; i < 4; i++) {
+      const [a, b] = [corners[i], corners[(i + 1) % 4]];
+      line(a[0], 0, a[1], a[0], h, a[1], outline);
+      line(a[0], h, a[1], b[0], h, b[1], outline);
+    }
+    for (let y = 2; y < h; y += FLOOR * 2) {
+      if (rng() < 0.3) {
+        point(x + (rng() - 0.5) * 8, y, z + (rng() - 0.5) * 8, rng() < 0.7 ? colors.warm : colors.cool, SKYLINE_SIZE);
+      }
+    }
+  }
+}
+
+// 星: 霧の外にある遠い半球の、STAR_MIN_HEIGHT より上
+function addStars({ rng, colors, point }) {
+  const R = 1500;
+  const minElev = Math.asin(STAR_MIN_HEIGHT / R);
+  for (let n = 0; n < 500; n++) {
+    const a = rng() * Math.PI * 2;
+    const elev = minElev + rng() * (1.35 - minElev);
+    point(R * Math.cos(a) * Math.cos(elev), R * Math.sin(elev), R * Math.sin(a) * Math.cos(elev),
+      colors.cool, STAR_SIZE * (0.5 + rng()), { twinkle: 0.5, noFog: 1 });
+  }
+}
+
+// ---- 輪 ----
+const ringGeometry = new THREE.TorusGeometry(RING_RADIUS, 0.09, 8, 64);
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
+
+// burst は破裂が始まってからの秒数。破裂し終えた状態で作り、通過の直前に 0 に戻す
+function createRing(curve, t, length) {
+  const material = new THREE.MeshBasicMaterial({ ...glow });
+  const mesh = new THREE.Mesh(ringGeometry, material);
+  curve.getPointAt(t, mesh.position);
+  mesh.quaternion.setFromUnitVectors(AXIS_Z, curve.getTangentAt(t));
+  return { mesh, material, dist: t * length, passed: false, burst: RING_BURST_TIME };
+}
+
+// ドローンが RING_TRIGGER_TIME 秒後に届く位置より手前にある輪を「通過済み」とみなす。半周先まで行くと元に戻る
+const isPassed = (ring) => wrapDist(droneDist + velocity * RING_TRIGGER_TIME - ring.dist) < course.length / 2;
+
+// 輪は時間とともに虹色に移ろい、通過の直前に破裂するように広がりながら暗く消える
+const ringColor = new THREE.Color();
+function updateRings(dt) {
+  course.rings.forEach((ring, i) => {
+    const passed = isPassed(ring);
+    if (passed && !ring.passed) ring.burst = 0;
+    ring.passed = passed;
+    if (passed) ring.burst += dt;
+
+    // p: 破裂の進み具合 0..1（通過前は 0）。広がりは最初に速く、明るさは早めに落とす
+    const p = passed ? Math.min(ring.burst / RING_BURST_TIME, 1) : 0;
+    const spread = 1 - (1 - p) ** 3;
+    const fade = (1 - p) ** 3;   // 広がると管も太くなって明るく見えるので、急に落とす
+    ring.mesh.scale.setScalar(1 + (RING_BURST_SCALE - 1) * spread);
+
+    ringColor.setHSL((course.def.ringHue + clock * RING_HUE_SPEED + i * RING_HUE_STEP) % 1, 1, 0.55);
+    // カメラがくぐる瞬間に画面を覆わないよう、近い輪は暗くする
+    const near = THREE.MathUtils.smoothstep(ring.mesh.position.distanceTo(camera.position), 2, 10);
+    ring.material.color.copy(ringColor).multiplyScalar(RING_GLOW * fade * near);
+  });
+}
+
+// ---- 紙飛行機ドローン ----
+// 原点が重心付近、+z が機首、+x が左翼
+const WING_L = new THREE.Vector3(0.55, 0.08, -0.9).multiplyScalar(DRONE_SIZE);
+const WING_R = new THREE.Vector3(-0.55, 0.08, -0.9).multiplyScalar(DRONE_SIZE);
+
+function createDrone() {
+  const nose = new THREE.Vector3(0, 0, 0.9).multiplyScalar(DRONE_SIZE);
+  const tail = new THREE.Vector3(0, 0.02, -0.9).multiplyScalar(DRONE_SIZE);
+  const keel = new THREE.Vector3(0, -0.22, -0.9).multiplyScalar(DRONE_SIZE);
+
+  const root = new THREE.Group();
+  const faces = new THREE.BufferGeometry().setFromPoints([
+    nose, tail, WING_L,           // 左翼
+    nose, WING_R, tail,           // 右翼
+    nose, keel, tail,             // 折り目の下の竜骨
+  ]);
+  root.add(new THREE.Mesh(faces, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false,
+  })));
+  const edges = new THREE.BufferGeometry().setFromPoints([
+    nose, WING_L, WING_L, tail, tail, WING_R, WING_R, nose,
+    nose, keel, keel, tail, nose, tail,
+  ]);
+  root.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.8) })));
+
+  // 航法灯: 左翼が赤、右翼が緑、尾部が白のストロボ
+  const lightGeo = new THREE.SphereGeometry(0.05 * DRONE_SIZE, 8, 6);
+  const lights = [
+    [WING_L, new THREE.Color(2.0, 0.15, 0.08)],
+    [WING_R, new THREE.Color(0.15, 2.0, 0.3)],
+    [tail, new THREE.Color(0.2, 0.2, 0.2)],
+  ].map(([p, color]) => {
+    const m = new THREE.Mesh(lightGeo, new THREE.MeshBasicMaterial({ color }));
+    m.position.copy(p);
+    root.add(m);
+    return m;
+  });
+  scene.add(root);
+  return { root, strobe: lights[2].material };
+}
+
+// 翼端から伸びる光跡。新しい点ほど明るい。
+// コースを後ろへたどった線を翼端の位置までずらして描くので、フレームレートによらず同じ長さになる。
+// 線は 1px より太くできないので、カメラの方を向く帯にする。
+// 帯は点ごとに 左・中心・右 の 3 頂点を並べ、中心だけ色を付けて縁をぼかす
+const TRAIL_POINTS = Math.round(TRAIL_LENGTH / TRAIL_STEP) + 1;
+const LEFT = 0, CENTER = 1, RIGHT = 2;
+const trailVertex = (i, column) => i * 3 + column;
+
+function createTrail(color) {
+  const positions = new Float32Array(TRAIL_POINTS * 3 * 3);
+  const colors = new Float32Array(TRAIL_POINTS * 3 * 3);
+  const index = [];
+  for (let i = 0; i < TRAIL_POINTS; i++) {
+    const k = (1 - i / (TRAIL_POINTS - 1)) ** 2.5;   // 後ろ側（カメラに近い側）ほど急に暗くする
+    colors.set([color.r * k, color.g * k, color.b * k], trailVertex(i, CENTER) * 3);
+    if (i === 0) continue;
+    // 1 つ前の点との間を、左半分と右半分の 2 枚の四角形でつなぐ
+    for (const [c0, c1] of [[LEFT, CENTER], [CENTER, RIGHT]]) {
+      const [a0, a1, b0, b1] = [trailVertex(i - 1, c0), trailVertex(i - 1, c1), trailVertex(i, c0), trailVertex(i, c1)];
+      index.push(a0, a1, b0, b0, a1, b1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setIndex(index);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, ...glow }));
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+
+  const points = Array.from({ length: TRAIL_POINTS }, () => new THREE.Vector3());
+  const dir = new THREE.Vector3();
+  const across = new THREE.Vector3();
+  const edge = new THREE.Vector3();
+  return {
+    // offset: いまのコース上の位置から翼端までのずれ
+    update(offset) {
+      points.forEach((p, i) => course.curve.getPointAt(courseT(droneDist - i * TRAIL_STEP), p).add(offset));
+      points.forEach((p, i) => {
+        // 帯の横方向 = 線の向きとカメラへの向きの両方に垂直な向き。カメラに近い側ほど細くする
+        dir.subVectors(points[Math.max(i - 1, 0)], points[Math.min(i + 1, TRAIL_POINTS - 1)]);
+        across.subVectors(camera.position, p).cross(dir).normalize();
+        across.multiplyScalar(TRAIL_WIDTH * (1 - 0.6 * i / (TRAIL_POINTS - 1)) / 2);
+        p.toArray(positions, trailVertex(i, CENTER) * 3);
+        edge.copy(p).add(across).toArray(positions, trailVertex(i, LEFT) * 3);
+        edge.copy(p).sub(across).toArray(positions, trailVertex(i, RIGHT) * 3);
+      });
+      geo.attributes.position.needsUpdate = true;
+    },
+  };
+}
+
+const drone = createDrone();
+const trails = [
+  { wing: WING_L, trail: createTrail(new THREE.Color(1.0, 0.4, 0.35)) },
+  { wing: WING_R, trail: createTrail(new THREE.Color(0.4, 1.0, 0.5)) },
+];
+
+const UP = new THREE.Vector3(0, 1, 0);
+const fwd = new THREE.Vector3();
+const ahead = new THREE.Vector3();
+const side = new THREE.Vector3();
+const lift = new THREE.Vector3();
+const basis = new THREE.Matrix4();
+const onCourse = new THREE.Vector3();
+const tmp = new THREE.Vector3();
+
+function updateDrone(dt) {
+  // 下りで加速、上りで減速
+  course.curve.getTangentAt(courseT(droneDist), fwd);
+  const target = speed * (1 - SLOPE_EFFECT * fwd.y);
+  velocity += (target - velocity) * (1 - Math.exp(-dt * 2));
+  droneDist = wrapDist(droneDist + velocity * dt);
+
+  const t = courseT(droneDist);
+  course.curve.getPointAt(t, onCourse);
+  course.curve.getTangentAt(t, fwd);
+  course.curve.getTangentAt(courseT(droneDist + BANK_LOOK), ahead);
+
+  // 左へ曲がるとき（曲率が正）は左翼を下げる
+  const curvature = tmp.crossVectors(fwd, ahead).y / BANK_LOOK;
+  const targetBank = THREE.MathUtils.clamp(-curvature * BANK_STRENGTH, -MAX_BANK, MAX_BANK);
+  bank += (targetBank - bank) * (1 - Math.exp(-dt * 3));
+
+  // 進行方向を向け、バンクで傾けて、ふわふわ揺らす
+  side.crossVectors(UP, fwd).normalize();
+  lift.crossVectors(fwd, side);
+  drone.root.quaternion.setFromRotationMatrix(basis.makeBasis(side, lift, fwd));
+  drone.root.rotateZ(bank + Math.sin(clock * 1.3) * 0.05);
+  drone.root.position.copy(onCourse).addScaledVector(UP, Math.sin(clock * 0.9) * 0.12);
+  drone.root.updateMatrixWorld();
+
+  drone.strobe.color.setScalar(clock % 1.2 < 0.06 ? 4 : 0.2);
+}
+
+// 光跡はカメラの方へ向けるので、カメラを動かしたあとで更新する
+function updateTrails() {
+  for (const { wing, trail } of trails) trail.update(drone.root.localToWorld(tmp.copy(wing)).sub(onCourse));
+}
+
+// ---- カメラ（後方追尾） ----
+// ドローンの少しうしろのコース上（ビルを避けた空間）を目標にし、ドローンからの相対位置で遅れて追う
+const camOffset = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+const lookAt = new THREE.Vector3();
+
+function updateCamera(dt, snap = false) {
+  course.curve.getPointAt(courseT(droneDist - CHASE_DIST), camTarget).addScaledVector(UP, CHASE_HEIGHT);
+  camTarget.sub(drone.root.position);
+  if (snap) camOffset.copy(camTarget);
+  else camOffset.lerp(camTarget, 1 - Math.exp(-dt * CHASE_FOLLOW));
+  camera.position.copy(drone.root.position).add(camOffset);
+
+  lookAt.copy(drone.root.position).addScaledVector(fwd, LOOK_AHEAD);
+  camera.up.copy(UP);
+  camera.lookAt(lookAt);
+  camera.rotateZ(-bank * CAMERA_ROLL);
+}
+
+// ---- コース ----
+function createCourse(def) {
+  const curve = new THREE.CatmullRomCurve3(def.points.map((p) => new THREE.Vector3(...p)), true, 'centripetal');
+  curve.arcLengthDivisions = 4000;   // getPointAt の等速性を上げる
+  const length = curve.getLength();
+  const samples = curve.getSpacedPoints(Math.ceil(length / SAMPLE_STEP));
+
+  const group = new THREE.Group();
+  group.add(createCity(def, samples));
+
+  const count = Math.round(length / RING_INTERVAL);
+  const ringTs = def.rings ?? Array.from({ length: count }, (_, i) => (i + 0.5) / count);
+  const rings = ringTs.map((t) => createRing(curve, t, length));
+  for (const ring of rings) group.add(ring.mesh);
+
+  return { def, curve, length, group, rings };
+}
+
+function disposeCourse(c) {
+  c.group.traverse((o) => {
+    if (o.geometry && o.geometry !== ringGeometry) o.geometry.dispose();
+  });
+  for (const ring of c.rings) ring.material.dispose();
+  scene.remove(c.group);
+}
+
+const courseNameEl = document.getElementById('course-name');
+
+function loadCourse(index) {
+  courseIndex = (index + COURSES.length) % COURSES.length;
+  if (course) disposeCourse(course);
+  course = createCourse(COURSES[courseIndex]);
+  scene.add(course.group);
+  courseNameEl.textContent = course.def.name;
+
+  droneDist = 0;
+  velocity = speed;
+  bank = 0;
+  updateDrone(0);
+  for (const ring of course.rings) ring.passed = isPassed(ring);   // 開始時点で後ろにある輪は破裂させない
+  updateCamera(0, true);
+  updateTrails();
+}
+
+// ---- 速度・コースの切り替え ----
+function setSpeed(value) {
+  speed = THREE.MathUtils.clamp(value, MIN_SPEED, MAX_SPEED);
+}
+
+const nextCourse = () => fadeAndRun(() => loadCourse(courseIndex + 1));
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  clock += dt;
+  pointMaterial.uniforms.uTime.value = clock;
+  updateDrone(dt);
+  updateRings(dt);
+  updateCamera(dt);
+  updateTrails();
+  composer.render();
+}
+
+// ---- 入力・UI ----
+const fadeEl = document.getElementById('fade');
+let fading = false;
+
+// 暗転している間に change() を実行して、明るく戻す
+function fadeAndRun(change) {
+  if (fading) return;
+  fading = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    change();
+    fadeEl.style.opacity = 0;
+    fading = false;
+  }, FADE_MS);
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.();
+}
+
+// 操作が無ければカーソルとHUDを隠す
+let idleTimer;
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
+}
+
+const KEY_ACTIONS = {
+  Space: nextCourse,
+  KeyF: toggleFullscreen,
+  ArrowUp: () => setSpeed(speed * SPEED_STEP),
+  ArrowDown: () => setSpeed(speed / SPEED_STEP),
+};
+
+addEventListener('keydown', (e) => {
+  wake();
+  // Cmd+F などのブラウザのショートカットは横取りしない
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const action = KEY_ACTIONS[e.code];
+  if (!action) return;
+  e.preventDefault();
+  action();
+});
+addEventListener('dblclick', toggleFullscreen);
+addEventListener('mousemove', wake);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  updatePointScale();
+});
+
+// ---- 開始 ----
+updatePointScale();
+setSpeed(BASE_SPEED);
+loadCourse(Math.floor(Math.random() * COURSES.length));
+wake();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

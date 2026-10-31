@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tube Tunnel</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  body.idle { cursor: none; }
+  #fade {
+    position: fixed; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; transition: opacity 0.8s ease;
+  }
+  #hud {
+    position: fixed; left: 16px; bottom: 16px; color: #ccc;
+    font: 12px/1.6 ui-monospace, Menlo, monospace;
+    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+    transition: opacity 0.6s ease;
+  }
+  body.idle #hud { opacity: 0; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="fade"></div>
+<div id="hud">
+  Space: コース・配色を変更 / F・ダブルクリック: 全画面 / ↑↓: 速度
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+// ---- 設定 ----
+// トンネル形状
+const TUBE_RADIUS = 4;
+const CONTROL_POINTS = 36;        // コースの制御点の数
+const COURSE_RADIUS = 140;        // コース全体の基準半径
+const TUBULAR_SEGMENTS = 3000;
+const RADIAL_SEGMENTS = 48;
+const RING_SPACING = 2;           // 長さ方向のグリッド間隔
+const AROUND_LINES = 16;          // 円周方向のグリッド本数
+
+// カメラ
+const ROLL_SPEED = 0.15;          // カメラのゆっくりした回転 (rad/s)
+const LOOK_AHEAD = 6;             // 注視点までのコース上の距離
+const SWAY = TUBE_RADIUS * 0.25;  // 中心からのずれ幅
+
+// 速度 (単位/秒)
+const BASE_SPEED = 20;
+const MIN_SPEED = 4;
+const MAX_SPEED = 120;
+const SPEED_STEP = 1.25;          // ↑↓ 1回あたりの倍率
+
+// 放射ブラー
+const BLUR_STRENGTH = 0.04;       // 初期速度での強さ（速度に比例）
+const MAX_BLUR = 0.15;
+
+// UI
+const FADE_MS = 850;              // #fade の transition より少し長く
+const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+
+// 隠しキャラ（壁のハッチから跳び出すマスコット）
+const HATCH_SIZE = new THREE.Vector2(1, 1);  // ハッチの大きさ（マス数: 長さ方向, 円周方向）
+const HATCH_HALF = HATCH_SIZE.clone().multiplyScalar(0.5);
+const HATCH_DEPTH = 1.2;          // ハッチの穴の深さ
+const HATCH_OPEN_TIME = 0.3;      // 開閉にかかる時間 (秒)
+const HATCH_MAX_AHEAD = 250;      // ハッチを出す最大距離（これより先は霧で見えない）
+const PIXEL = 0.085;              // マスコットの1ドットの大きさ（どの向きでも1マスの穴を通れる）
+const HIDE_Y = -6 * PIXEL;        // 穴の中に隠れているときの高さ
+const JUMP_HEIGHT = TUBE_RADIUS * 0.7;  // ジャンプの最高点（壁からの高さ。トンネル中央が TUBE_RADIUS）
+const JUMP_TIME = 1.2;            // 跳んで穴に戻るまでの秒数
+const SIGNAL_TIME = 1.0;          // ハッチが点滅してから開くまでの秒数
+const LAND_DIST = 8;              // 着地したときのカメラとの距離
+const MASCOT_MEAN_INTERVAL = 10;  // 自然に現れる平均間隔 (秒)
+const MASCOT_MAX_INTERVAL = 60;   // 間隔の上限 (秒)
+
+// 配色テーマ: 基準の色相と、トンネルに沿った色相の変化幅
+const THEMES = [
+  { hue: 0.55, spread: 0.25 },    // シアン〜ブルー
+  { hue: 0.85, spread: 0.30 },    // マゼンタ〜オレンジ
+  { hue: 0.30, spread: 0.15 },    // グリーン
+  { hue: 0.00, spread: 1.00 },    // レインボー
+  { hue: 0.08, spread: 0.10 },    // アンバー
+];
+
+// ---- シェーダー ----
+// 画面中心（進行方向）から外側へ流れる放射ブラー。中心ほど弱く、外周ほど強い
+const ZoomBlurShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uStrength: { value: BLUR_STRENGTH },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float uStrength;
+    varying vec2 vUv;
+    const int SAMPLES = 12;
+    void main() {
+      vec2 toCenter = vec2(0.5) - vUv;
+      vec4 sum = vec4(0.0);
+      float total = 0.0;
+      for (int i = 0; i < SAMPLES; i++) {
+        float t = float(i) / float(SAMPLES - 1);
+        float w = 1.0 - t * 0.7;               // 元の位置に近いサンプルを重く
+        sum += texture2D(tDiffuse, vUv + toCenter * uStrength * t) * w;
+        total += w;
+      }
+      gl_FragColor = sum / total;
+    }
+  `,
+};
+
+const TunnelShader = {
+  uniforms: {
+    uTime: { value: 0 },
+    uRepeat: { value: 1 },        // 長さ方向のグリッド本数（コース長で決まる）
+    uHue: { value: 0 },
+    uSpread: { value: 0 },
+    uHatch: { value: new THREE.Vector2() },   // ハッチ中心（グリッド座標）
+    uHatchHalf: { value: HATCH_HALF },
+    uHatchOpen: { value: 0 },     // 0..1 穴の開き具合
+    uHatchGlow: { value: 0 },     // ハッチ周りのグリッドの光り具合
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    varying float vDepth;
+    void main() {
+      vUv = uv;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vDepth = -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform float uTime, uRepeat, uHue, uSpread;
+    uniform vec2 uHatch, uHatchHalf;
+    uniform float uHatchOpen, uHatchGlow;
+    varying vec2 vUv;
+    varying float vDepth;
+
+    vec3 hsv2rgb(vec3 c) {
+      vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
+      return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+    }
+
+    // 太さ w(画素) のアンチエイリアス付きグリッド線
+    float gridLine(float x, float w) {
+      float d = abs(fract(x - 0.5) - 0.5) / fwidth(x);
+      return 1.0 - clamp(d - w, 0.0, 1.0);
+    }
+
+    void main() {
+      float u = vUv.x * uRepeat;
+      float v = vUv.y * ${AROUND_LINES.toFixed(1)};
+
+      float ring = gridLine(u, 0.6);
+      float rib  = gridLine(v, 0.4);
+      // 8本ごとに太く明るいリング
+      float major = gridLine(u / 8.0, 1.5);
+
+      // 隠しハッチ: 中心から四角く穴を開け、枠のグリッドを光らせる
+      // （fwidth を使い終えてから discard する）
+      vec2 hd = abs(vec2(u, v) - uHatch);
+      if (all(lessThan(hd, uHatchHalf * uHatchOpen))) discard;
+      float hatch = step(hd.x, uHatchHalf.x + 0.05) * step(hd.y, uHatchHalf.y + 0.05);
+
+      // トンネル奥へ流れる光のパルス
+      float pulse = pow(0.5 + 0.5 * sin(u * 0.35 - uTime * 3.0), 6.0);
+      // パネルごとにまたたく
+      vec2 cell = floor(vec2(u, v));
+      float rnd = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+      float flicker = step(0.93, rnd) * (0.5 + 0.5 * sin(uTime * (2.0 + rnd * 4.0) + rnd * 40.0));
+
+      float hue = uHue + uSpread * (0.5 + 0.5 * sin(vUv.x * 6.2832 * 3.0 + uTime * 0.1));
+      vec3 col = hsv2rgb(vec3(hue, 0.85, 1.0));
+      vec3 col2 = hsv2rgb(vec3(hue + 0.12, 0.6, 1.0));
+
+      vec3 c = col * 0.015;                              // 壁のベース
+      c += col * max(ring, rib) * (0.3 + 1.0 * pulse);   // グリッド
+      c += col2 * major * 1.6;                           // 主リング
+      c += col * flicker * 0.25;                         // 光るパネル
+      c += col2 * hatch * uHatchGlow * (max(ring, rib) * 2.0 + 0.15);  // ハッチ
+
+      // 遠くを黒に溶かす
+      float fog = exp(-vDepth * 0.025);
+      gl_FragColor = vec4(c * fog, 1.0);
+    }
+  `,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 400);
+scene.add(camera);
+
+// マスコット用のライトと霧。トンネルのシェーダーには影響しない
+scene.fog = new THREE.FogExp2(0x000000, 0.02);   // トンネルの霧とおおよそ揃える
+scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+camera.add(new THREE.PointLight(0xffffff, 3, 0, 0));
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.8, 0.5, 0.25));
+const zoomBlur = new ShaderPass(ZoomBlurShader);
+composer.addPass(zoomBlur);
+composer.addPass(new OutputPass());
+
+const tunnelMaterial = new THREE.ShaderMaterial({
+  ...TunnelShader,
+  side: THREE.BackSide,
+  extensions: { derivatives: true },  // fwidth 用（WebGL2 では標準で使える）
+});
+
+// ---- 状態 ----
+let speed = BASE_SPEED;
+let themeIndex = 0;
+let course;           // createCourse() の戻り値
+let progress = 0;     // 0..1 のコース上の位置
+let roll = 0;
+
+// ---- コース ----
+// 大きな円周上に制御点を並べ、半径と高さを揺らして交差しない閉じたコースを作る
+function createCourseCurve() {
+  const pts = [];
+  const phase = Math.random() * 10;
+  for (let i = 0; i < CONTROL_POINTS; i++) {
+    const a = (i / CONTROL_POINTS) * Math.PI * 2;
+    const r = COURSE_RADIUS + Math.sin(a * 3 + phase) * 25 + (Math.random() - 0.5) * 30;
+    const y = Math.sin(a * 2 + phase * 1.7) * 30 + (Math.random() - 0.5) * 24;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r));
+  }
+  return new THREE.CatmullRomCurve3(pts, true, 'centripetal');
+}
+
+function createCourse() {
+  const curve = createCourseCurve();
+  const length = curve.getLength();
+  const geometry = new THREE.TubeGeometry(curve, TUBULAR_SEGMENTS, TUBE_RADIUS, RADIAL_SEGMENTS, true);
+  const { tangents, normals, binormals } = geometry;   // TubeGeometry の各断面のフレーム
+  return {
+    curve,
+    length,
+    rings: Math.round(length / RING_SPACING),          // 長さ方向のグリッド本数
+    tangents, normals, binormals,
+    mesh: new THREE.Mesh(geometry, tunnelMaterial),
+  };
+}
+
+// TubeGeometry の法線フレームを補間して、ねじれの少ない「上」を得る
+function frameNormalAt(t, out) {
+  const { normals } = course;
+  const f = t * (normals.length - 1);
+  const i = Math.floor(f);
+  const j = (i + 1) % normals.length;
+  return out.copy(normals[i]).lerp(normals[j], f - i).normalize();
+}
+
+// カメラから見て dist 先のコース上の位置 (0..1)
+const courseAhead = (dist) => (progress + dist / course.length) % 1;
+
+// ---- 隠しキャラ: 壁のハッチから跳び出すマスコット ----
+// ハッチの座標系: 原点が壁面のハッチ中心、y がトンネルの内側、z が進行方向
+
+// ハッチの奥の穴。トンネル壁の一部を外側へ HATCH_DEPTH だけ掘った形
+function createShaftGeometry() {
+  const halfAngle = (HATCH_HALF.y / AROUND_LINES) * Math.PI * 2;
+  const r0 = TUBE_RADIUS - 0.02;
+  const r1 = TUBE_RADIUS + HATCH_DEPTH;
+  const z1 = HATCH_HALF.x * RING_SPACING;
+  const z0 = -z1;
+  const STEPS = 8;
+  // トンネル軸から見た角度 a・半径 r の点
+  const p = (a, r, z) => [r * Math.sin(a), TUBE_RADIUS - r * Math.cos(a), z];
+  const pos = [];
+  const quad = (a, b, c, d) => pos.push(...a, ...b, ...c, ...a, ...c, ...d);
+  for (let i = 0; i < STEPS; i++) {
+    const a0 = halfAngle * (2 * i / STEPS - 1);
+    const a1 = halfAngle * (2 * (i + 1) / STEPS - 1);
+    quad(p(a0, r1, z0), p(a1, r1, z0), p(a1, r1, z1), p(a0, r1, z1));   // 底
+    quad(p(a0, r0, z0), p(a1, r0, z0), p(a1, r1, z0), p(a0, r1, z0));   // 手前
+    quad(p(a0, r0, z1), p(a1, r0, z1), p(a1, r1, z1), p(a0, r1, z1));   // 奥
+  }
+  for (const a of [-halfAngle, halfAngle]) {
+    quad(p(a, r0, z0), p(a, r1, z0), p(a, r1, z1), p(a, r0, z1));       // 左右
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Claude Code のマスコット（▐▛███▜▌ / ▝▜█████▛▘ / ▘▘ ▝▝）をボクセルにする。
+// 原点は足元の中心で、正面は -z（近づいてくるカメラの方）
+function createMascot() {
+  const s = PIXEL;
+  const body = new THREE.MeshLambertMaterial({ color: 0xd97757 });
+  const black = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  // ドット絵の列 x0..x1・行 y0..y1（0行目が頭、4行目が足）を奥行き depth ドットの箱にする
+  const box = (x0, x1, y0, y1, depth, mat = body) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry((x1 - x0 + 1) * s, (y1 - y0 + 1) * s, depth * s), mat);
+    m.position.set(((x0 + x1) / 2 - 8.5) * s, (4.5 - (y0 + y1) / 2) * s, 0);
+    return m;
+  };
+
+  const root = new THREE.Group();
+  root.rotation.order = 'YXZ';      // 首振り → 見上げ の順
+  root.add(box(3, 14, 0, 3, 6));    // 胴体
+  for (const x of [4, 6, 11, 13]) root.add(box(x, x, 4, 4, 2));   // 足
+  const eyes = [5, 12].map((x) => {
+    const eye = box(x, x, 1, 1, 0.2, black);
+    eye.position.z = -3 * s;        // 胴体の正面から少しだけ出す
+    root.add(eye);
+    return eye;
+  });
+  // 腕は肩を支点に回せるようにする
+  const arms = [[1, 2, -6], [15, 16, 6]].map(([x0, x1, shoulder]) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(shoulder * s, 2.5 * s, 0);
+    const arm = box(x0, x1, 2, 2, 2);
+    arm.position.sub(pivot.position);
+    pivot.add(arm);
+    root.add(pivot);
+    return pivot;
+  });
+  return { root, eyes, arms };
+}
+
+const moveToward = (x, target, step) =>
+  x < target ? Math.min(x + step, target) : Math.max(x - step, target);
+
+// 指数分布で次の出現までの秒数を決め、続けて出たりしばらく出なかったりする不規則さを出す
+const nextInterval = () =>
+  Math.min(-Math.log(1 - Math.random()) * MASCOT_MEAN_INTERVAL, MASCOT_MAX_INTERVAL);
+
+// ハッチの出現からマスコットのジャンプまでを管理する。
+// フェーズ: idle → signal（点滅）→ open → jump → close → idle
+function createHatch() {
+  const uniforms = tunnelMaterial.uniforms;
+  const group = new THREE.Group();
+  const shaftMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+  group.add(new THREE.Mesh(createShaftGeometry(), shaftMaterial));
+  const light = new THREE.PointLight(0xffffff, 0, 5, 0);   // 穴の中からの光
+  light.position.y = -HATCH_DEPTH + 0.3;
+  group.add(light);
+  const mascot = createMascot();
+  group.add(mascot.root);
+  scene.add(group);
+
+  let phase = 'idle';
+  let phaseTime = 0;    // 今のフェーズに入ってからの秒数
+  let waitTimer = 0;    // idle 中、次に現れるまでの秒数
+  let courseT = 0;      // ハッチのコース上の位置 (0..1)
+  let open = 0;         // 0..1
+  const camLocal = new THREE.Vector3();
+  const outward = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const side = new THREE.Vector3();
+  const basis = new THREE.Matrix4();
+
+  function setPhase(next) {
+    phase = next;
+    phaseTime = 0;
+  }
+
+  function reset() {
+    setPhase('idle');
+    waitTimer = nextInterval();
+    open = 0;
+    mascot.root.position.y = HIDE_Y;
+    mascot.root.rotation.set(0, 0, 0);
+    mascot.root.scale.set(1, 1, 1);
+    for (const arm of mascot.arms) arm.rotation.z = 0;
+    // コースの輪の中心（必ずトンネルの外で、壁に隠れて見えない）に退避
+    group.position.set(0, 0, 0);
+    light.intensity = 0;
+    uniforms.uHatchOpen.value = 0;
+    uniforms.uHatchGlow.value = 0;
+  }
+
+  // カメラの少し先の壁に、グリッドのマス目に合わせてハッチを置く
+  function spawn() {
+    const ahead = Math.min(LAND_DIST + speed * (SIGNAL_TIME + HATCH_OPEN_TIME + JUMP_TIME), HATCH_MAX_AHEAD);
+    const uc = Math.floor(courseAhead(ahead) * course.rings) + HATCH_HALF.x;
+    if (uc + HATCH_HALF.x + 1 > course.rings) { waitTimer = 0.5; return; }   // コースの継ぎ目は避ける
+    const vc = 1 + Math.floor(Math.random() * (AROUND_LINES - HATCH_SIZE.y - 1)) + HATCH_HALF.y;
+
+    courseT = uc / course.rings;
+    const i = Math.round(courseT * TUBULAR_SEGMENTS);
+    const angle = (vc / AROUND_LINES) * Math.PI * 2;
+    // TubeGeometry と同じ式で、ハッチ中心の外向き方向を求める
+    outward.copy(course.normals[i]).multiplyScalar(-Math.cos(angle))
+      .addScaledVector(course.binormals[i], Math.sin(angle));
+    up.copy(outward).negate();
+    side.crossVectors(up, course.tangents[i]);
+    group.quaternion.setFromRotationMatrix(basis.makeBasis(side, up, course.tangents[i]));
+    course.curve.getPointAt(courseT, group.position).addScaledVector(outward, TUBE_RADIUS);
+    group.updateMatrixWorld();
+
+    uniforms.uHatch.value.set(uc, vc);
+    setPhase('signal');
+  }
+
+  // カメラが着地点の LAND_DIST 手前に着くまでの秒数（通り過ぎていれば負）
+  function timeToArrive() {
+    const dist = ((courseT - progress + 1.5) % 1 - 0.5) * course.length;
+    return (dist - LAND_DIST) / speed;
+  }
+
+  // 速度が変わっても、カメラが近づききる前に着地するよう開くタイミングを決める
+  function advancePhase() {
+    switch (phase) {
+      case 'signal': {
+        const arrive = timeToArrive();
+        if (arrive <= 0) setPhase('close');
+        else if (arrive <= HATCH_OPEN_TIME + JUMP_TIME) setPhase('open');
+        break;
+      }
+      case 'open':  if (open === 1) setPhase('jump'); break;
+      case 'jump':  if (phaseTime >= JUMP_TIME) setPhase('close'); break;
+      case 'close': if (open === 0) reset(); break;
+    }
+  }
+
+  function animateMascot(follow) {
+    const { root, arms, eyes } = mascot;
+    const jumping = phase === 'jump';
+
+    // 放物線を描いてトンネル中央へ跳び、同じ穴へ戻る。速いときほど縦に伸ばす
+    const tau = jumping ? phaseTime / JUMP_TIME : 0;
+    root.position.y = HIDE_Y + 4 * (JUMP_HEIGHT - HIDE_Y) * tau * (1 - tau);
+    const stretch = jumping ? 1 + 0.3 * Math.abs(1 - 2 * tau) : 1;
+    root.scale.set(1 / Math.sqrt(stretch), stretch, 1 / Math.sqrt(stretch));
+
+    // カメラの方を向いて見上げる
+    group.worldToLocal(camLocal.copy(camera.position));
+    const yaw = THREE.MathUtils.clamp(Math.atan2(-camLocal.x, -camLocal.z), -0.8, 0.8);
+    const headY = root.position.y + 3 * PIXEL;
+    const pitch = THREE.MathUtils.clamp(
+      Math.atan2(camLocal.y - headY, Math.hypot(camLocal.x, camLocal.z)), -0.2, 0.6);
+    root.rotation.y += (yaw - root.rotation.y) * follow;
+    root.rotation.x += (pitch - root.rotation.x) * follow;
+
+    // 跳んでいる間はばんざいし、頂点を過ぎたところで一度まばたき
+    const armAngle = jumping ? 1.2 : 0;
+    arms[0].rotation.z += (-armAngle - arms[0].rotation.z) * follow;
+    arms[1].rotation.z += (armAngle - arms[1].rotation.z) * follow;
+    const eyeScale = tau > 0.62 && tau < 0.7 ? 0.15 : 1;
+    for (const eye of eyes) eye.scale.y = eyeScale;
+  }
+
+  function update(dt) {
+    if (phase === 'idle') {
+      waitTimer -= dt;
+      if (waitTimer <= 0) spawn();
+      return;
+    }
+    phaseTime += dt;
+    advancePhase();
+    if (phase === 'idle') return;
+
+    const opening = phase === 'open' || phase === 'jump';
+    open = moveToward(open, opening ? 1 : 0, dt / HATCH_OPEN_TIME);
+    animateMascot(1 - Math.exp(-dt * 8));
+
+    uniforms.uHatchOpen.value = open;
+    uniforms.uHatchGlow.value =
+      phase === 'signal' ? 0.5 + 0.5 * Math.cos(phaseTime * Math.PI * 6) : 0.5;
+    light.intensity = 4 * open;
+  }
+
+  return {
+    update,
+    reset,
+    summon() { if (phase === 'idle') spawn(); },
+    setHue(hue) {
+      shaftMaterial.color.setHSL(hue, 0.5, 0.12);
+      light.color.setHSL(hue, 0.9, 0.6);
+    },
+  };
+}
+
+const hatch = createHatch();
+
+// ---- 速度・配色・コースの切り替え ----
+function setSpeed(value) {
+  speed = THREE.MathUtils.clamp(value, MIN_SPEED, MAX_SPEED);
+  zoomBlur.uniforms.uStrength.value = Math.min(MAX_BLUR, BLUR_STRENGTH * speed / BASE_SPEED);
+}
+
+function setTheme(index) {
+  themeIndex = index % THEMES.length;
+  const { hue, spread } = THEMES[themeIndex];
+  tunnelMaterial.uniforms.uHue.value = hue;
+  tunnelMaterial.uniforms.uSpread.value = spread;
+  hatch.setHue(hue);
+}
+
+function loadCourse() {
+  if (course) { scene.remove(course.mesh); course.mesh.geometry.dispose(); }
+  course = createCourse();
+  scene.add(course.mesh);
+  tunnelMaterial.uniforms.uRepeat.value = course.rings;
+  progress = 0;
+  hatch.reset();
+}
+
+const nextCourse = () => fadeAndRun(() => {
+  setTheme(themeIndex + 1);
+  loadCourse();
+});
+
+// ---- カメラ移動 ----
+const tmpPos = new THREE.Vector3();
+const tmpLook = new THREE.Vector3();
+const tmpUp = new THREE.Vector3();
+const tmpTan = new THREE.Vector3();
+
+function updateCamera(dt) {
+  progress = courseAhead(dt * speed);
+  roll += dt * ROLL_SPEED;
+
+  course.curve.getPointAt(progress, tmpPos);
+  course.curve.getPointAt(courseAhead(LOOK_AHEAD), tmpLook);
+  course.curve.getTangentAt(progress, tmpTan);
+  frameNormalAt(progress, tmpUp).applyAxisAngle(tmpTan, roll);
+
+  // 中心から少しずらして、カーブで壁が流れる感じを出す
+  camera.position.copy(tmpPos).addScaledVector(tmpUp, Math.sin(roll * 2.3) * SWAY);
+  camera.up.copy(tmpUp);
+  camera.lookAt(tmpLook);
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  tunnelMaterial.uniforms.uTime.value += dt;
+  updateCamera(dt);
+  hatch.update(dt);
+  composer.render();
+}
+
+// ---- 入力・UI ----
+const fadeEl = document.getElementById('fade');
+let fading = false;
+
+// 暗転している間に change() を実行して、明るく戻す
+function fadeAndRun(change) {
+  if (fading) return;
+  fading = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    change();
+    fadeEl.style.opacity = 0;
+    fading = false;
+  }, FADE_MS);
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.();
+}
+
+// 操作が無ければカーソルとHUDを隠す
+let idleTimer;
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
+}
+
+const KEY_ACTIONS = {
+  Space: nextCourse,
+  KeyF: toggleFullscreen,
+  KeyC: () => hatch.summon(),     // 隠しコマンド（HUDには出さない）
+  ArrowUp: () => setSpeed(speed * SPEED_STEP),
+  ArrowDown: () => setSpeed(speed / SPEED_STEP),
+};
+
+addEventListener('keydown', (e) => {
+  wake();
+  // Cmd+F や Ctrl+C などのブラウザのショートカットは横取りしない
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const action = KEY_ACTIONS[e.code];
+  if (!action) return;
+  e.preventDefault();
+  action();
+});
+addEventListener('dblclick', toggleFullscreen);
+addEventListener('mousemove', wake);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+// ---- 開始 ----
+setSpeed(BASE_SPEED);
+setTheme(Math.floor(Math.random() * THEMES.length));
+loadCourse();
+wake();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
