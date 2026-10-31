@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jellyfish Aquarium</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  body.idle { cursor: none; }
+  #fade {
+    position: fixed; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; transition: opacity 0.8s ease;
+  }
+  #hud {
+    position: fixed; left: 16px; bottom: 16px; color: #ccc;
+    font: 12px/1.6 ui-monospace, Menlo, monospace;
+    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+    transition: opacity 0.6s ease;
+  }
+  body.idle #hud { opacity: 0; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="fade"></div>
+<div id="hud">
+  Space: シーンを変更 / F・ダブルクリック: 全画面 / ↑↓: 泡の筋の数
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---- 設定 ----
+// すべて光る線で描く。線の色は光の強さそのままの値（1 を超えるとブルームで強く光る）。背景の色だけは画面に出る値 (0..1)
+
+// 水槽（壁一面の大きな水槽を、前のガラス越しに真横から見る）
+// 座標: 底の中央が原点、x が横、y が上、z が手前。左右の壁は画面の外になるよう、横幅は画面の幅で決める
+const WATER_LEVEL = 7.5;          // 水面の高さ
+const TANK_DEPTH = 3;             // 奥行き（前のガラスが z = +TANK_DEPTH/2、奥の壁が -TANK_DEPTH/2）
+const CURRENT_PERIOD = 220;       // 水流が水槽の中を縦に 1 周する秒数（手前から見て時計回り）
+
+// カメラ（水槽の正面。向きは変えずに、ゆっくり左右上下に漂う）
+const CAM_DIST = 9;               // 水槽の奥行きの中央からの距離
+// 画面の下端・上端に映る高さ（奥行きの中央で。画角はこれで決める）。
+// 底と水面は描かないので、いちばん奥でも画面の外になるようにする
+const VIEW_BOTTOM = 0.9;
+const VIEW_TOP = 6.6;
+const CAM_DRIFT = [0.8, 0.2];     // 漂う幅 [横, 縦]
+const CAM_DRIFT_PERIOD = [97, 61];   // その周期（秒）
+
+// クラゲの形（ミズクラゲ風: 平たい傘に短い触手がびっしり、傘の上に 4 つの輪、傘の下に口腕）。
+// どのクラゲもほぼ同じ大きさ・形にする。長さ・幅は傘の半径に対する倍率
+const JELLY_COUNT = 14;           // 起動したときの数
+// 起動したときの大きさ・傘の縦横比・足の長さ（全部のクラゲで共通。Space で選び直す）。
+// size: 傘の半径、flat: 傘の高さ / 半径、legs: 触手と口腕の長さの倍率
+const BASE_SHAPE = { size: 0.46, flat: 0.42, legs: 1 };
+const SHAPE_JITTER = 0.04;        // クラゲごとの大きさ・足の長さのばらつき（±割合）
+const BELL_ANGLE = 1.75;          // 傘の縁が頂点から何 rad 回り込むか
+const TENTACLE_COUNT = 40;        // 縁の触手の本数
+const TENTACLE_LENGTH = 0.7;      // 触手の長さ（legs が 1 のとき）
+const TENTACLE_SPREAD = 0.15;     // 触手が外へ広がる傾き
+const ARM_COUNT = 4;              // 口腕の数
+const ARM_LENGTH = 0.9;           // 口腕の長さ（同）
+const ARM_WIDTH = 0.12;           // 口腕のひだの幅
+const GONAD_COUNT = 4;            // 生殖腺の輪の数
+const GONAD_RING = { u: 0.38, du: 0.13, dphi: 0.38 };  // 生殖腺の輪の中心（頂点 0 → 縁 1）と、縦・横の半径（縦は同じ単位、横は rad）
+
+// クラゲの線の細かさ
+const BELL_MERIDIANS = 16;        // 傘に描く縦の線（放射状の管）の数
+const BELL_ROWS = 8;              // 縦の線の節の数
+const RIM_SEGMENTS = 48;          // 傘の縁の円の分割数（BELL_MERIDIANS の倍数）
+const TENTACLE_SEGMENTS = 5;      // 触手の節の数
+const ARM_SEGMENTS = 14;          // 口腕の節の数
+const GONAD_SEGMENTS = 16;        // 生殖腺の輪の分割数
+
+// クラゲの動き
+const PULSE_RATE = [0.4, 0.7];    // 傘が縮む回数（回/秒）
+const PULSE_SHARE = 0.35;         // 1 回のうち縮んでいる時間の割合（残りでゆっくり戻る）
+const PULSE_SQUEEZE = 0.22;       // 縮んだときに縁が細くなる割合
+const PULSE_STRETCH = 0.25;       // 縮んだときに傘が縦に伸びる割合
+const SWIM = 0.05;                // 泳ぐ強さ（加速度の平均）。頭（傘の頂点）の向きへ進む
+const WATER_DRAG = 1.0;           // 水流になじむ速さ (1/秒)
+const HOME_RING = [0.35, 0.85];   // 水流の輪の中で好む位置の範囲（中心 0 → 水槽いっぱい 1）
+const HOME_PULL = 0.15;           // 好みの位置へ寄る速さ（輪の位置の差 1 あたり）
+const WALL_MARGIN = 0.25;         // 壁・底・水面・ガラスにこれより近づくと押し戻される
+const WALL_PUSH = 1.5;            // 押し戻す速さ（はみ出し 1 あたり）
+const JELLY_SPACING = 1.6;        // クラゲどうしが近づける距離（傘の半径の和に対する倍率）
+const SEPARATE = 1.5;             // 近づきすぎたときに離れる強さ
+const RIGHTING = 0.5;             // 頭（傘の頂点）を水流の進む向きへ向け直す強さ
+const HEAD_UP = 0.02;             // 流れのほとんどない所では上を向くよう、水流の向きに足す上向きの速さ
+const SPIN_DRAG = 0.7;            // 回転の止まりやすさ (1/秒)
+const WOBBLE = 0.1;               // ふらふら傾く強さ
+const TENTACLE_STIFF = 2.5;       // 触手が元の形に戻る速さ (1/秒)。小さいほど動きに遅れてなびく
+const TENTACLE_SWAY = 0.12;       // 触手の先が揺れる幅（傘の半径に対する倍率）
+const ARM_SWAY = 0.06;            // 口腕の先が揺れる幅（同）
+
+// クラゲの線の明るさ（クラゲの色に掛ける）
+const BELL_GLOW = [0.06, 1.0];    // 傘の線 [正面を向いた所, 輪郭の所]（ガラスのように輪郭ほど光る）
+const RIM_GLOW = 1.3;             // 傘の縁（傘の線の明るさに掛ける）
+const MID_RING_GLOW = 0.5;        // 傘の中ほどの淡い輪（同）
+const TENTACLE_GLOW = 0.4;        // 触手の根もと（先へ行くほど TENTACLE_FADE の割合まで暗くなる）
+const TENTACLE_FADE = 0.85;
+const ARM_GLOW = 0.35;            // 口腕の根もと（同）
+const ARM_FADE = 0.7;
+const GONAD_GLOW = 0.7;           // 生殖腺
+const FAR_DIM = 0.3;              // 水槽のいちばん奥のものの明るさの倍率（前のガラスぎわは 1）
+
+// 泡
+const MAX_BUBBLES = 800;          // 泡の筋が MAX_STREAMS 本でも足りる数
+const BUBBLE_RATE = 4;            // 1 本の筋に 1 秒に出る数
+const STONE_SIZE = 0.14;          // 泡の出る石の半径（泡はこの範囲から出る。石は画面の下の外にあり、描かない）
+const BUBBLE_SIZE = [0.012, 0.035];   // 半径の範囲
+const BUBBLE_RISE = [0.45, 4];    // 上る速さ = [0] + [1] × 半径（大きい泡ほど速い）
+const BUBBLE_WOBBLE = 0.15;       // 左右に揺れる速さ
+const BUBBLE_DRIFT = 0.5;         // 水流に流される割合
+const BUBBLE_LIFT = 100;          // クラゲを傾ける強さ（泡の半径の 2 乗に比例。傘の端に当たるほど大きく傾く）
+const BUBBLE_CARRY = 0.3;         // クラゲを持ち上げる強さ（BUBBLE_LIFT に対する割合）
+const BUBBLE_SEGMENTS = 10;       // 泡の円の分割数
+const BUBBLE_GLOW = 0.7;
+// 立ちのぼる泡の筋の数（↑↓ で 1 本ずつ変える）
+const BASE_STREAMS = 4;
+const MIN_STREAMS = 1;
+const MAX_STREAMS = 10;
+
+// 大きな泡がまとまって出る（クラゲをひっくり返す）
+const BURST_INTERVAL = [35, 15, 80];  // 間隔 [平均, 下限, 上限]（秒）
+const BURST_COUNT = 24;           // 1 回に出る数
+const BURST_TIME = 2;             // 出し終えるまでの秒数
+const BURST_SIZE = [0.06, 0.14];   // 半径の範囲
+
+// 色。クラゲは全部同じ色で、時間とともに虹色を一巡する。s・l は彩度・明度、glow は明るさの倍率
+const RAINBOW_PERIOD = 300;       // クラゲの色が一巡する秒数
+const RAINBOW_START = 0.55;       // 起動したときの色相（0..1。0.55 は水色）
+const JELLY_COLOR = { s: 0.85, l: 0.5, glow: 1.8 };
+const GONAD_COLOR = { s: 0.4, l: 0.65, glow: 1.4 };     // 生殖腺（クラゲと同じ色相で、白っぽく）
+const BACKDROP_COLOR = { s: 0.5, l: 0.5, glow: 0.035 };   // 奥の壁のほのかな明かり（同じ色相）
+const BUBBLE_COLOR = [0.7, 1.0, 1.3];
+const BACKGROUND = [0.0, 0.012, 0.035];   // 背景（画面に出る値）
+
+// シーンの切り替え（Space。暗転している間に、クラゲの形・数・位置、色相、泡の筋の位置を選び直す）
+const SHAPE_RANGE = { size: [0.3, 0.62], flat: [0.25, 1.0], legs: [0.4, 2.5] };   // 形の範囲（BASE_SHAPE と同じ項目）
+const SHAPE_MIN_CHANGE = 0.25;    // 形のどの値も、いまの値から最低これだけ変える（範囲の幅に対する割合）
+// クラゲの数の範囲（傘の大きさが BASE_SHAPE.size のとき）。傘の面積に反比例させ、大きいクラゲほど少なくする
+const JELLY_COUNT_RANGE = [9, 18];
+const MAX_JELLIES = 24;
+const HUE_MIN_CHANGE = 0.2;       // 色相を、いまの色相から最低これだけ変える（0..0.5）
+const PREWARM_TIME = 15;          // 起動・シーンの切り替えのとき、先に進めておく秒数（泡が水面まで届き、クラゲの間隔が落ち着くように）
+
+// 描画
+const MAX_PIXEL_RATIO = 1;        // 解像度の倍率の上限（高解像度画面での負荷を抑える。光る線画なので 1 でも見劣りしない）
+const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での GPU の負荷を抑える）
+const MSAA_SAMPLES = 4;           // 線のぎざぎざを抑えるマルチサンプルの数
+const MAX_LINES = 40000;          // 1 フレームに描ける線分の数
+// ブルームの強さ・広がり・しきい値
+const BLOOM = { strength: 0.5, radius: 0.3, threshold: 0.15 };
+
+// UI
+const FADE_MS = 850;              // #fade の transition より少し長く
+const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+
+// ---- ユーティリティ ----
+const TAU = 2 * Math.PI;
+const CURRENT_SPEED = TAU / CURRENT_PERIOD;   // 水流の角速度 (rad/秒)
+const VIEW_FOV = 2 * Math.atan((VIEW_TOP - VIEW_BOTTOM) / 2 / CAM_DIST) * 180 / Math.PI;   // 縦の画角（度）
+const VIEW_CENTER_Y = (VIEW_TOP + VIEW_BOTTOM) / 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const randIn = ([a, b]) => rand(a, b);
+const { clamp } = THREE.MathUtils;
+
+// 指数分布で平均 mean 秒の間隔（min〜max に収める）
+function randomInterval([mean, min, max]) {
+  return clamp(-Math.log(1 - Math.random()) * mean, min, max);
+}
+
+const EQUATOR_U = Math.PI / 2 / BELL_ANGLE;   // 傘がいちばん太い所の位置（頂点 0 → 縁 1）
+
+// 傘の縮み具合 (0..1)。phase: 1 回の拍動の中の位置 (0..1)。すばやく縮んで、ゆっくり戻る
+function contraction(phase) {
+  if (phase < PULSE_SHARE) return Math.sin(phase / PULSE_SHARE * Math.PI / 2);
+  return 0.5 + 0.5 * Math.cos((phase - PULSE_SHARE) / (1 - PULSE_SHARE) * Math.PI);
+}
+
+// ---- three.js 初期化 ----
+// シーンはブルーム用の別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color().setRGB(...BACKGROUND, THREE.SRGBColorSpace);
+const camera = new THREE.PerspectiveCamera(VIEW_FOV, innerWidth / innerHeight, 0.1, 100);
+
+// 線のぎざぎざを抑えるため、ブルーム用の描画先をマルチサンプルにする
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA_SAMPLES }));
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight), BLOOM.strength, BLOOM.radius, BLOOM.threshold));
+composer.addPass(new OutputPass());
+
+// ---- 状態 ----
+let time = 0;              // 経過秒
+let burstWait = randomInterval(BURST_INTERVAL);   // 次に大きな泡が出るまでの秒数
+let halfWidth = 0;         // 水槽の横幅の半分（画面の幅で決まる。layout で求める）
+// 水流の楕円 { 中心の高さ, 横の半径, 縦の半径 }（layout で求める）
+const loop = { cy: WATER_LEVEL / 2, a: 1, b: 1 };
+// いまのクラゲと生殖腺の色（updateColors で求める）
+const jellyColor = [0, 0, 0];
+const gonadColor = [0, 0, 0];
+// いまのクラゲの形（Space で選び直す。全部のクラゲで共通）
+const shape = { ...BASE_SHAPE };
+let hueShift = 0;          // 色相のずらし量（Space で選び直す。0..1）
+
+// ---- 線 ----
+// 線はすべて 1 つの LineSegments にまとめ、毎フレーム頂点を詰め直す。
+// 加算合成なので、重なった所は明るくなり、奥の線も透けて見える
+class LineBatch {
+  constructor(maxSegments) {
+    this.max = maxSegments * 2;
+    this.pos = new Float32Array(this.max * 3);
+    this.col = new Float32Array(this.max * 3);
+    this.posAttr = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.colAttr = new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage);
+    this.geometry = new THREE.BufferGeometry();
+    this.geometry.setAttribute('position', this.posAttr);
+    this.geometry.setAttribute('color', this.colAttr);
+    this.mesh = new THREE.LineSegments(this.geometry, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, blending: THREE.AdditiveBlending,
+      depthTest: false, depthWrite: false,
+    }));
+    this.mesh.frustumCulled = false;   // 頂点が毎フレーム変わるので、範囲での間引きはしない
+    this.n = 0;                        // 詰めた頂点の数
+    this.rgb = [1, 1, 1];              // いまの線の色
+    this.last = [0, 0, 0, 0, 0, 0];    // 直前の点（位置と色）
+  }
+
+  clear() { this.n = 0; }
+
+  // これから描く線の色（c × scale）
+  setColor(c, scale = 1) {
+    this.rgb[0] = c[0] * scale;
+    this.rgb[1] = c[1] * scale;
+    this.rgb[2] = c[2] * scale;
+  }
+
+  // 線の始点。b はこの点の明るさ（色に掛ける）
+  moveTo(x, y, z, b = 1) {
+    const l = this.last, c = this.rgb;
+    l[0] = x; l[1] = y; l[2] = z;
+    l[3] = c[0] * b; l[4] = c[1] * b; l[5] = c[2] * b;
+  }
+
+  // 折れ線の i 番目の点。0 なら始点、それ以外は直前の点から線を引く
+  polyTo(i, x, y, z, b = 1) {
+    if (i === 0) this.moveTo(x, y, z, b);
+    else this.lineTo(x, y, z, b);
+  }
+
+  // 直前の点からこの点まで線を引く
+  lineTo(x, y, z, b = 1) {
+    if (this.n + 2 <= this.max) {
+      this.vertex(this.last);
+      this.moveTo(x, y, z, b);
+      this.vertex(this.last);
+    } else {
+      this.moveTo(x, y, z, b);
+    }
+  }
+
+  vertex(v) {
+    const o = this.n * 3;
+    this.pos[o] = v[0]; this.pos[o + 1] = v[1]; this.pos[o + 2] = v[2];
+    this.col[o] = v[3]; this.col[o + 1] = v[4]; this.col[o + 2] = v[5];
+    this.n++;
+  }
+
+  // pts（xyz を並べた配列）の点 first から step おきに count 個を結ぶ。bright[点の番号] がその点の明るさ
+  strip(pts, bright, first, step, count, closed) {
+    for (let i = 0; i <= count; i++) {
+      if (i === count && !closed) break;
+      const k = first + (i % count) * step, o = k * 3;
+      this.polyTo(i, pts[o], pts[o + 1], pts[o + 2], bright[k]);
+    }
+  }
+
+  // 描いた分だけ GPU に送る
+  flush() {
+    this.geometry.setDrawRange(0, this.n);
+    for (const attr of [this.posAttr, this.colAttr]) {
+      attr.clearUpdateRanges();
+      attr.addUpdateRange(0, this.n * 3);
+      attr.needsUpdate = true;
+    }
+  }
+}
+
+const lines = new LineBatch(MAX_LINES);
+scene.add(lines.mesh);
+
+// ---- 水槽 ----
+// 奥の壁のほのかな明かり（上ほど明るい）。色は照明の色で付ける
+const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+  vertexColors: true, depthTest: false, depthWrite: false,
+}));
+// PlaneGeometry の頂点は 左上・右上・左下・右下 の順
+backdrop.geometry.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15], 3));
+backdrop.renderOrder = -1;
+scene.add(backdrop);
+
+// 泡の出る石（1 つが 1 本の泡の筋になる）。fx: 横の位置（水槽の横幅の半分に対する割合 -1..1）
+const stones = [];
+const stoneX = (fx) => fx * (halfWidth - 0.5);
+
+// 画面の大きさに合わせて、水槽の横幅・水流・石の位置・奥の壁の大きさを決める
+function layout() {
+  const tanHalf = Math.tan(VIEW_FOV * Math.PI / 360);
+  // 奥の壁で見える幅より、カメラが漂う分だけ広くする（左右の壁が画面に入らないように）
+  halfWidth = (CAM_DIST + TANK_DEPTH / 2) * tanHalf * camera.aspect + CAM_DRIFT[0] + 0.3;
+  loop.a = Math.max(halfWidth - 0.8, 1);
+  loop.b = WATER_LEVEL / 2 - 0.3;
+  for (const st of stones) st.x = stoneX(st.fx);
+  const h = (CAM_DIST + TANK_DEPTH / 2) * tanHalf * 2.4;
+  backdrop.position.set(0, VIEW_CENTER_Y, -TANK_DEPTH / 2);
+  backdrop.scale.set(halfWidth * 2.4, h, 1);
+}
+
+layout();
+
+// (x, y) での水流の速さ（flow.x, flow.y）を返す。水槽の中を縦に回る楕円の流れ（手前から見て時計回り）
+const flow = { x: 0, y: 0 };
+function currentAt(x, y) {
+  const a = loop.a, b = loop.b;
+  flow.x = (y - loop.cy) / b * a * CURRENT_SPEED;
+  flow.y = -x / a * b * CURRENT_SPEED;
+  return flow;
+}
+
+// 範囲 lo..hi の端から margin より内側へ押し戻す速さ
+function wallPush(x, lo, hi, margin) {
+  return (Math.max(0, lo + margin - x) - Math.max(0, x + margin - hi)) * WALL_PUSH;
+}
+
+// 水槽の奥にあるものほど暗くする倍率（z で決める）
+function depthDim(z) {
+  const t = clamp((TANK_DEPTH / 2 - z) / TANK_DEPTH, 0, 1);
+  return 1 + (FAR_DIM - 1) * t;
+}
+
+// ---- クラゲ ----
+const P = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 };   // 傘の表面の点と法線（作業用）
+const W = new Float32Array(9);                         // ワールド座標の作業用（点・向き・横向き）
+const tmpVec = new THREE.Vector3();
+const tmpQuat = new THREE.Quaternion();
+
+class Jelly {
+  constructor() {
+    // クラゲごとのわずかなばらつき（大きさ・足の長さに掛ける）
+    this.size = shape.size * (1 + rand(-1, 1) * SHAPE_JITTER);
+    this.legJitter = 1 + rand(-1, 1) * SHAPE_JITTER;
+    this.seed = rand(0, TAU);
+    this.rate = randIn(PULSE_RATE);
+    this.phase = Math.random();
+    this.squeeze = 0;                      // 傘の縮み具合 (0..1)
+    // 水流の輪の中で好む位置と、好む奥行き
+    this.home = { ring: randIn(HOME_RING), z: rand(-1, 1) * (TANK_DEPTH / 2 - 0.5) };
+    const a = rand(0, TAU);
+    this.pos = new THREE.Vector3(
+      Math.cos(a) * this.home.ring * loop.a, loop.cy + Math.sin(a) * this.home.ring * loop.b, this.home.z);
+    this.vel = new THREE.Vector3();
+    // 最初から頭を水流の進む向きへ向けておく（傘のまわりの回り方はばらばらに）
+    const f = currentAt(this.pos.x, this.pos.y);
+    this.q = new THREE.Quaternion()
+      .setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(f.x, f.y + HEAD_UP, 0).normalize())
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rand(0, TAU)));
+    this.spin = new THREE.Vector3();       // 回転の速さ（ワールドの軸まわり, rad/秒）
+    this.matrix = new THREE.Matrix4();
+    this.e = this.matrix.elements;         // 列 0〜2 がローカルの x, y（傘の頂点の向き）, z 軸
+
+    // 傘の格子点（行: 頂点 0 → 縁 BELL_ROWS、列: 方位角 RIM_SEGMENTS 等分）
+    const points = (BELL_ROWS + 1) * RIM_SEGMENTS;
+    this.grid = new Float32Array(points * 3);
+    this.gridNormal = new Float32Array(points * 3);
+    this.gridBright = new Float32Array(points);
+    this.tentacles = Array.from({ length: TENTACLE_COUNT }, () => new Float32Array((TENTACLE_SEGMENTS + 1) * 3));
+    this.arms = Array.from({ length: ARM_COUNT }, () => new Float32Array((ARM_SEGMENTS + 1) * 3));
+    this.armSide = new Float32Array(ARM_COUNT * 3);   // 口腕のひだが広がる向き
+
+    this.updateShape(0, true);
+  }
+
+  // 傘の大きさを 1 とするローカル座標を、ワールド座標にして out[o..o+2] に入れる
+  toWorld(lx, ly, lz, out, o) {
+    const e = this.e, s = this.size, p = this.pos;
+    out[o] = p.x + s * (e[0] * lx + e[4] * ly + e[8] * lz);
+    out[o + 1] = p.y + s * (e[1] * lx + e[5] * ly + e[9] * lz);
+    out[o + 2] = p.z + s * (e[2] * lx + e[6] * ly + e[10] * lz);
+  }
+
+  // ローカルの向きをワールドの向きにして out[o..o+2] に入れる
+  toWorldDir(lx, ly, lz, out, o) {
+    const e = this.e;
+    out[o] = e[0] * lx + e[4] * ly + e[8] * lz;
+    out[o + 1] = e[1] * lx + e[5] * ly + e[9] * lz;
+    out[o + 2] = e[2] * lx + e[6] * ly + e[10] * lz;
+  }
+
+  // 傘の高さ（傘の半径を 1 として）。縮むと縦に伸びる
+  bellHeight() {
+    return shape.flat * (1 + PULSE_STRETCH * this.squeeze);
+  }
+
+  // 傘の表面の点と法線を P に入れる（ローカル、大きさ 1）。u: 頂点 0 → 縁 1、phi: 方位角
+  bellLocal(u, phi) {
+    const t = u * BELL_ANGLE, st = Math.sin(t), ct = Math.cos(t);
+    const r = st * (1 - PULSE_SQUEEZE * this.squeeze * u * u);
+    const h = this.bellHeight();
+    const c = Math.cos(phi), s = Math.sin(phi);
+    P.x = r * c; P.y = h * ct; P.z = r * s;
+    // 法線は縮みを無視した楕円体のもので十分
+    P.nx = st * c; P.ny = ct / shape.flat; P.nz = st * s;
+  }
+
+  update(dt) {
+    this.phase = (this.phase + dt * this.rate) % 1;
+    this.squeeze = contraction(this.phase);
+    const e = this.e, p = this.pos, v = this.vel;
+    const ax = e[4], ay = e[5], az = e[6];   // 頭（傘の頂点）の向き。泳ぐ向き
+
+    // 縮むときに頭の向きへ泳ぐ
+    if (this.phase < PULSE_SHARE) {
+      const acc = SWIM / PULSE_SHARE * dt;
+      v.x += ax * acc; v.y += ay * acc; v.z += az * acc;
+    }
+
+    // 水流になじむ。水流の輪の好みの位置・好みの奥行きへゆっくり寄り、壁・底・水面・ガラスからは押し戻される
+    const f = currentAt(p.x, p.y);
+    // 頭を向けたい向き（水流の進む向き。流れのほとんどない所では上）
+    const hl = Math.hypot(f.x, f.y + HEAD_UP), hx = f.x / hl, hy = (f.y + HEAD_UP) / hl;
+    const u = p.x / loop.a, w = (p.y - loop.cy) / loop.b, ring = Math.max(Math.hypot(u, w), 1e-6);
+    const pull = (this.home.ring - ring) * HOME_PULL / ring;
+    const m = this.size + WALL_MARGIN;
+    const fx = f.x + u * loop.a * pull + wallPush(p.x, -halfWidth, halfWidth, m);
+    const fy = f.y + w * loop.b * pull + wallPush(p.y, 0, WATER_LEVEL, m);
+    const fz = (this.home.z - p.z) * HOME_PULL + wallPush(p.z, -TANK_DEPTH / 2, TANK_DEPTH / 2, m);
+    const k = 1 - Math.exp(-WATER_DRAG * dt);
+    v.x += (fx - v.x) * k; v.y += (fy - v.y) * k; v.z += (fz - v.z) * k;
+    p.addScaledVector(v, dt);
+    // 泡に強く押されても、水槽からはみ出さないように
+    p.x = clamp(p.x, -halfWidth + this.size, halfWidth - this.size);
+    p.y = clamp(p.y, this.size, WATER_LEVEL - this.size);
+    p.z = clamp(p.z, -TANK_DEPTH / 2 + this.size, TANK_DEPTH / 2 - this.size);
+
+    // 頭を水流の進む向きへ向け直す（回転は (頭の向き) × (向けたい向き)）。ふらふらした傾きも加える
+    const s = this.spin;
+    s.x += (-az * hy * RIGHTING + WOBBLE * Math.sin(time * 0.31 + this.seed)) * dt;
+    s.y += az * hx * RIGHTING * dt;
+    s.z += ((ax * hy - ay * hx) * RIGHTING + WOBBLE * Math.sin(time * 0.27 + this.seed * 2)) * dt;
+    s.multiplyScalar(Math.exp(-SPIN_DRAG * dt));
+    const angle = s.length() * dt;
+    if (angle > 1e-7) {
+      tmpQuat.setFromAxisAngle(tmpVec.copy(s).normalize(), angle);
+      this.q.premultiply(tmpQuat).normalize();
+    }
+
+    this.updateShape(dt, false);
+  }
+
+  // 傘の格子点と、触手・口腕を求め直す。snap なら触手を元の形に揃える
+  updateShape(dt, snap) {
+    this.matrix.makeRotationFromQuaternion(this.q);
+    const M = RIM_SEGMENTS;
+    for (let row = 0; row <= BELL_ROWS; row++) {
+      for (let m = 0; m < M; m++) {
+        this.bellLocal(row / BELL_ROWS, m / M * TAU);
+        const o = (row * M + m) * 3;
+        this.toWorld(P.x, P.y, P.z, this.grid, o);
+        this.toWorldDir(P.nx, P.ny, P.nz, this.gridNormal, o);
+      }
+    }
+
+    const k = snap ? 1 : 1 - Math.exp(-dt * TENTACLE_STIFF);
+    // 縁の触手
+    const legs = shape.legs * this.legJitter * this.size;
+    const tentSeg = TENTACLE_LENGTH / TENTACLE_SEGMENTS * legs;
+    for (let i = 0; i < TENTACLE_COUNT; i++) {
+      const phi = (i + 0.5) / TENTACLE_COUNT * TAU, c = Math.cos(phi), s = Math.sin(phi);
+      this.bellLocal(1, phi);
+      this.toWorld(P.x, P.y, P.z, W, 0);
+      this.toWorldDir(c * TENTACLE_SPREAD, -1, s * TENTACLE_SPREAD, W, 3);
+      this.toWorldDir(-s, 0, c, W, 6);
+      this.follow(this.tentacles[i], TENTACLE_SEGMENTS, tentSeg, TENTACLE_SWAY * this.size, phi * 3 + this.seed, k);
+    }
+    // 口腕（傘の下の中心から垂れる）
+    const armSeg = ARM_LENGTH / ARM_SEGMENTS * legs;
+    for (let i = 0; i < ARM_COUNT; i++) {
+      const phi = (i + 0.5) / ARM_COUNT * TAU, c = Math.cos(phi), s = Math.sin(phi);
+      this.toWorld(c * 0.08, shape.flat * 0.2, s * 0.08, W, 0);
+      this.toWorldDir(c * 0.2, -1, s * 0.2, W, 3);
+      this.toWorldDir(-s, 0, c, W, 6);
+      this.armSide.set(W.subarray(6, 9), i * 3);
+      this.follow(this.arms[i], ARM_SEGMENTS, armSeg, ARM_SWAY * this.size, i * 1.7 + this.seed, k);
+    }
+  }
+
+  // 触手（点の列）を、元の形へ k の割合だけ近づけてから、節の長さを seg に保つ。
+  // 元の形は、根もと W[0..2] から向き W[3..5] へまっすぐ伸び、横向き W[6..8] に揺れる形
+  follow(chain, n, seg, sway, phase, k) {
+    chain[0] = W[0]; chain[1] = W[1]; chain[2] = W[2];
+    for (let j = 1; j <= n; j++) {
+      const o = j * 3;
+      const w = sway * (j / n) * Math.sin(time * 1.3 - j * 0.5 + phase);
+      for (let c = 0; c < 3; c++) {
+        const target = W[c] + W[3 + c] * seg * j + W[6 + c] * w;
+        chain[o + c] += (target - chain[o + c]) * k;
+      }
+      const dx = chain[o] - chain[o - 3], dy = chain[o + 1] - chain[o - 2], dz = chain[o + 2] - chain[o - 1];
+      const f = seg / Math.max(Math.hypot(dx, dy, dz), 1e-6);
+      chain[o] = chain[o - 3] + dx * f;
+      chain[o + 1] = Math.max(chain[o - 2] + dy * f, 0.02);   // 底の下へは潜らない
+      chain[o + 2] = chain[o - 1] + dz * f;
+    }
+  }
+
+  // 泡が傘に触れていたら、泡を傘の外へ押し出し、クラゲを押し上げて傾ける。
+  // 傘は、楕円体を縁の高さで切った「伏せたお椀」とみなす（縁より下の空洞や触手には当たらない）
+  pushBubble(b, dt) {
+    const e = this.e, p = this.pos, s = this.size;
+    const dx = b.x - p.x, dy = b.y - p.y, dz = b.z - p.z;
+    const h = s * this.bellHeight();
+    const reach = Math.max(s, h) + b.r;
+    if (dx * dx + dy * dy + dz * dz > reach * reach) return;
+    // ローカル座標（y が傘の頂点の向き）。縁の高さより下なら当たらない
+    const bottom = h * Math.cos(BELL_ANGLE) - b.r;
+    let lx = e[0] * dx + e[1] * dy + e[2] * dz;
+    let ly = e[4] * dx + e[5] * dy + e[6] * dz;
+    let lz = e[8] * dx + e[9] * dy + e[10] * dz;
+    if (ly <= bottom) return;
+    // 楕円体の半径（横は、傘がいちばん太い所の縮み具合に合わせる）で割って、中か外かを見る
+    const A = s * (1 - PULSE_SQUEEZE * this.squeeze * EQUATOR_U * EQUATOR_U) + b.r, B = h + b.r;
+    const q = (lx * lx + lz * lz) / (A * A) + ly * ly / (B * B);
+    if (q >= 1) return;
+    // 楕円体の表面と、縁の高さの面（傘の下面）の近い方へ押し出す。下から入った泡は傘の下面に溜まる
+    const f = 1 / Math.sqrt(Math.max(q, 1e-6));
+    const toSurface = (f - 1) * Math.hypot(lx, ly, lz);
+    if (ly - bottom < toSurface) {
+      ly = bottom;
+    } else {
+      lx *= f; ly *= f; lz *= f;
+    }
+    const wx = e[0] * lx + e[4] * ly + e[8] * lz;
+    const wy = e[1] * lx + e[5] * ly + e[9] * lz;
+    const wz = e[2] * lx + e[6] * ly + e[10] * lz;
+    b.x = p.x + wx; b.y = p.y + wy; b.z = p.z + wz;
+    // 泡が当たった所を押し上げる。回転は (当たった位置) × (上向き)。
+    // 体積に比例させると小さな泡では傾かないので、半径の 2 乗に比例させる
+    const lift = BUBBLE_LIFT * (b.r / s) ** 2 * dt;
+    this.spin.x += -wz / s * lift;
+    this.spin.z += wx / s * lift;
+    this.vel.y += lift * s * BUBBLE_CARRY;
+  }
+
+  draw() {
+    const dim = depthDim(this.pos.z);
+    const cam = camera.position;
+    const g = this.grid, n = this.gridNormal, br = this.gridBright;
+    // 傘の線の明るさ: 視線と面が平行な所（輪郭）ほど明るい
+    for (let i = 0, o = 0; i < br.length; i++, o += 3) {
+      const vx = g[o] - cam.x, vy = g[o + 1] - cam.y, vz = g[o + 2] - cam.z;
+      const dot = (vx * n[o] + vy * n[o + 1] + vz * n[o + 2])
+        / Math.max(Math.hypot(vx, vy, vz) * Math.hypot(n[o], n[o + 1], n[o + 2]), 1e-6);
+      const f = 1 - Math.abs(dot);
+      br[i] = (BELL_GLOW[0] + (BELL_GLOW[1] - BELL_GLOW[0]) * f * f) * dim;
+    }
+    const M = RIM_SEGMENTS;
+    lines.setColor(jellyColor);
+    for (let m = 0; m < M; m += M / BELL_MERIDIANS) lines.strip(g, br, m, M, BELL_ROWS + 1, false);
+    lines.setColor(jellyColor, RIM_GLOW);
+    lines.strip(g, br, BELL_ROWS * M, 1, M, true);
+    lines.setColor(jellyColor, MID_RING_GLOW);
+    lines.strip(g, br, (BELL_ROWS >> 1) * M, 1, M, true);
+
+    // 生殖腺: 傘の上の輪
+    lines.setColor(gonadColor, GONAD_GLOW * dim);
+    const gr = GONAD_RING;
+    for (let i = 0; i < GONAD_COUNT; i++) {
+      const center = (i + 0.5) / GONAD_COUNT * TAU;
+      for (let j = 0; j <= GONAD_SEGMENTS; j++) {
+        const a = j / GONAD_SEGMENTS * TAU;
+        this.bellLocal(gr.u + gr.du * Math.cos(a), center + gr.dphi * Math.sin(a));
+        // 傘の線と重ならないよう、少し内側に描く
+        this.toWorld(P.x * 0.97, P.y * 0.97, P.z * 0.97, W, 0);
+        lines.polyTo(j, W[0], W[1], W[2]);
+      }
+    }
+
+    // 触手（先ほど暗い）
+    lines.setColor(jellyColor, TENTACLE_GLOW * dim);
+    const tn = TENTACLE_SEGMENTS;
+    for (const t of this.tentacles) {
+      for (let j = 0; j <= tn; j++) lines.polyTo(j, t[j * 3], t[j * 3 + 1], t[j * 3 + 2], 1 - TENTACLE_FADE * j / tn);
+    }
+
+    // 口腕: 2 本の線を互い違いにうねらせて、ひだのあるリボンに見せる
+    lines.setColor(jellyColor, ARM_GLOW * dim);
+    const width = ARM_WIDTH * this.size, side = this.armSide;
+    for (let i = 0; i < ARM_COUNT; i++) {
+      const a = this.arms[i];
+      for (const sign of [1, -1]) {
+        for (let j = 0; j <= ARM_SEGMENTS; j++) {
+          const o = j * 3, f = j / ARM_SEGMENTS;
+          const w = sign * width * (1 - 0.5 * f) * Math.sin(j * 1.1 + time * 1.7 + i);
+          const x = a[o] + side[i * 3] * w, y = a[o + 1] + side[i * 3 + 1] * w, z = a[o + 2] + side[i * 3 + 2] * w;
+          lines.polyTo(j, x, y, z, 1 - ARM_FADE * f);
+        }
+      }
+    }
+  }
+}
+
+const jellies = [];
+
+// クラゲを n 匹、新しく置き直す（いまの形で）
+function spawnJellies(n) {
+  jellies.length = 0;
+  for (let i = 0; i < n; i++) jellies.push(new Jelly());
+}
+
+// 近づきすぎたクラゲどうしを離す
+function separateJellies(dt) {
+  for (let i = 0; i < jellies.length; i++) {
+    for (let j = i + 1; j < jellies.length; j++) {
+      const a = jellies[i], b = jellies[j];
+      tmpVec.subVectors(a.pos, b.pos);
+      const d = tmpVec.length(), min = (a.size + b.size) * JELLY_SPACING;
+      if (d >= min || d < 1e-6) continue;
+      const push = (min - d) / min * SEPARATE * dt / d;
+      a.vel.addScaledVector(tmpVec, push);
+      b.vel.addScaledVector(tmpVec, -push);
+    }
+  }
+}
+
+// ---- 泡 ----
+const bubbles = [];
+const bursts = [];        // 出している途中の大きな泡 { stone, left: 残りの数, acc: 端数 }
+
+function spawnBubble(stone, size) {
+  if (bubbles.length >= MAX_BUBBLES) return;
+  const a = rand(0, TAU), d = rand(0, STONE_SIZE * 0.6);
+  bubbles.push({
+    x: stone.x + Math.cos(a) * d, y: STONE_SIZE * 0.5, z: stone.z + Math.sin(a) * d,
+    r: randIn(size), seed: rand(0, TAU),
+  });
+}
+
+// 大きな泡をまとめて出す。いちばん近くにクラゲがいる石から出す
+function startBurst() {
+  let best = stones[0], bestDist = Infinity;
+  for (const st of stones) {
+    for (const j of jellies) {
+      const d = Math.abs(j.pos.x - st.x);
+      if (d < bestDist) { bestDist = d; best = st; }
+    }
+  }
+  bursts.push({ stone: best, left: BURST_COUNT, acc: 0 });
+}
+
+function updateBubbles(dt) {
+  // 石からふつうの泡を出す
+  for (const st of stones) {
+    st.wait -= dt;
+    while (st.wait <= 0) {
+      spawnBubble(st, BUBBLE_SIZE);
+      st.wait += -Math.log(1 - Math.random()) / BUBBLE_RATE;
+    }
+  }
+  // 大きな泡
+  burstWait -= dt;
+  if (burstWait <= 0) {
+    startBurst();
+    burstWait = randomInterval(BURST_INTERVAL);
+  }
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const b = bursts[i];
+    b.acc += dt * BURST_COUNT / BURST_TIME;
+    while (b.acc >= 1 && b.left > 0) {
+      spawnBubble(b.stone, BURST_SIZE);
+      b.acc--;
+      b.left--;
+    }
+    if (b.left <= 0) bursts.splice(i, 1);
+  }
+
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const b = bubbles[i];
+    const f = currentAt(b.x, b.y);
+    b.x += (f.x * BUBBLE_DRIFT + Math.sin(time * 4 + b.seed) * BUBBLE_WOBBLE) * dt;
+    b.y += (f.y * BUBBLE_DRIFT + BUBBLE_RISE[0] + BUBBLE_RISE[1] * b.r) * dt;
+    b.z += Math.cos(time * 3.3 + b.seed * 2) * BUBBLE_WOBBLE * dt;
+    for (const j of jellies) j.pushBubble(b, dt);
+    // ガラスや壁の外へ出ないように
+    b.x = clamp(b.x, -halfWidth + b.r, halfWidth - b.r);
+    b.z = clamp(b.z, -TANK_DEPTH / 2 + b.r, TANK_DEPTH / 2 - b.r);
+    // 水面ではじけて消える
+    if (b.y > WATER_LEVEL - b.r) {
+      bubbles[i] = bubbles[bubbles.length - 1];
+      bubbles.pop();
+    }
+  }
+}
+
+// 泡の形（カメラに向いた平面上の [角度 rad, 半径の倍率] の折れ線）: 輪郭の円と、左上の小さな照り返し
+const BUBBLE_OUTLINE = Array.from({ length: BUBBLE_SEGMENTS + 1 }, (_, i) => [i / BUBBLE_SEGMENTS * TAU, 1]);
+const BUBBLE_GLINT = [[1.9, 0.6], [2.3, 0.6], [2.7, 0.6]];
+
+function drawBubbles() {
+  const e = camera.matrixWorld.elements;
+  const rx = e[0], ry = e[1], rz = e[2], ux = e[4], uy = e[5], uz = e[6];   // カメラの右・上の向き
+  lines.setColor(BUBBLE_COLOR, BUBBLE_GLOW);
+  for (const b of bubbles) {
+    const dim = depthDim(b.z);
+    for (const outline of [BUBBLE_OUTLINE, BUBBLE_GLINT]) {
+      outline.forEach(([a, k], i) => {
+        const c = Math.cos(a) * b.r * k, s = Math.sin(a) * b.r * k;
+        lines.polyTo(i, b.x + rx * c + ux * s, b.y + ry * c + uy * s, b.z + rz * c + uz * s, dim);
+      });
+    }
+  }
+}
+
+// ---- 色 ----
+const tmpColor = new THREE.Color();
+
+// 色相 hue と { s, l, glow } の色を、色の配列 out に入れる
+function hueColor(hue, { s, l, glow }, out) {
+  tmpColor.setHSL(hue, s, l).multiplyScalar(glow).toArray(out);
+}
+
+// クラゲ・生殖腺・奥の壁の明かりを、いまの色相にする（位相は JS で 0〜1 に収める）
+function updateColors() {
+  const hue = (RAINBOW_START + hueShift + time / RAINBOW_PERIOD) % 1;
+  hueColor(hue, JELLY_COLOR, jellyColor);
+  hueColor(hue, GONAD_COLOR, gonadColor);
+  const b = BACKDROP_COLOR;
+  backdrop.material.color.setHSL(hue, b.s, b.l).multiplyScalar(b.glow);
+}
+
+// ---- シーンの切り替え ----
+// 範囲 [lo, hi] から、v と SHAPE_MIN_CHANGE 以上離れた値をランダムに選ぶ
+function randomAway([lo, hi], v) {
+  const gap = (hi - lo) * SHAPE_MIN_CHANGE;
+  let x;
+  do x = rand(lo, hi); while (Math.abs(x - v) < gap);
+  return x;
+}
+
+// クラゲの形（大きさ・傘の縦横比・足の長さ）・数・位置、色相、泡の筋の位置を選び直す（暗転している間に呼ぶ）
+function nextScene() {
+  for (const key in SHAPE_RANGE) shape[key] = randomAway(SHAPE_RANGE[key], shape[key]);
+  hueShift = (hueShift + rand(HUE_MIN_CHANGE, 1 - HUE_MIN_CHANGE)) % 1;
+  const area = (BASE_SHAPE.size / shape.size) ** 2;
+  spawnJellies(clamp(Math.round(randIn(JELLY_COUNT_RANGE) * area), 1, MAX_JELLIES));
+  replaceStreams();
+  prewarm();
+}
+
+// ---- 泡の筋の数 ----
+// 石をいちばん広く空いている所に 1 つ足す。いまある泡の筋は動かさない
+function addStone() {
+  const xs = [-1, ...stones.map((st) => st.fx).sort((a, b) => a - b), 1];
+  let gap = 0, fx = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const g = xs[i] - xs[i - 1];
+    if (g > gap) { gap = g; fx = (xs[i] + xs[i - 1]) / 2 + rand(-0.3, 0.3) * g; }
+  }
+  stones.push({ fx, x: stoneX(fx), z: rand(-0.4, 0.4) * TANK_DEPTH, wait: rand(0, 1 / BUBBLE_RATE) });
+}
+
+function setStreams(n) {
+  n = clamp(n, MIN_STREAMS, MAX_STREAMS);
+  while (stones.length < n) addStone();
+  while (stones.length > n) stones.splice(Math.floor(Math.random() * stones.length), 1);
+}
+
+// 泡の筋を、数を変えずに置き直す。いま上っている泡は消す
+function replaceStreams() {
+  const n = stones.length;
+  stones.length = 0;
+  bubbles.length = 0;
+  bursts.length = 0;
+  setStreams(n);
+}
+
+// ---- カメラ ----
+// 正面を向いたまま、ゆっくり左右上下に漂う
+function updateCamera() {
+  // 位相は JS で 0〜2π に収める
+  const x = CAM_DRIFT[0] * Math.sin((time / CAM_DRIFT_PERIOD[0] % 1) * TAU);
+  const y = VIEW_CENTER_Y + CAM_DRIFT[1] * Math.sin((time / CAM_DRIFT_PERIOD[1] % 1) * TAU);
+  camera.position.set(x, y, CAM_DIST);
+  camera.updateMatrixWorld();
+}
+
+// ---- メインループ ----
+function step(dt) {
+  time += dt;
+  updateCamera();
+  for (const j of jellies) j.update(dt);
+  separateJellies(dt);
+  updateBubbles(dt);
+  updateColors();
+}
+
+// 起動・シーンの切り替えのとき、少し先まで進めておく
+function prewarm() {
+  for (let t = 0; t < PREWARM_TIME; t += 1 / 30) step(1 / 30);
+}
+
+function draw() {
+  lines.clear();
+  for (const j of jellies) j.draw();
+  drawBubbles();
+  lines.flush();
+}
+
+let last = performance.now();
+let nextDraw = 0;          // 次に描いてよい時刻 (ms)
+function tick(now) {
+  // MAX_FPS より速くは描かない。描いてよい時刻は一定の間隔で進め、画面の更新の間隔の揺れで 1 回飛ばさないよう少し余裕を持たせる
+  if (now < nextDraw - 2) return;
+  nextDraw = Math.max(nextDraw + 1000 / MAX_FPS, now);
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  step(dt);
+  draw();
+  composer.render();
+}
+
+// ---- 入力・UI ----
+const fadeEl = document.getElementById('fade');
+let fading = false;
+
+// 暗転している間に change() を実行して、明るく戻す
+function fadeAndRun(change) {
+  if (fading) return;
+  fading = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    change();
+    fadeEl.style.opacity = 0;
+    fading = false;
+  }, FADE_MS);
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.();
+}
+
+// 操作が無ければカーソルとHUDを隠す
+let idleTimer;
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
+}
+
+const KEY_ACTIONS = {
+  Space: () => fadeAndRun(nextScene),
+  KeyF: toggleFullscreen,
+  ArrowUp: () => setStreams(stones.length + 1),
+  ArrowDown: () => setStreams(stones.length - 1),
+};
+
+addEventListener('keydown', (e) => {
+  wake();
+  // Cmd+F や Ctrl+R などのブラウザのショートカットは横取りしない
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const action = KEY_ACTIONS[e.code];
+  if (!action) return;
+  e.preventDefault();
+  action();
+});
+addEventListener('dblclick', toggleFullscreen);
+addEventListener('mousemove', wake);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  layout();
+});
+
+// ---- 開始 ----
+spawnJellies(JELLY_COUNT);
+setStreams(BASE_STREAMS);
+prewarm();
+wake();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

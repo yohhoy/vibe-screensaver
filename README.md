@@ -82,6 +82,18 @@ Webブラウザで動く、スクリーンセーバ風のアニメーション�
 | F / ダブルクリック | 全画面 |
 | ↑ / ↓ | 火の強さの変更 |
 
+## [クラゲ水槽](https://yohhoy.github.io/vibe-screensaver/jellyfish.html)
+
+[<img src="docs/images/jellyfish.jpg" width="480" alt="クラゲ水槽">](https://yohhoy.github.io/vibe-screensaver/jellyfish.html)
+
+薄暗い水族館の大きな水槽。光る線で描いたクラゲが水流に乗ってゆっくり回り、立ちのぼる泡に触れると傾いたりひっくり返ったりします。クラゲの色は虹色にゆっくり移り変わります。
+
+| キー | 動作 |
+|---|---|
+| Space | リセット |
+| F / ダブルクリック | 全画面 |
+| ↑ / ↓ | 立ちのぼる泡の筋の数の変更 |
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/](docs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

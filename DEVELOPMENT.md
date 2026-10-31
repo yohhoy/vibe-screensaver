@@ -32,7 +32,7 @@
 | シェーダー | 独自の GLSL（tube / drone / ripple / campfire のみ） |
 | three.js 初期化 | レンダラー、シーン、カメラ、ポストエフェクト |
 | 状態 | 速度など、実行中に変わる値 |
-| （作品ごとの本体） | パイプ、トンネルとハッチ、街・輪・ドローン、雨と波紋、炎と火の粉など |
+| （作品ごとの本体） | パイプ、トンネルとハッチ、街・輪・ドローン、雨と波紋、炎と火の粉、クラゲと泡など |
 | メインループ | `tick(now)`。経過時間は最大 0.1 秒に抑える |
 | 入力・UI | 暗転（`fadeAndRun`）、全画面、カーソルを隠す処理、キー操作（`KEY_ACTIONS`）、リサイズ |
 | 開始 | 初期化して `renderer.setAnimationLoop(tick)` |
@@ -54,5 +54,6 @@
 | drone.html — ナイトドローン | [docs/drone.md](docs/drone.md)（コースの定義を含む） |
 | ripple.html — 雨の水面 | [docs/ripple.md](docs/ripple.md)（景色の定義を含む） |
 | campfire.html — 焚き火 | [docs/campfire.md](docs/campfire.md) |
+| jellyfish.html — クラゲ水槽 | [docs/jellyfish.md](docs/jellyfish.md) |
 
 SNS 投稿用などの動画の書き出し手順は [docs/video.md](docs/video.md) にある。
