@@ -1,0 +1,1277 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rain Ripples</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  body.idle { cursor: none; }
+  #fade {
+    position: fixed; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; transition: opacity 0.8s ease;
+  }
+  #hud {
+    position: fixed; left: 16px; bottom: 16px; color: #ccc;
+    font: 12px/1.6 ui-monospace, Menlo, monospace;
+    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+    transition: opacity 0.6s ease;
+  }
+  body.idle #hud { opacity: 0; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="fade"></div>
+<div id="hud">
+  景色: <span id="scene-name"></span><br>
+  Space: 景色を変更 / F・ダブルクリック: 全画面 / ↑↓: 雨の強さ
+</div>
+<script type="module">
+import * as THREE from 'three';
+
+// ---- 設定 ----
+// カメラ
+const CAM_HEIGHT = 2.0;           // 水面からの高さ
+const CAM_PITCH = 0.22;           // 見下ろす角度 (rad)
+const CAM_FOV = 50;
+const SWAY_ANGLE = 0.12;          // 左右に見回す角度 (rad)
+const SWAY_PERIOD = 90;           // 見回す周期 (秒)
+
+// 雨の強さ (粒/秒)
+const BASE_RAIN = 8;
+const MIN_RAIN = 1;
+const MAX_RAIN = 24;
+const RAIN_STEP = 1.25;           // ↑↓ 1回あたりの倍率
+
+// 波紋
+const MAX_RIPPLES = 128;          // 同時に描く波紋の上限（超えたら古いものから消す）
+const RIPPLE_SPEED = 0.45;        // 波紋が広がる速さ (単位/秒)
+const RIPPLE_WAVELENGTH = 0.22;   // 輪の間隔
+const RIPPLE_WIDTH = 0.16;        // 輪の束の幅（生まれたとき）
+const RIPPLE_WIDTH_GROW = 0.08;   // 輪の束が1秒あたりに広がる幅
+const RIPPLE_LIFE = 6;            // 消えるまでの秒数
+const RIPPLE_DECAY = 2.2;         // 振幅が 1/e になるまでの秒数
+const RIPPLE_STRENGTH = 0.75;     // 波紋の傾きの強さ（大きいほど映り込みが大きく揺れる）
+const RIPPLE_FALLOFF = 1.2;       // 広がるほど弱くなる度合い
+const SPAWN_MIN_DIST = 1.5;       // 雨粒が落ちる、カメラからの距離の下限 / 上限
+const SPAWN_MAX_DIST = 16;
+const RIPPLE_TEXEL = 0.02;        // 波紋を描くテクスチャの 1 画素が受け持つ水面の広さ（小さいほど細かく、重い）
+
+// 雨筋
+const FALL_SPEED = 9;             // 雨粒の落ちる速さ (単位/秒)
+const FALL_HEIGHT = 5;            // 雨粒が現れる高さ
+const STREAK_LENGTH = 0.5;        // 雨筋の長さ
+const WIND = new THREE.Vector2(0.12, 0.04);  // 1 単位落ちるあいだに横へ流れる量 (x, z)
+const MAX_DROPS = 64;             // 同時に落ちている雨粒の上限
+
+// 水面
+const BASE_WAVE_STRENGTH = 0.6;   // うねりの強さ（0 で鏡面）
+// うねりを作る波 [向き x, 向き z, 波長, 傾き]
+const BASE_WAVES = [
+  [1.0, 0.3, 6.0, 0.012],
+  [-0.4, 1.0, 3.3, 0.010],
+  [0.7, -0.8, 1.7, 0.008],
+  [-0.9, -0.2, 0.9, 0.006],
+];
+const WATER_SIZE = 8000;          // 水面の大きさ
+const SKY_RADIUS = 3500;          // 空の球の半径
+const REFLECTION_STRETCH = 0.1;   // 街灯・遊覧船・UFO の映り込みの帯の縮め具合。小さいほど手前まで長く伸びる
+
+// 流れ星（event: 'meteor' の景色だけ）
+const METEOR_INTERVAL = [60, 30, 180];  // 間隔 [平均, 下限, 上限] (秒)
+const METEOR_DURATION = 0.8;      // 流れきるまでの秒数
+const METEOR_LENGTH = 0.16;       // 流れる距離（空の角度 rad）
+const METEOR_TAIL = 0.4;          // 尾の長さ（流れる距離に対する割合）
+const METEOR_WIDTH = 0.0012;      // 光の筋の太さ (rad)
+
+// UFO（event: 'ufo' の景色だけ）。画面の外から上下に揺れながら現れ、遠くの空で止まってから飛び去る
+const UFO_INTERVAL = [60, 30, 180];   // 間隔 [平均, 下限, 上限] (秒)
+const UFO_SIZE = 0.056;           // つばの幅（空の角度 rad）
+const UFO_HEIGHT = [0.14, 0.18];  // 止まる高さの範囲（空の角度 rad）
+const UFO_ENTER_TIME = 6;         // 画面の外から止まる所まで来る秒数
+const UFO_HOVER_TIME = [2, 3];    // 止まっている秒数の範囲
+const UFO_LEAVE_TIME = 0.6;       // 飛び去って消えるまでの秒数
+const UFO_DASH = 0.6;             // 飛び去る距離（空の角度 rad）
+const UFO_BOB = 0.003;            // 上下に揺れる幅（空の角度 rad）
+const UFO_BOB_PERIOD = 1.8;       // 上下に揺れる周期 (秒)
+const UFO_TILT = 0.18;            // 動いているときに進む向きへ傾く角度 (rad)
+const UFO_SPIN = 1.2;             // 底のライトが回る速さ (rad/秒)。飛び去るときは 4 倍
+const UFO_LAMPS = 6;              // 底を一周するライトの数（正面に見えるのは半分ほど）
+// 夜景のほかの要素と同じく、ドームとつばは影にして形だけで見分け、底だけを光らせる
+const UFO_BODY = [0.022, 0.026, 0.038];    // ドームとつばの影の色
+const UFO_LIGHT = [0.7, 0.32, 0.52];       // 底の光の色（ピンク）。ライトはこれより明るく、底の面は暗く光る
+const UFO_UNDERLIGHT = 0.35;      // つばの下の縁が、底の光に照らされる強さ
+const UFO_HAZE = 0.3;             // 空の色に溶かす割合（遠くに霞んで見えるように）
+
+// 遊覧船（boat: true の景色だけ）。遠くを 1 隻だけ横切る
+const BOAT_LENGTH = 0.07;         // 船の長さ（空の角度 rad）
+const BOAT_SPEED = 0.005;         // 横切る速さ (rad/秒)。画面を横切るのに数分かかる
+const BOAT_RANGE = 0.9;           // この方位 (rad) まで進んだら、反対側から出直す
+const BOAT_HULL = [0.012, 0.014, 0.024];   // 船体の影の色
+const BOAT_WINDOW = [1.0, 0.82, 0.55];     // 客室の窓の色
+const BOAT_GARLAND = [[1.0, 0.85, 0.4], [1.0, 0.35, 0.3], [0.45, 1.0, 0.55], [0.5, 0.7, 1.0]];  // 電飾の色（順に繰り返す）
+
+// 跳ねる魚（event: 'fish' の景色だけ）
+const FISH_INTERVAL = [60, 30, 180];  // 間隔 [平均, 下限, 上限] (秒)
+const FISH_DIST = [4, 12];        // 跳ねる場所の、カメラからの距離の範囲
+const FISH_LENGTH = 0.35;         // 魚の長さ
+const FISH_JUMP_HEIGHT = [0.3, 0.55];  // 跳ねる高さの範囲
+const FISH_JUMP_LENGTH = [0.8, 1.3];   // 跳ぶ距離の範囲
+const FISH_RIPPLE = 2.2;          // 飛び出し・着水の波紋の強さ（雨粒の波紋に対する倍率）
+const FISH_COLOR = [0.08, 0.1, 0.1];
+const SPLASH_DROPS = 60;          // 1 回のしぶきの粒の数（着水時。飛び出し時はその 7 割）
+const SPLASH_SPEED = 2.6;         // しぶきの飛び散る速さ (単位/秒)
+const SPLASH_SIZE = 0.065;        // しぶきの粒の大きさ
+const SPLASH_RIPPLE_CHANCE = 0.3; // 落ちた粒が小さな波紋を立てる確率
+const SPLASH_COLOR = [0.85, 0.88, 0.9];
+
+// 街並み（city: true の景色だけ）
+const CITY_SCALE = 2.5;              // 手前のビル群の大きさ（1 で実際の遠景と同じ見かけの大きさ）
+const CITY_SILHOUETTE = [0.014, 0.018, 0.03];  // ビルの影の色
+const CITY_GLOW = [0.22, 0.17, 0.06];           // 地平線近くの空ににじむ街明かりの色（黄色）
+const CITY_GLOW_HEIGHT = 0.05;                 // 街明かりのにじみが 1/e になる高さ（空の角度 rad）
+const CITY_WINDOW = [0.62, 0.8, 1.0];          // 窓の色（寒色）
+const CITY_WINDOW_ALT = [0.88, 0.95, 1.0];     // 窓ごとに混ぜる、白に近い色
+const CITY_BEACON_MIN_HEIGHT = 0.032; // 航空障害灯を付けるビルの高さの下限（CITY_SCALE をかける前の空の角度 rad）。最も高いビルは約 0.048
+const CITY_BEACON_PERIOD = 2.0;      // 航空障害灯の明滅の周期（秒）
+const CITY_BEACON_BRIGHTNESS = 0.6;  // 航空障害灯の明るさ
+const CITY_BEACON_COLOR = [1.0, 0.12, 0.06];
+const CITY_LAMPS = 25;               // 街灯を置く密度（1 rad あたりの候補数）
+const CITY_LAMP_COLOR = [1.0, 0.86, 0.48];     // 街灯の色（黄色。2 割ほどは白い街灯）
+
+// 遠くの山と森（land: true の景色だけ）。霧に霞ませて薄く描く
+const LAND_COLOR = [0.12, 0.22, 0.15];  // 山と森の色（霧に溶かす前）
+const MOUNTAIN_HEIGHT = [0.16, 0.055];  // 奥の山並み / 手前の山並みの高さの上限（空の角度 rad）
+const MOUNTAIN_OPACITY = [0.12, 0.2];  // 奥の山並み / 手前の山並みの濃さ
+const FOREST_HEIGHT = 0.026;      // 森の高さの上限（空の角度 rad）
+const FOREST_OPACITY = 0.32;      // 森の濃さ
+const LAND_MIST = 0.008;          // 水面近くを霧でかすませる高さ（空の角度 rad）
+
+// 描画
+const MAX_PIXEL_RATIO = 1.5;      // 解像度の倍率の上限（高解像度画面での負荷を抑える）
+
+// UI
+const FADE_MS = 850;              // #fade の transition より少し長く
+const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+
+// 景色（色はすべて画面に出る値 0..1）
+//   zenith / horizon: 天頂と地平線の空の色
+//   light: 月・太陽 { dir: [方位 rad（正面が 0、右が正）, 高度 rad], color, size: 半径 rad, glow }。無ければ null
+//   stars / city / land / boat: 星空 / 地平線の街並み / 遠くの山と森 / 遊覧船を出すか（省略すると出さない）
+//   event: ときどき起こるランダムな出来事（1 つの景色に 1 種類）。'meteor': 流れ星、'ufo': UFO、'fish': 跳ねる魚、省略すると無し
+//   water: 水そのものの色、f0: 真上から見たときの反射率、fog: 遠くを霞ませる濃さ
+//   rain: 雨筋の色と不透明度 [r, g, b, a]
+const SCENES = [
+  {
+    name: '夜の湖面',
+    zenith: [0.004, 0.008, 0.024], horizon: [0.07, 0.09, 0.15],
+    light: { dir: [-0.25, 0.14], color: [1.0, 0.88, 0.6], size: 0.013, glow: 0.22 },
+    stars: true, boat: true, event: 'meteor',
+    water: [0.004, 0.008, 0.016], f0: 0.06, fog: 0.012,
+    rain: [0.7, 0.75, 0.85, 0.35],
+  },
+  {
+    name: '街あかり',
+    zenith: [0.01, 0.02, 0.05], horizon: [0.09, 0.12, 0.19],
+    light: null,
+    city: true, event: 'ufo',
+    water: [0.006, 0.009, 0.016], f0: 0.1, fog: 0.008,
+    rain: [0.8, 0.86, 0.95, 0.3],
+  },
+  {
+    name: '霧雨の朝',
+    zenith: [0.36, 0.39, 0.43], horizon: [0.62, 0.64, 0.66],
+    light: null,
+    land: true, event: 'fish',
+    water: [0.07, 0.08, 0.09], f0: 0.05, fog: 0.03,
+    rain: [0.85, 0.88, 0.92, 0.25],
+  },
+];
+
+// ---- ユーティリティ ----
+const TAU = 2 * Math.PI;
+const GRAVITY = 9.8;
+const rand = (a, b) => a + Math.random() * (b - a);
+const randSign = () => (Math.random() < 0.5 ? -1 : 1);
+const randIn = ([a, b]) => rand(a, b);
+
+// 指数分布で平均 mean 秒の間隔（min〜max に収める）
+function randomInterval([mean, min, max]) {
+  return THREE.MathUtils.clamp(-Math.log(1 - Math.random()) * mean, min, max);
+}
+
+// 方位 az（正面が 0、右が正）と高度 el (rad) の向きを target に入れる。正面は -Z、右が +X
+function skyDir(az, el, target) {
+  return target.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+}
+
+// GLSL に埋め込むリテラル
+const f = (x) => x.toFixed(4);                       // float
+const v3 = (c) => `vec3(${c.map(f).join(', ')})`;    // [r, g, b] → vec3
+const invSq = (w) => f(1 / (w * w));                 // ガウス形 exp(-d² / w²) の 1 / w²
+
+// ---- シェーダー ----
+const BUILDINGS_PER_RAD = 90;     // 大きさ 1 のビル群で、1 rad に並ぶビルの数
+
+// 空の色。水面の反射と、背景の空の両方で使う
+const SKY_GLSL = /* glsl */`
+  uniform vec3 uZenith, uHorizon, uLightDir, uLightColor;
+  uniform float uDiskCos, uGlow;
+  uniform float uBeaconPhase;     // 航空障害灯の明滅の位相（0..2π。JS で求める）
+  uniform bool uStars, uCity, uLand, uBoat;   // 景色の要素を出すか
+  uniform vec3 uMeteorHead, uMeteorTail;
+  uniform float uMeteor;          // 流れ星の明るさ（0 で無し）
+  uniform vec2 uBoatPos;          // 遊覧船の (方位, 進む向き ±1)
+  uniform vec4 uUfo;              // UFO の (方位, 高さ sin(高度), 傾き rad, 不透明度)。不透明度 0 で無し
+  uniform float uUfoSize;         // UFO のつばの幅（空の角度 rad）
+  uniform float uUfoSpin;         // UFO の底のライトが回る位相（0..2π）
+
+  float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+  float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+  // 向き d の方位（正面 -Z が 0、右が正）
+  float azimuthOf(vec3 d) { return atan(d.x, -d.z); }
+
+  // グラデーションと月・太陽のまわりの光（遠くの霞の色にも使う）
+  vec3 skyBase(vec3 d) {
+    float y = max(d.y, 0.0);
+    vec3 c = mix(uHorizon, uZenith, pow(y, 0.4));
+    float m = max(dot(d, uLightDir), 0.0);
+    c += uLightColor * uGlow * (pow(m, 12.0) + 0.6 * pow(m, 300.0));
+    if (uCity) c += ${v3(CITY_GLOW)} * exp(-y / ${f(CITY_GLOW_HEIGHT)});   // 街明かりのにじみ
+    return c;
+  }
+
+  // 岸辺の街灯。core / halo: 芯とにじみの明るさ
+  vec3 cityLamps(vec3 d, float core, float halo) {
+    float lc = azimuthOf(d) * ${f(CITY_LAMPS)};
+    float lr = hash1(floor(lc) + 3.1);
+    if (lr < 0.45) return vec3(0.0);
+    vec2 q = vec2((fract(lc) - 0.5) / ${f(CITY_LAMPS)}, d.y - 0.006 - 0.004 * lr);
+    float q2 = dot(q, q);
+    vec3 lamp = mix(${v3(CITY_LAMP_COLOR)}, vec3(0.85, 0.9, 1.0), step(0.8, lr));
+    return lamp * (1.2 * core * exp(-q2 * ${invSq(0.0025)}) + 0.12 * halo * exp(-q2 * ${invSq(0.0173)}));
+  }
+
+  // ビルの列を 1 列重ねる。scale: 大きさ、haze: 空の色に溶かす割合、seed: 列ごとの乱数、beacons: 航空障害灯を付けるか
+  vec3 cityLayer(vec3 c, float az, float y, float scale, float haze, float seed, bool beacons) {
+    float perRad = ${f(BUILDINGS_PER_RAD)} / scale;   // 1 rad あたりのビルの数
+    float col = az * perRad;
+    float id = floor(col) + seed * 31.0;
+    float x = fract(col);
+    float cluster = 0.35 + 0.65 * hash1(floor(col / 7.0) + seed + 0.5);
+    float h = (0.003 + 0.045 * cluster * pow(hash1(id), 1.6)) * scale;
+    h *= step(0.12, hash1(id + 11.0));               // ところどころ隙間を空ける
+    // 高いビルの一部は屋上を段にする
+    float stepped = step(0.55, hash1(id + 23.0)) * step(0.03 * scale, h);
+    float top = mix(h, h * 0.8, stepped * (1.0 - step(0.2, x) * step(x, 0.8)));
+
+    // 背の高いビルの屋上の航空障害灯。赤いランプを明滅させる（段のある屋上は中央、平らな屋上は両端）
+    vec3 beacon = vec3(0.0);
+    if (beacons && h > ${f(CITY_BEACON_MIN_HEIGHT)} * scale) {
+      float lx = stepped > 0.5 ? 0.5 : (x < 0.5 ? 0.2 : 0.8);
+      vec2 q = vec2((x - lx) / perRad, y - h - 0.001);
+      float q2 = dot(q, q);
+      float blink = pow(0.5 + 0.5 * sin(uBeaconPhase + hash1(id + 41.0) * 6.2832), 2.0);
+      beacon = ${v3(CITY_BEACON_COLOR)} * ${f(CITY_BEACON_BRIGHTNESS)} * blink
+             * (exp(-q2 * ${invSq(0.0012)}) + 0.25 * exp(-q2 * ${invSq(0.004)}));
+    }
+
+    if (y >= top) return c + beacon;
+    // 窓: 1 棟に横 4 列。縦は 1 rad あたり 450 / scale 階
+    vec3 b = mix(${v3(CITY_SILHOUETTE)}, c, haze);
+    vec2 g = vec2(col * 4.0, y * 450.0 / scale);
+    vec2 cell = floor(g);
+    vec2 fr = fract(g);
+    float win = step(0.25, fr.x) * step(fr.x, 0.75) * step(0.3, fr.y) * step(fr.y, 0.8);
+    float lit = step(0.75, hash2(cell + id * 7.3)) * step(1.0, g.y);  // 1 階は暗く
+    vec3 wc = mix(${v3(CITY_WINDOW)}, ${v3(CITY_WINDOW_ALT)}, hash2(cell * 2.3));
+    b += wc * win * lit * (0.35 + 0.65 * hash2(cell * 1.7)) * (1.0 - haze);
+    return b + beacon;
+  }
+
+  // 1 次元のなめらかなノイズ（0..1）と、それを重ねたもの
+  float noise1(float x) {
+    float i = floor(x);
+    return mix(hash1(i), hash1(i + 1.0), smoothstep(0.0, 1.0, fract(x)));
+  }
+  float fbm1(float x) {
+    return 0.5 * noise1(x) + 0.25 * noise1(x * 2.1 + 3.7) + 0.125 * noise1(x * 4.3 + 9.1) + 0.125 * noise1(x * 8.7 + 1.3);
+  }
+
+  // 輪郭の高さ top より下を、濃さ opacity で LAND_COLOR に寄せる（縁は 1 画素ほどぼかす）
+  vec3 silhouette(vec3 c, float y, float top, float opacity) {
+    float inside = smoothstep(top, top - 0.0008, y);
+    float mist = mix(0.35, 1.0, smoothstep(0.0, ${f(LAND_MIST)}, y));   // 水面近くは霧でかすませる
+    return mix(c, ${v3(LAND_COLOR)}, inside * mist * opacity);
+  }
+
+  // 遠くの山並み 2 つと、手前の針葉樹の森
+  vec3 landscape(vec3 c, float az, float y) {
+    float far = ${f(MOUNTAIN_HEIGHT[0])} * (0.15 + 0.85 * pow(fbm1(az * 2.2 + 11.0), 2.2));
+    c = silhouette(c, y, far, ${f(MOUNTAIN_OPACITY[0])});
+    float near = ${f(MOUNTAIN_HEIGHT[1])} * (0.1 + 0.9 * pow(fbm1(az * 3.5 + 37.0), 2.0));
+    c = silhouette(c, y, near, ${f(MOUNTAIN_OPACITY[1])});
+    // 森: ゆるやかな地面の上に、とがった木を半分ずつずらして 2 列並べる
+    float ground = ${f(FOREST_HEIGHT * 0.45)} * fbm1(az * 6.0 + 5.0);
+    float trees = 0.0;
+    for (int k = 0; k < 2; k++) {
+      float tc = az * 140.0 + float(k) * 0.5;
+      float r = hash1(floor(tc) + float(k) * 57.0);
+      float th = ${f(FOREST_HEIGHT * 0.55)} * (0.5 + 0.5 * r) * step(0.2, r);
+      trees = max(trees, th * (1.0 - abs(fract(tc) * 2.0 - 1.0)));
+    }
+    return silhouette(c, y, ground + trees, ${f(FOREST_OPACITY)});
+  }
+
+  // 遊覧船の座標。x: 船尾 -0.5 〜 船首 +0.5、y: 水面からの高さ（どちらも船の長さが 1）
+  vec2 boatLocal(float az, float y) {
+    return vec2((az - uBoatPos.x) * uBoatPos.y, y) / ${f(BOAT_LENGTH)};
+  }
+
+  // 船体・客室 2 段・マストの影
+  bool boatShape(vec2 q) {
+    bool hull = q.y < 0.07 && q.x > -0.5 && q.x < 0.5 - max(0.0, 0.07 - q.y) * 2.0;  // 船首は斜め
+    bool cabin = q.y < 0.125 && abs(q.x + 0.05) < 0.33;
+    bool upper = q.y < 0.175 && abs(q.x + 0.1) < 0.19;
+    bool mast = q.y < 0.32 && abs(q.x - 0.08) < 0.006;
+    return hull || cabin || upper || mast;
+  }
+
+  // 船の座標 p にある灯り 1 つ。core / halo: 芯とにじみの明るさ
+  float boatGlow(vec2 q, vec2 p, float core, float halo) {
+    vec2 dq = (q - p) * ${f(BOAT_LENGTH)};
+    float d2 = dot(dq, dq);
+    return core * exp(-d2 * ${invSq(0.0006)}) + 0.15 * halo * exp(-d2 * ${invSq(0.002)});
+  }
+
+  // 客室の窓と、マストから船首・船尾へ張った電飾
+  vec3 boatLights(vec3 d, float core, float halo) {
+    vec2 q = boatLocal(azimuthOf(d), max(d.y, 0.0));
+    if (abs(q.x) > 0.7 || q.y > 0.45) return vec3(0.0);   // 船から離れた所は計算しない
+    float win = 0.0;
+    for (int i = 0; i < 12; i++) win += boatGlow(q, vec2(-0.34 + float(i) * 0.054, 0.098), core, halo);
+    for (int i = 0; i < 6; i++) win += 0.8 * boatGlow(q, vec2(-0.24 + float(i) * 0.05, 0.148), core, halo);
+    vec3 c = ${v3(BOAT_WINDOW)} * win;
+    const vec2 TOP = vec2(0.08, 0.32);
+    const vec3 GARLAND[${BOAT_GARLAND.length}] = vec3[](${BOAT_GARLAND.map(v3).join(', ')});
+    for (int i = 0; i < 8; i++) {
+      float t = (float(i) + 0.5) / 8.0;
+      c += GARLAND[i % ${BOAT_GARLAND.length}] * (boatGlow(q, mix(TOP, vec2(0.5, 0.07), t), core, halo)
+                + boatGlow(q, mix(TOP, vec2(-0.5, 0.07), t), core, halo));
+    }
+    return c + vec3(1.0) * boatGlow(q, TOP, core, halo);   // マストの先の白い灯
+  }
+
+  // 半径 r の楕円の内側なら 1（縁は aa の幅でぼかす）
+  float ellipse(vec2 q, vec2 r, float aa) {
+    float e = length(q / r);
+    float grad = length(q / (r * r)) / max(e, 1e-4);
+    return clamp((1.0 - e) / (aa * grad) + 0.5, 0.0, 1.0);
+  }
+
+  // UFO。座標 q はつばの幅が 1、つばの中心が原点
+  //   上から: ドーム、平たいつば、ピンクに光る底と、そのまわりを回るライト。
+  //   ドームとつばは影で、つばの下の縁だけ底の光に照らされる
+  vec3 ufo(vec3 c, vec3 d, float az) {
+    vec2 q = vec2((az - uUfo.x) * length(d.xz), d.y - uUfo.y) / uUfoSize;
+    if (dot(q, q) > 1.0) return c;   // 離れた所は計算しない
+    float cs = cos(uUfo.z), sn = sin(uUfo.z);
+    q = vec2(cs * q.x + sn * q.y, -sn * q.x + cs * q.y);   // 傾きの分だけ回す
+    float aa = 0.0008 / uUfoSize;    // 縁のぼかし（1 画素ほど）
+    vec3 col = vec3(0.0);
+    float cover = 0.0;
+
+    // 光る底と、そのまわりを回るライト。手前にあるものほど下に見え、大きい
+    float under = ellipse(q + vec2(0.0, 0.04), vec2(0.25, 0.11), aa);
+    col = mix(col, ${v3(UFO_LIGHT)} * 0.45, under);
+    cover = max(cover, under);
+    // 重なったときに手前が上になるよう、奥にある（正面からの角度が大きい）ものから順に描く。
+    // 正面に最も近いライトの角度 nearAngle から、左右へ 1 つずつ離れていく
+    const float LAMP_STEP = ${f(TAU / UFO_LAMPS)};
+    float nearAngle = mod(uUfoSpin + 0.5 * LAMP_STEP, LAMP_STEP) - 0.5 * LAMP_STEP;
+    for (int j = ${Math.floor(UFO_LAMPS / 2)}; j >= 0; j--) {
+      for (int side = -1; side <= 1; side += 2) {
+        if (j == 0 && side > 0) continue;
+        float th = nearAngle + float(j * side) * LAMP_STEP;
+        float front = cos(th);
+        if (front <= 0.0) continue;
+        vec2 p = vec2(0.2 * sin(th), -0.065 - 0.08 * front);
+        float lamp = ellipse(q - p, vec2(0.07 * (0.75 + 0.25 * front)), aa) * smoothstep(0.0, 0.3, front);
+        col = mix(col, ${v3(UFO_LIGHT)} * (0.8 + 0.5 * front), lamp);   // 奥ほど暗い
+        cover = max(cover, lamp);
+      }
+    }
+
+    // つば。下の縁だけ、底の光を受けて明るい
+    float brim = ellipse(q, vec2(0.5, 0.065), aa);
+    float edge = ellipse(q + vec2(0.0, 0.012), vec2(0.5, 0.065), aa);
+    vec3 rim = ${v3(UFO_BODY)} + ${v3(UFO_LIGHT)} * ${f(UFO_UNDERLIGHT)};
+    col = mix(col, mix(rim, ${v3(UFO_BODY)}, brim), edge);
+    cover = max(cover, edge);
+
+    // ドーム。下の端はつばの上面の楕円に沿わせる
+    float base = 0.045 * (1.0 - sqrt(max(0.0, 1.0 - pow(q.x / 0.277, 2.0))));
+    float dome = ellipse(q - vec2(0.0, 0.04), vec2(0.277, 0.28), aa) * smoothstep(-aa, aa, q.y - base);
+    col = mix(col, ${v3(UFO_BODY)}, dome);
+    cover = max(cover, dome);
+
+    // 底の光が、下のまわりの空ににじむ
+    vec2 g = (q + vec2(0.0, 0.1)) / vec2(0.35, 0.2);
+    c += ${v3(UFO_LIGHT)} * 0.12 * exp(-dot(g, g)) * uUfo.w;
+    c = mix(c, mix(col, c, ${f(UFO_HAZE)}), cover * uUfo.w);
+    return c;
+  }
+
+  // UFO の光る底を、1 つのぼかした光として返す（水面の映り込み用）。
+  // yScale: 縦の縮め具合。小さいほど縦に長い光の帯になる
+  vec3 ufoLights(vec3 d, float yScale) {
+    vec2 q = vec2((azimuthOf(d) - uUfo.x) * length(d.xz), (d.y - uUfo.y) * yScale) / uUfoSize;
+    vec2 g = (q + vec2(0.0, 0.1 * yScale)) / vec2(0.25, 0.08);
+    return ${v3(UFO_LIGHT)} * ${f(2 * (1 - UFO_HAZE))} * exp(-dot(g, g)) * uUfo.w;
+  }
+
+  vec3 sky(vec3 d, bool withStars) {
+    vec3 c = skyBase(d);
+    float y = max(d.y, 0.0);
+    // 月・太陽の円盤
+    float m = dot(d, uLightDir);
+    c += uLightColor * smoothstep(uDiskCos, uDiskCos + 0.00002, m);
+
+    float az = azimuthOf(d);
+    if (withStars && uStars && d.y > 0.04) {
+      vec2 g = vec2(az, asin(d.y)) * 220.0;
+      vec2 cell = floor(g);
+      float r = hash2(cell);
+      float star = step(0.993, r) * smoothstep(0.35, 0.0, length(fract(g) - 0.5));
+      c += vec3(0.8, 0.85, 1.0) * star * (0.3 + 0.7 * fract(r * 91.7)) * smoothstep(0.04, 0.2, d.y);
+    }
+    if (uMeteor > 0.0) {
+      // 尾から頭への線分までの距離で光の筋を描く。頭に近いほど明るい（水面にも映る）
+      vec3 v = uMeteorHead - uMeteorTail;
+      float u = clamp(dot(d - uMeteorTail, v) / max(dot(v, v), 1e-10), 0.0, 1.0);
+      float dist = length(d - (uMeteorTail + v * u));
+      float headDist = length(d - uMeteorHead);
+      c += vec3(0.85, 0.9, 1.0) * uMeteor * (
+          1.6 * u * u * exp(-dist * dist * ${invSq(METEOR_WIDTH)})
+        + 0.5 * exp(-headDist * headDist * ${invSq(3 * METEOR_WIDTH)}));
+    }
+    if (uUfo.w > 0.0) c = ufo(c, d, az);   // 遠くの空にいるので、街並みに隠れる
+    // ここから下は手前にあるもの（星や流れ星を隠す）
+    if (uCity) {
+      // 地平線に並ぶビルの影と、灯る窓。奥の列は霞ませて小さく、手前の列は CITY_SCALE 倍に大きくする
+      c = cityLayer(c, az, y, ${f(CITY_SCALE * 0.55)}, 0.55, 17.0, false);
+      c = cityLayer(c, az, y, ${f(CITY_SCALE)}, 0.0, 0.0, true);
+      c += cityLamps(d, 1.0, 1.0);
+    }
+    if (uLand) c = landscape(c, az, y);
+    if (uBoat) {
+      if (boatShape(boatLocal(az, y))) c = ${v3(BOAT_HULL)};
+      c += boatLights(d, 1.0, 1.0);
+    }
+    return c;
+  }
+`;
+
+const SkyShader = {
+  vertexShader: /* glsl */`
+    varying vec3 vDir;
+    void main() {
+      vDir = position;              // 球の中心をカメラに合わせるので、頂点位置がそのまま向き
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    ${SKY_GLSL}
+    varying vec3 vDir;
+    void main() {
+      gl_FragColor = vec4(sky(normalize(vDir), true), 1.0);
+    }
+  `,
+};
+
+// カメラの前方の半円を受け持つ水面の範囲。広がりきった波紋まで入るよう余白を取る
+const RIPPLE_REACH = RIPPLE_SPEED * RIPPLE_LIFE + 3 * (RIPPLE_WIDTH + RIPPLE_WIDTH_GROW * RIPPLE_LIFE);
+const FIELD_MIN = new THREE.Vector2(-(SPAWN_MAX_DIST + RIPPLE_REACH), -(SPAWN_MAX_DIST + RIPPLE_REACH));
+const FIELD_SIZE = new THREE.Vector2(2 * (SPAWN_MAX_DIST + RIPPLE_REACH), SPAWN_MAX_DIST + 2 * RIPPLE_REACH);
+const RING_SEGMENTS = 48;         // 波紋を描くリングの分割数
+
+// 波紋の範囲の座標と、波紋の形。RippleShader と WaterShader で使う
+const RIPPLE_GLSL = /* glsl */`
+  // 水面の位置 p → 波紋の範囲の座標（範囲内なら 0..1）
+  vec2 fieldUV(vec2 p) {
+    return (p - vec2(${f(FIELD_MIN.x)}, ${f(FIELD_MIN.y)})) / vec2(${f(FIELD_SIZE.x)}, ${f(FIELD_SIZE.y)});
+  }
+  // 経過秒 age の波紋の、輪の束の幅と、広がった半径
+  float rippleWidth(float age) { return ${f(RIPPLE_WIDTH)} + ${f(RIPPLE_WIDTH_GROW)} * age; }
+  float rippleFront(float age) { return ${f(RIPPLE_SPEED)} * age; }
+`;
+
+// 波紋の傾き (dh/dx, dh/dz) を、範囲を覆うテクスチャに 1 つずつリングとして加算で描く
+// 高さ h = A(t) * env(s) * sin(K s)、s = r - 広がった半径。env は輪の束のガウス形
+const RippleShader = {
+  vertexShader: /* glsl */`
+    ${RIPPLE_GLSL}
+    attribute vec4 ripple;          // (x, z, 経過秒, 強さ)
+    varying vec2 vDp;               // 波紋の中心からの位置
+    varying vec4 vRipple;
+    void main() {
+      float w = rippleWidth(ripple.z);
+      float front = rippleFront(ripple.z);
+      // position: 内側の輪は半径 1、外側の輪は半径 2。外側は多角形が円を覆うよう少し大きくする
+      float r = length(position.xy) > 1.5
+        ? (front + 3.0 * w) / ${f(Math.cos(Math.PI / RING_SEGMENTS))}
+        : max(front - 3.0 * w, 0.0);
+      vDp = normalize(position.xy) * r;
+      vRipple = ripple;
+      gl_Position = vec4(fieldUV(ripple.xy + vDp) * 2.0 - 1.0, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    ${RIPPLE_GLSL}
+    varying vec2 vDp;
+    varying vec4 vRipple;
+    const float K = ${f(TAU / RIPPLE_WAVELENGTH)};   // 波紋の波数
+    void main() {
+      float r = length(vDp);
+      float age = vRipple.z;
+      float w = rippleWidth(age);
+      float front = rippleFront(age);
+      float s = r - front;
+      if (abs(s) > 3.0 * w) discard;
+      float env = exp(-s * s / (w * w));
+      float dEnv = -2.0 * s / (w * w) * env;
+      float ph = K * s;
+      float amp = vRipple.w * exp(-age / ${f(RIPPLE_DECAY)})
+                * smoothstep(${f(RIPPLE_LIFE)}, ${f(RIPPLE_LIFE * 0.6)}, age)
+                / (1.0 + front * ${f(RIPPLE_FALLOFF)});
+      float dh = amp * (env * cos(ph) + dEnv * sin(ph) / K);
+      gl_FragColor = vec4(dh * vDp / max(r, 1e-4), 0.0, 1.0);
+    }
+  `,
+};
+
+// 水面: 波紋とうねりの傾きから法線を求め、空を映す
+const WaterShader = {
+  vertexShader: /* glsl */`
+    varying vec3 vWorld;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorld = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    ${SKY_GLSL}
+    ${RIPPLE_GLSL}
+    uniform sampler2D uRippleMap;   // 波紋の傾き（RippleShader で描いたもの）
+    uniform float uWavePhase[${BASE_WAVES.length}];   // うねりの各波の時間の位相（0..2π。JS で求める）
+    uniform vec3 uWater;
+    uniform float uF0, uFog;
+    varying vec3 vWorld;
+
+    // 波数 k の波を、1 画素あたりの水面の広さ fp で描くときの強さ。
+    // 波が画素より細かくなる遠くでは 0 にして、ちらつきを防ぐ
+    float lodFade(float fp, float k) {
+      return clamp(1.0 - (fp * k - 1.5) / 2.5, 0.0, 1.0);
+    }
+
+    // 波紋の傾き。範囲の外は 0。遠くのちらつきはミップマップでならす
+    vec2 rippleSlope(vec2 p) {
+      vec2 uv = fieldUV(p);
+      if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec2(0.0);
+      return texture2D(uRippleMap, uv).xy;
+    }
+
+    // ゆるいうねり。dir, 波長, 傾き, 時間の位相
+    vec2 wave(vec2 p, vec2 dir, float len, float slope, float phase, float fp) {
+      float k = 6.2832 / len;
+      dir = normalize(dir);
+      return dir * slope * lodFade(fp, k) * cos(k * dot(dir, p) - phase);
+    }
+
+    void main() {
+      vec2 p = vWorld.xz;
+      vec2 fw = fwidth(p);
+      float fp = max(fw.x, fw.y);   // 1 画素あたりの水面の広さ
+
+      vec2 g = rippleSlope(p);
+      vec2 base = vec2(0.0);
+      ${BASE_WAVES.map(([x, z, len, slope], i) =>
+        `base += wave(p, vec2(${f(x)}, ${f(z)}), ${f(len)}, ${f(slope)}, uWavePhase[${i}], fp);`).join('\n      ')}
+      g += base * ${f(BASE_WAVE_STRENGTH)};
+
+      vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
+      vec3 V = normalize(cameraPosition - vWorld);
+      vec3 R = reflect(-V, N);
+      R.y = abs(R.y);               // 水面より下を向いたら折り返す
+      float fres = uF0 + (1.0 - uF0) * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      vec3 col = mix(uWater, sky(R, false), fres);
+      // 街灯・遊覧船の灯りの映り込み。細かなさざ波で縦に引き伸ばされた光の帯にする
+      vec3 Rs = normalize(vec3(R.x, R.y * ${f(REFLECTION_STRETCH)}, R.z));
+      if (uCity) col += cityLamps(Rs, 0.5, 2.0) * fres;
+      if (uBoat) col += boatLights(Rs, 0.5, 2.0) * fres;
+      if (uUfo.w > 0.0) col += ufoLights(R, ${f(REFLECTION_STRETCH)}) * fres;
+      // 月・太陽のきらめき
+      col += uLightColor * uGlow * 2.0 * pow(max(dot(R, uLightDir), 0.0), 400.0);
+
+      // 遠くは地平線の霞に溶かす
+      float dist = length(vWorld - cameraPosition);
+      vec3 haze = skyBase(normalize(vec3(-V.x, 0.0, -V.z)));
+      col = mix(col, haze, 1.0 - exp(-dist * uFog));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);   // 波紋のテクスチャを 0 で消すため
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.05, SKY_RADIUS * 1.5);
+camera.position.set(0, CAM_HEIGHT, 0);
+camera.rotation.order = 'YXZ';
+
+// 空と水面で共有する uniform
+const skyUniforms = {
+  uZenith: { value: new THREE.Vector3() },
+  uHorizon: { value: new THREE.Vector3() },
+  uLightDir: { value: new THREE.Vector3(0, -1, 0) },
+  uLightColor: { value: new THREE.Vector3() },
+  uDiskCos: { value: 2 },
+  uGlow: { value: 0 },
+  uStars: { value: false },
+  uCity: { value: false },
+  uLand: { value: false },
+  uBoat: { value: false },
+  uBoatPos: { value: new THREE.Vector2() },
+  uBeaconPhase: { value: 0 },
+  uMeteorHead: { value: new THREE.Vector3() },
+  uMeteorTail: { value: new THREE.Vector3() },
+  uMeteor: { value: 0 },
+  uUfo: { value: new THREE.Vector4(0, 0, 0, 0) },   // w（不透明度）を 0 にして隠す。Vector4 の w の初期値は 1
+  uUfoSize: { value: UFO_SIZE },
+  uUfoSpin: { value: 0 },
+};
+
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(SKY_RADIUS, 48, 24),
+  new THREE.ShaderMaterial({
+    ...SkyShader,
+    uniforms: skyUniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+  }));
+// 水面の後に描き、水面に隠れる画素では空のシェーダーを動かさない
+sky.renderOrder = 1;
+scene.add(sky);
+
+// 波紋のテクスチャ。傾き (x, z) を符号付きで足し合わせるので半精度浮動小数点の 2 チャンネル
+const rippleTarget = new THREE.WebGLRenderTarget(
+  Math.ceil(FIELD_SIZE.x / RIPPLE_TEXEL), Math.ceil(FIELD_SIZE.y / RIPPLE_TEXEL), {
+    type: THREE.HalfFloatType,
+    format: THREE.RGFormat,
+    minFilter: THREE.LinearMipmapLinearFilter,
+    generateMipmaps: true,
+    depthBuffer: false,
+  });
+// 斜めから見る水面がぼやけすぎないように
+rippleTarget.texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+// 波紋 1 つ = リング 1 つのインスタンス描画。内側と外側の半径は頂点シェーダーで決める
+const rippleGeometry = new THREE.InstancedBufferGeometry().copy(new THREE.RingGeometry(1, 2, RING_SEGMENTS));
+const rippleAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_RIPPLES * 4), 4)
+  .setUsage(THREE.DynamicDrawUsage);
+rippleGeometry.setAttribute('ripple', rippleAttr);
+rippleGeometry.instanceCount = 0;
+
+const rippleMesh = new THREE.Mesh(rippleGeometry, new THREE.ShaderMaterial({
+  ...RippleShader,
+  blending: THREE.CustomBlending,  // 重なった波紋の傾きを足し合わせる
+  blendSrc: THREE.OneFactor,
+  blendDst: THREE.OneFactor,
+  depthTest: false,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+}));
+rippleMesh.frustumCulled = false;
+const rippleScene = new THREE.Scene();
+rippleScene.add(rippleMesh);
+const rippleCamera = new THREE.Camera();   // 頂点シェーダーで直接画面の位置を決めるので使わない
+
+const waterUniforms = {
+  ...skyUniforms,
+  uRippleMap: { value: rippleTarget.texture },
+  uWavePhase: { value: BASE_WAVES.map(() => 0) },
+  uWater: { value: new THREE.Vector3() },
+  uF0: { value: 0 },
+  uFog: { value: 0 },
+};
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE).rotateX(-Math.PI / 2),
+  new THREE.ShaderMaterial({
+    ...WaterShader,
+    uniforms: waterUniforms,
+    extensions: { derivatives: true },  // fwidth 用（WebGL2 では標準で使える）
+  }));
+scene.add(water);
+
+// 毎フレーム位置を書き換える count 個の頂点。動かした位置で描くので、画面外かどうかの判定はしない
+function addDynamic(count, Type, material) {
+  const geometry = new THREE.BufferGeometry().setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array(count * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  const object = new Type(geometry, material);
+  object.frustumCulled = false;
+  scene.add(object);
+  return geometry;
+}
+
+// 雨筋: 下の端ほど濃く、上の端は透明な線分
+const streakMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+const streakGeometry = addDynamic(MAX_DROPS * 2, THREE.LineSegments, streakMaterial);
+const streakPositions = streakGeometry.attributes.position.array;
+const streakColors = new Float32Array(MAX_DROPS * 2 * 4);
+for (let i = 0; i < MAX_DROPS; i++) streakColors.set([1, 1, 1, 1, 1, 1, 1, 0], i * 8);
+streakGeometry.setAttribute('color', new THREE.BufferAttribute(streakColors, 4));
+
+// 跳ねる魚: 横から見た紡錘形の胴と、三角の尾びれ。ローカルの +X が頭
+// 跳ねる場所の遠さに関わらず見分けやすいよう、霧には溶かさず一定の色で描く
+const fishMaterial = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+fishMaterial.color.setRGB(...FISH_COLOR, THREE.SRGBColorSpace);
+const fish = new THREE.Group();
+fish.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.5, 16, 8).scale(FISH_LENGTH, FISH_LENGTH * 0.26, FISH_LENGTH * 0.14),
+  fishMaterial));
+fish.add(new THREE.Mesh(
+  new THREE.ShapeGeometry(new THREE.Shape([[-0.4, 0], [-0.68, 0.16], [-0.62, 0], [-0.68, -0.16]]
+    .map(([x, y]) => new THREE.Vector2(x * FISH_LENGTH, y * FISH_LENGTH)))),
+  fishMaterial));
+fish.rotation.order = 'YZX';   // 進む向きに Y で回し、上下の傾きを Z で付ける
+fish.visible = false;
+scene.add(fish);
+
+// 水しぶきの粒
+const MAX_SPLASH = SPLASH_DROPS * 4;
+// 粒を丸く見せる、ふちのぼけた円のテクスチャ
+function dotTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  [[0, 1], [0.5, 0.8], [1, 0]].forEach(([t, a]) => grad.addColorStop(t, `rgba(255,255,255,${a})`));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(c);
+}
+const splashMaterial = new THREE.PointsMaterial({
+  size: SPLASH_SIZE, map: dotTexture(), transparent: true, opacity: 0.85, depthWrite: false,
+});
+splashMaterial.color.setRGB(...SPLASH_COLOR, THREE.SRGBColorSpace);
+const splashGeometry = addDynamic(MAX_SPLASH, THREE.Points, splashMaterial);
+const splashPositions = splashGeometry.attributes.position.array;
+
+// ---- 状態 ----
+let rainRate = BASE_RAIN;
+let sceneIndex = 0;
+let time = 0;              // 経過秒（波紋の誕生時刻の基準）
+let rainCarry = 0;         // 次の雨粒までの端数
+const ripples = [];        // { x, z, born, strength }（古い順）
+const drops = [];          // 落ちている雨粒 { x, z, y }（x, z は着水点）
+let eventRunning = false;  // その景色の出来事が起きている最中か
+let eventWait = 0;         // 次の出来事までの秒数
+let meteor = null;         // 流れている流れ星 { from, to: [方位, 高度], t: 0..1 }
+let ufo = null;            // 現れている UFO { from, to: [方位, 高度], hover, dash: [方位, 高度], t, az, el }
+let ufoSpin = 0;           // UFO の底のライトが回る位相
+const boat = { az: 0, dir: 1 };   // 遊覧船の方位と進む向き（右が +1）
+let jump = null;           // 跳ねている魚 { x, z, dx, dz, height, length, duration, t, exitT, splashed }
+const splashDrops = [];    // 水しぶきの粒 { x, y, z, vx, vy, vz }
+
+// ---- 景色 ----
+const sceneNameEl = document.getElementById('scene-name');
+
+// 月・太陽が無い景色の光（黒いので、円盤も光も見えない）
+const NO_LIGHT = { dir: [0, -Math.PI / 2], color: [0, 0, 0], size: 0, glow: 0 };
+
+function setScene(index) {
+  endEvent();   // 前の景色の出来事を片付ける
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  skyUniforms.uZenith.value.fromArray(s.zenith);
+  skyUniforms.uHorizon.value.fromArray(s.horizon);
+  const light = s.light ?? NO_LIGHT;
+  skyDir(...light.dir, skyUniforms.uLightDir.value);
+  skyUniforms.uLightColor.value.fromArray(light.color);
+  skyUniforms.uDiskCos.value = Math.cos(light.size);
+  skyUniforms.uGlow.value = light.glow;
+  skyUniforms.uStars.value = !!s.stars;
+  skyUniforms.uCity.value = !!s.city;
+  skyUniforms.uLand.value = !!s.land;
+  skyUniforms.uBoat.value = !!s.boat;
+  waterUniforms.uWater.value.fromArray(s.water);
+  waterUniforms.uF0.value = s.f0;
+  waterUniforms.uFog.value = s.fog;
+  // 線の色は sRGB として指定する（出力時に元の値に戻る）
+  const [r, g, b, a] = s.rain;
+  streakMaterial.color.setRGB(r, g, b, THREE.SRGBColorSpace);
+  streakMaterial.opacity = a;
+  sceneNameEl.textContent = s.name;
+  eventWait = nextEventWait();
+  resetBoat();
+}
+
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+
+// ---- 雨と波紋 ----
+const raycaster = new THREE.Raycaster();
+const waterPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const ndc = new THREE.Vector2();
+const hit = new THREE.Vector3();
+
+// 画面内の水面からランダムに着水点を選ぶ（画面上で均等になるように）。見つからなければ null。
+// 戻り値は使い回すベクトルなので、すぐに値を取り出すこと
+function randomLandingPoint(minDist = SPAWN_MIN_DIST, maxDist = SPAWN_MAX_DIST, tries = 12) {
+  for (let i = 0; i < tries; i++) {
+    ndc.set(rand(-1.1, 1.1), rand(-1, 1));
+    raycaster.setFromCamera(ndc, camera);
+    if (!raycaster.ray.intersectPlane(waterPlane, hit)) continue;
+    const d = Math.hypot(hit.x - camera.position.x, hit.z - camera.position.z);
+    if (d >= minDist && d <= maxDist) return hit;
+  }
+  return null;
+}
+
+function addRipple(x, z, born = time, scale = 1) {
+  if (ripples.length >= MAX_RIPPLES) ripples.shift();
+  ripples.push({ x, z, born, strength: RIPPLE_STRENGTH * rand(0.5, 1) * scale });
+}
+
+function spawnDrop() {
+  const p = randomLandingPoint();
+  if (!p) return;
+  if (drops.length >= MAX_DROPS) addRipple(p.x, p.z);    // 落ちる途中を省いて着水させる
+  else drops.push({ x: p.x, z: p.z, y: FALL_HEIGHT * rand(0.8, 1.2) });
+}
+
+// 起動直後から波紋がある状態にするため、すでに降っていた分の波紋を置く
+function prefillRipples() {
+  const n = Math.min(MAX_RIPPLES, Math.round(rainRate * RIPPLE_LIFE));
+  const born = Array.from({ length: n }, () => -rand(0, RIPPLE_LIFE)).sort((a, b) => a - b);
+  for (const b of born) {
+    const p = randomLandingPoint();
+    if (p) addRipple(p.x, p.z, time + b);
+  }
+}
+
+// 雨粒を発生させ、落として、着水したら波紋にする
+function updateDrops(dt) {
+  // 間隔に揺らぎを持たせる
+  rainCarry += rainRate * dt * rand(0.5, 1.5);
+  while (rainCarry >= 1) {
+    rainCarry -= 1;
+    spawnDrop();
+  }
+
+  let n = 0;
+  for (let i = 0; i < drops.length; i++) {
+    const d = drops[i];
+    d.y -= FALL_SPEED * dt;
+    if (d.y <= 0) {
+      addRipple(d.x, d.z);
+      continue;
+    }
+    drops[n++] = d;
+    // 風で斜めに降る: 高さ y にいるときは着水点から WIND * y ずれている
+    const top = d.y + STREAK_LENGTH;
+    const k = (n - 1) * 6;
+    streakPositions[k] = d.x + WIND.x * d.y;
+    streakPositions[k + 1] = d.y;
+    streakPositions[k + 2] = d.z + WIND.y * d.y;
+    streakPositions[k + 3] = d.x + WIND.x * top;
+    streakPositions[k + 4] = top;
+    streakPositions[k + 5] = d.z + WIND.y * top;
+  }
+  drops.length = n;
+  streakGeometry.setDrawRange(0, n * 2);
+  streakGeometry.attributes.position.needsUpdate = true;
+}
+
+// 寿命を過ぎた波紋を捨て、残りを波紋のテクスチャに描く
+function updateRipples() {
+  while (ripples.length && time - ripples[0].born > RIPPLE_LIFE) ripples.shift();
+  const a = rippleAttr.array;
+  for (let i = 0; i < ripples.length; i++) {
+    const r = ripples[i];
+    a[i * 4] = r.x;
+    a[i * 4 + 1] = r.z;
+    a[i * 4 + 2] = time - r.born;
+    a[i * 4 + 3] = r.strength;
+  }
+  rippleAttr.needsUpdate = true;
+  rippleGeometry.instanceCount = ripples.length;
+
+  renderer.setRenderTarget(rippleTarget);
+  renderer.clear();
+  renderer.render(rippleScene, rippleCamera);
+  renderer.setRenderTarget(null);
+}
+
+// ---- 流れ星 ----
+// 画面に見えている空の上のほうから、左右どちらかへ斜めに流す
+function startMeteor() {
+  const center = -camera.rotation.y;         // 画面中央の方位
+  const az = center + rand(-0.55, 0.55);
+  const el = rand(0.13, 0.2);
+  const side = randSign();
+  const angle = rand(0.25, 0.7);             // 水平からの傾き
+  const len = METEOR_LENGTH * rand(0.7, 1.3);
+  const drop = Math.min(len * Math.sin(angle), el - 0.05);  // 地平線に届く前に消える
+  meteor = { from: [az, el], to: [az + side * len * Math.cos(angle), el - drop], t: 0 };
+}
+
+// 流れ星の経路上、k（0..1）の位置の向きを target に入れる
+function meteorDir(k, target) {
+  const { from, to } = meteor;
+  return skyDir(THREE.MathUtils.lerp(from[0], to[0], k), THREE.MathUtils.lerp(from[1], to[1], k), target);
+}
+
+function endMeteor() {
+  meteor = null;
+  skyUniforms.uMeteor.value = 0;
+}
+
+// 流れきったら false を返す
+function updateMeteor(dt) {
+  meteor.t += dt / METEOR_DURATION;
+  if (meteor.t >= 1) return false;
+  const t = meteor.t;
+  meteorDir(t, skyUniforms.uMeteorHead.value);
+  meteorDir(Math.max(0, t - METEOR_TAIL), skyUniforms.uMeteorTail.value);
+  // 最初の 15% で明るくなり、流れきる前に消える
+  skyUniforms.uMeteor.value = THREE.MathUtils.smoothstep(t, 0, 0.15) * (1 - THREE.MathUtils.smoothstep(t, 0.6, 1));
+  return true;
+}
+
+// ---- UFO ----
+function endUfo() {
+  ufo = null;
+  skyUniforms.uUfo.value.w = 0;
+  skyUniforms.uUfoSize.value = UFO_SIZE;
+}
+
+// 画面の左右どちらかの外から現れ、見えている空のどこかで止まる。飛び去る向きは斜め上
+function startUfo() {
+  const center = -camera.rotation.y;         // 画面中央の方位
+  const halfWidth = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
+  const side = randSign();
+  const el = randIn(UFO_HEIGHT);
+  const angle = rand(0.1, 0.5);              // 飛び去る向きの、水平からの角度
+  const dashSide = randSign();
+  ufo = {
+    from: [center + side * (halfWidth + UFO_SIZE), el + rand(-0.02, 0.03)],
+    to: [center + rand(-0.4, 0.4) * halfWidth, el],
+    hover: randIn(UFO_HOVER_TIME),
+    dash: [dashSide * Math.cos(angle) * UFO_DASH, Math.sin(angle) * UFO_DASH],
+    t: 0,
+    az: 0, el: 0,                            // 飛び去り始める位置
+  };
+}
+
+// 飛び去って消えたら false を返す
+function updateUfo(dt) {
+  ufo.t += dt;
+  const u = skyUniforms.uUfo.value;          // (方位, 高さ, 傾き, 不透明度)
+  const leaveAt = UFO_ENTER_TIME + ufo.hover;
+  let spin = UFO_SPIN;
+  if (ufo.t < leaveAt) {
+    // 上下に揺れながら近づいて止まる。動いている間は進む向きへ少し傾く
+    const k = Math.min(ufo.t / UFO_ENTER_TIME, 1);
+    const e = 0.5 - 0.5 * Math.cos(Math.PI * k);
+    const bob = ufo.t * TAU / UFO_BOB_PERIOD;
+    const { from, to } = ufo;
+    ufo.az = THREE.MathUtils.lerp(from[0], to[0], e);
+    ufo.el = THREE.MathUtils.lerp(from[1], to[1], e) + UFO_BOB * Math.sin(bob);
+    const tilt = -Math.sign(to[0] - from[0]) * UFO_TILT * Math.sin(Math.PI * k) + 0.04 * Math.cos(bob);
+    u.set(ufo.az, Math.sin(ufo.el), tilt, 1);
+  } else {
+    // 速度を上げながら斜め上へ飛び去り、遠ざかって消える
+    const k = (ufo.t - leaveAt) / UFO_LEAVE_TIME;
+    if (k >= 1) return false;
+    const s = k * k;
+    u.x = ufo.az + ufo.dash[0] * s;
+    u.y = Math.sin(ufo.el + ufo.dash[1] * s);
+    u.w = 1 - THREE.MathUtils.smoothstep(k, 0.2, 1);
+    skyUniforms.uUfoSize.value = UFO_SIZE * (1 - 0.5 * k);
+    spin *= 4;
+  }
+  ufoSpin = (ufoSpin + spin * dt) % TAU;
+  skyUniforms.uUfoSpin.value = ufoSpin;
+  return true;
+}
+
+// ---- 遊覧船 ----
+// 景色を切り替えたときは、最初から見える所に置く
+function resetBoat() {
+  boat.az = rand(-0.5, 0.5);
+  boat.dir = randSign();
+  skyUniforms.uBoatPos.value.set(boat.az, boat.dir);
+}
+
+function updateBoat(dt) {
+  if (!SCENES[sceneIndex].boat) return;
+  boat.az += boat.dir * BOAT_SPEED * dt;
+  // 画面の外まで行ったら、向きを選び直して反対側から出直す
+  if (boat.az * boat.dir > BOAT_RANGE) {
+    boat.dir = randSign();
+    boat.az = -boat.dir * BOAT_RANGE;
+  }
+  skyUniforms.uBoatPos.value.set(boat.az, boat.dir);
+}
+
+// ---- 跳ねる魚 ----
+const FISH_DEPTH = 0.15;   // 跳ねる前後の、魚の中心の水面からの深さ
+
+// 魚を水中に戻す
+function endJump() {
+  jump = null;
+  fish.visible = false;
+}
+
+// 跳ねる場所が見つからなければ false を返す（次のフレームでやり直す）
+function startJump() {
+  const p = randomLandingPoint(...FISH_DIST);
+  if (!p) return false;
+  const a = rand(0, TAU);
+  const height = randIn(FISH_JUMP_HEIGHT);
+  // 深さ FISH_DEPTH から高さ height まで上がって戻る、放物線の時間
+  const rise = height + FISH_DEPTH;
+  // 水面を横切る時刻（0..1）。高さ y = rise * 4t(1-t) - FISH_DEPTH が 0 になるところ
+  const exitT = (1 - Math.sqrt(1 - FISH_DEPTH / rise)) / 2;
+  jump = {
+    x: p.x, z: p.z, dx: Math.cos(a), dz: Math.sin(a),
+    height, length: randIn(FISH_JUMP_LENGTH),
+    duration: 2 * Math.sqrt(2 * rise / GRAVITY), t: 0, exitT, splashed: 0,
+  };
+  fish.visible = true;
+}
+
+// 時刻 t（0..1）の魚の位置を target に入れる
+function jumpPosition(t, target) {
+  const j = jump;
+  const s = j.length * (t - 0.5);
+  return target.set(j.x + j.dx * s, (j.height + FISH_DEPTH) * 4 * t * (1 - t) - FISH_DEPTH, j.z + j.dz * s);
+}
+
+// 水面を横切るところで、強い波紋と水しぶきを出す
+// scale: しぶきの大きさ（着水 1、飛び出し 0.7）
+const splashAt = new THREE.Vector3();
+function fishSplash(t, scale) {
+  const p = jumpPosition(t, splashAt);
+  addRipple(p.x, p.z, time, FISH_RIPPLE * scale);
+  const n = Math.round(SPLASH_DROPS * scale);
+  for (let i = 0; i < n && splashDrops.length < MAX_SPLASH; i++) {
+    const a = rand(0, TAU);
+    const v = SPLASH_SPEED * scale * rand(0.4, 1);
+    // 4 割は真上に高く上がる水柱、残りは輪の形に外へ広がる粒
+    const column = Math.random() < 0.4;
+    const r = column ? rand(0, 0.03) : rand(0.04, 0.1);
+    const spread = column ? 0.15 : 0.7;
+    splashDrops.push({
+      x: p.x + Math.cos(a) * r, y: 0.01, z: p.z + Math.sin(a) * r,
+      vx: Math.cos(a) * v * spread, vy: v * (column ? 1.2 : 0.8), vz: Math.sin(a) * v * spread,
+    });
+  }
+}
+
+// 水中に戻ったら false を返す
+function updateJump(dt) {
+  const j = jump;
+  j.t += dt / j.duration;
+  // 飛び出し・着水のしぶき
+  if (j.splashed === 0 && j.t >= j.exitT) { fishSplash(j.exitT, 0.7); j.splashed = 1; }
+  if (j.splashed === 1 && j.t >= 1 - j.exitT) { fishSplash(1 - j.exitT, 1); j.splashed = 2; }
+  if (j.t >= 1) return false;
+  jumpPosition(j.t, fish.position);
+  // 頭を進む向きに向け、上りは上向き・下りは下向きに傾ける
+  const vy = (j.height + FISH_DEPTH) * 4 * (1 - 2 * j.t);
+  fish.rotation.set(0, Math.atan2(-j.dz, j.dx), Math.atan2(vy, j.length));
+  return true;
+}
+
+// しぶきの粒を飛ばし、水面に落ちたら消す。景色を切り替えても、飛んでいる粒は落ちきるまで動かす
+function updateSplash(dt) {
+  let n = 0;
+  for (const d of splashDrops) {
+    d.vy -= GRAVITY * dt;
+    d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
+    if (d.y < 0) {
+      // 落ちた粒のいくつかは、小さな波紋を立てる
+      if (Math.random() < SPLASH_RIPPLE_CHANCE) addRipple(d.x, d.z, time, 0.25);
+      continue;
+    }
+    splashDrops[n] = d;
+    splashPositions[n * 3] = d.x;
+    splashPositions[n * 3 + 1] = d.y;
+    splashPositions[n * 3 + 2] = d.z;
+    n++;
+  }
+  splashDrops.length = n;
+  splashGeometry.setDrawRange(0, n);
+  splashGeometry.attributes.position.needsUpdate = true;
+}
+
+// ---- ランダムな出来事 ----
+// 景色の event に書く出来事。interval: 間隔、start: 始める（できなければ false）、
+// update(dt): 進める（終わったら false）、end: 片付ける
+const EVENTS = {
+  meteor: { interval: METEOR_INTERVAL, start: startMeteor, update: updateMeteor, end: endMeteor },
+  ufo: { interval: UFO_INTERVAL, start: startUfo, update: updateUfo, end: endUfo },
+  fish: { interval: FISH_INTERVAL, start: startJump, update: updateJump, end: endJump },
+};
+
+// いまの景色の出来事。無ければ undefined
+const sceneEvent = () => EVENTS[SCENES[sceneIndex].event];
+
+function nextEventWait() {
+  const e = sceneEvent();
+  return e ? randomInterval(e.interval) : Infinity;
+}
+
+function startEvent() {
+  const e = sceneEvent();
+  if (e && !eventRunning) eventRunning = e.start() !== false;
+}
+
+// 起きている出来事を片付けて、次の出来事を待つ
+function endEvent() {
+  if (eventRunning) sceneEvent().end();
+  eventRunning = false;
+  eventWait = nextEventWait();
+}
+
+function updateEvent(dt) {
+  if (eventRunning) {
+    if (!sceneEvent().update(dt)) endEvent();
+  } else if ((eventWait -= dt) <= 0) {
+    startEvent();
+  }
+}
+
+// その景色の出来事を、待たずにすぐ起こす（デバッグ用）
+const triggerEvent = startEvent;
+
+// ---- カメラ ----
+function updateCamera() {
+  const yaw = SWAY_ANGLE * Math.sin(time * TAU / SWAY_PERIOD);
+  camera.rotation.set(-CAM_PITCH, yaw, 0);
+  camera.updateMatrixWorld();
+  sky.position.copy(camera.position);
+}
+
+// ---- 雨の強さ ----
+function setRainRate(value) {
+  rainRate = THREE.MathUtils.clamp(value, MIN_RAIN, MAX_RAIN);
+}
+
+// ---- 時間で動く位相 ----
+// GPU の float は精度が低く、経過秒をそのまま渡すと長時間動かしたときに動きが荒れる。
+// 位相は JS（倍精度）で 0..2π に収めてから渡す
+const WAVE_OMEGAS = BASE_WAVES.map(([, , len]) => Math.sqrt(GRAVITY * TAU / len));  // 深い水の波の角振動数
+
+function updatePhases() {
+  const phases = waterUniforms.uWavePhase.value;
+  for (let i = 0; i < WAVE_OMEGAS.length; i++) phases[i] = (WAVE_OMEGAS[i] * time) % TAU;
+  skyUniforms.uBeaconPhase.value = (time / CITY_BEACON_PERIOD % 1) * TAU;
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  time += dt;
+  updatePhases();
+  updateCamera();
+  updateDrops(dt);
+  updateRipples();
+  updateEvent(dt);
+  updateBoat(dt);
+  updateSplash(dt);
+  renderer.render(scene, camera);
+}
+
+// ---- 入力・UI ----
+const fadeEl = document.getElementById('fade');
+let fading = false;
+
+// 暗転している間に change() を実行して、明るく戻す
+function fadeAndRun(change) {
+  if (fading) return;
+  fading = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    change();
+    fadeEl.style.opacity = 0;
+    fading = false;
+  }, FADE_MS);
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.();
+}
+
+// 操作が無ければカーソルとHUDを隠す
+let idleTimer;
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
+}
+
+const KEY_ACTIONS = {
+  Space: nextScene,
+  KeyF: toggleFullscreen,
+  KeyC: triggerEvent,             // デバッグ用の隠しコマンド（HUDには出さない）
+  ArrowUp: () => setRainRate(rainRate * RAIN_STEP),
+  ArrowDown: () => setRainRate(rainRate / RAIN_STEP),
+};
+
+addEventListener('keydown', (e) => {
+  wake();
+  // Cmd+F や Ctrl+R などのブラウザのショートカットは横取りしない
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const action = KEY_ACTIONS[e.code];
+  if (!action) return;
+  e.preventDefault();
+  action();
+});
+addEventListener('dblclick', toggleFullscreen);
+addEventListener('mousemove', wake);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---- 開始 ----
+setRainRate(BASE_RAIN);
+setScene(Math.floor(Math.random() * SCENES.length));
+updateCamera();
+prefillRipples();
+wake();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
