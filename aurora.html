@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurora</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  Space: リセット / F・ダブルクリック: 全画面
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
+
+// ---- 設定 ----
+// 座標: カメラの足もとが原点、y が上、-z が北（正面）。長さの単位は見た目で決めたもの（本物の比率ではない）。
+// 色は光の強さそのままの値（リニア。1 を超えるとブルームで光る）
+
+// カメラ（山あいの谷の雪原に立って北の空を見上げ、ゆっくり見回す）
+const CAM_HEIGHT = 2;
+const CAM_FOV = 55;               // 縦の画角（度）
+const CAM_PITCH = 0.4;            // 見上げる角度（rad）
+const CAM_SWAY = [0.35, 0.05];    // 見回す幅 [左右, 上下]（rad）
+const CAM_SWAY_PERIOD = [173, 89];   // その周期（秒）
+
+// 世界の大きさ
+const WORLD_RADIUS = 2500;        // 地面の半径
+const STAR_RADIUS = 2400;         // 星を置く球の半径（山並みより遠く、地面の縁より近く）
+const SKY_RADIUS = 2800;          // 空の球の半径
+
+// オーロラの幕の形。下端から上へ伸びる縦の幕で、頭上から北の遠くへ向かって長く延び、上から見たひだが波打つ
+const CURTAIN_COLUMNS = 300;      // 1 枚の幕の分割数（手前ほど細かく分ける）
+const CURTAIN_START = [-500, -200];   // 幕の手前の端の位置（カメラから北へ。負はカメラの後ろ）
+const CURTAIN_LENGTH = [5000, 9000];  // 幕の長さ
+const CURTAIN_SIDE = [200, 500];      // カメラの真横での、幕までの左右の距離（小さいほど頭上をかすめる）
+const CURTAIN_SIDE_STEP = 300;    // 2 枚目から、1 枚ごとに CURTAIN_SIDE に足す距離
+const CURTAIN_HEADING = [0.1, 0.4];   // 幕の向き（北から、手前の端と反対側へのずれ。rad）
+const CURTAIN_BEND = [0.05, 0.15];  // 遠い端がさらに反対側へ曲がる量（長さに対する割合）
+const CURTAIN_ALTITUDE = [380, 440];  // 下端の高さ
+const CURTAIN_HEIGHT = [350, 650];    // 幕の高さ（活動の強さで ACT_HEIGHT 倍になる）。空高く立ち上がるよう、本物より縦に誇張する
+const SKYLINE_MARGIN = 0.025;      // 下端を山並みの稜線よりどれだけ上に見せるか（仰角 rad）
+const SKYLINE_SMOOTH = 0.06;      // 稜線をならす幅（方位 rad。下端が山の形をなぞらないように）
+const CURTAIN_NEAR_FADE = 150;    // 手前の端で薄くなる範囲（カメラの後ろなので見えない）
+
+// うねりは遠くでは幕に沿う向きに縮んで見え、短いものは階段状の硬い折り返しになるので消す。
+// (波長 ÷ 距離) がこの範囲で 0 → 1 倍
+const FOLD_FADE = [0.15, 0.5];
+const FOLD_GROW = 1200;           // うねりの深さが 1 倍になる距離（近い所は 0.3 倍から、遠い所は 1.2 倍まで。遠くでも蛇行が見え、頭上では暴れないように）
+
+// オーロラの幕の動き。波は幕に沿って流れる。amp: 振幅、len: 波長、speed: 位相の進む速さ (rad/秒。向きはランダム)
+const FOLDS = [                   // 上から見たうねり
+  { amp: [100, 220], len: [800, 1600], speed: [0.08, 0.2] },   // 大きなうねり
+  { amp: [15, 40], len: [200, 450], speed: [0.5, 1.2] },       // ひだ
+  { amp: [2, 5], len: [35, 80], speed: [1.5, 3.0] },           // 細かいひだ
+];
+// うねりの深さが、ゆっくり深くなったり浅くなったりする（ひだが寄ったりほどけたりする）。
+// 振幅に (1 + FOLD_BREATH × sin) を掛ける。FOLD_BREATH_SPEED はその位相の進む速さ (rad/秒)
+const FOLD_BREATH = 0.6;
+const FOLD_BREATH_SPEED = [0.15, 0.4];
+const HEIGHT_WAVE = { amp: 0.25, len: [500, 1000], speed: [0.05, 0.15] };   // 幕の高さのむら（amp は高さに対する割合）
+const ALTITUDE_WAVE = { amp: 8, len: [400, 900], speed: [0.05, 0.12] };     // 下端の高さの揺れ
+const BRIGHT_WAVE = { len: [300, 900], speed: [0.2, 0.5] };   // 明るさのむら（明滅。うねりより遅くする）
+const BRIGHT_WAVE_DEPTH = 0.65;   // 明るさのむらの深さ（0: むら無し, 1: 暗い所は真っ暗）
+
+// オーロラの光り方
+const AURORA_BRIGHT = 0.52;       // 明るさの倍率（プリセットの色に掛ける）
+const AURORA_BRIGHT_RANGE = [0.4, 1];   // リセットのたびに選ぶ明るさの倍率の範囲（対数で一様に選ぶ）
+const CURTAIN_DIM = 0.55;         // 2 枚目からの幕の明るさ（1 枚ごとにこの倍率を掛ける。主役の 1 本を目立たせ、重なって白く飛ばないように）
+const FAR_FADE = 0.75;            // 遠い端で薄くなる範囲（長さに対する割合）
+// 薄い幕を斜めから見ると、視線が幕の中を長く通るので明るい（1 / |cos(視線と幕の法線の角)|）。その上限。
+// ひだが横向きになった所がくっきり明るく光る
+const EDGE_MAX = 3;
+// 光の筋（磁力線に沿った縦の筋）。幕の長さ方向の模様を、1 次元のテクスチャで付ける
+const RAY_TEXELS = 2048;          // 模様のテクスチャの幅（2 の累乗）
+const RAY_REPEAT = 1500;          // 細かい筋の模様がくり返す長さ
+const RAY_BROAD = 0.31;           // 太い筋の模様の細かさ（細かい筋に対する倍率。小さいほど太い）
+const RAY_DRIFT = [0.008, 0.003]; // 筋の模様が横へ流れる速さ [細かい筋, 太い筋]（くり返し 1 回分を 1 として、/秒）
+
+// オーロラの色のプリセット。リセットのたびに chance の確率で 1 つ選ぶ（chance の合計は 1）。
+// トーンマッピングで色が薄まるので鮮やかにし、上の方は暗いので 1 より大きくする。
+// name: 読む人のための名前（コードでは使わない）, low: 下の縁の色, mid: 中ほどの色, high: 上の方の色（リニア）,
+// lowEnd: low から mid に変わり終わる高さ, highStart: high に変わり始める高さ（どちらも下端 0 → 上端 1）, bright: 明るさの倍率
+const AURORA_PRESETS = [
+  { name: '緑', chance: 0.8, low: [1, 1, 0.3], mid: [0.1, 1, 0.45], high: [0.1, 1, 0.45], lowEnd: 0.33, highStart: 1, bright: 1 },
+  { name: '赤（下が緑）', chance: 0.1, low: [1, 0.9, 0.2], mid: [0.1, 1, 0.45], high: [3, 0.08, 0.1], lowEnd: 0.25, highStart: 0.2, bright: 1 },
+  { name: '赤（下が黄）', chance: 0.1, low: [1, 0.9, 0.15], mid: [1, 0.72, 0.08], high: [3, 0.08, 0.1], lowEnd: 0.25, highStart: 0.2, bright: 1 },
+];
+const COLOR_BLEND = 0.25;         // mid から high へ移り変わる幅（下端 0 → 上端 1）
+
+// 活動の強さ（ふだんは 0、サブストームの頂点で 1）。これで変わる値は [ふだん, 頂点]
+const ACTIVITY_EASE = 1.5;        // 活動の強さがなじむまでの時間の目安（秒）
+const ACT_CURTAINS = [1.75, 2.625];   // 幕の数（端数のぶんは薄く出す）
+const ACT_BRIGHT = [0.4125, 0.54375]; // 明るさの倍率
+const ACT_SPEED = [1.1375, 1.88125];  // 動きの速さの倍率
+const ACT_HEIGHT = [0.975, 1.2375];   // 幕の高さの倍率
+const CURTAIN_FADE = 4;           // 幕が現れる・消えるまでの秒数
+
+// サブストーム（ときどき急に明るくなり、激しく動いて、ゆっくり収まる）
+const SUBSTORM_INTERVAL = [180, 60, 480];   // 間隔 [平均, 下限, 上限]（秒）
+const SUBSTORM_TIME = [6, 12, 40];    // [強まる, 続く, 収まる] 秒
+
+// 空と星
+const SKY_ZENITH = [0.001, 0.0012, 0.0025];
+const SKY_HORIZON = [0.008, 0.009, 0.014];
+const STAR_COUNT = 1500;
+const STAR_SIZE = 4;              // 点の大きさ（CSS ピクセル。ふちのぼけた丸なので、見た目は 2px ほど）
+const STAR_BRIGHT_EXP = 3;        // 明るさの分布（大きいほど暗い星が多い）
+const POLE_ALTITUDE = 1.15;       // 天の北極の高さ（rad。高緯度の土地）
+const SKY_ROTATION_PERIOD = 1800; // 星空が 1 周する秒数（本物より速い）
+
+// 地上（山並みと針葉樹は、細部を描かない平たい色のシルエット。遠いものほど空の色に近い）
+const SNOW_COLOR = [0.035, 0.038, 0.05];   // 谷底の雪原（長時間露光の写真のように、ほんのり明るい）
+const RIDGE_SEGMENTS = 720;       // 山並みの分割数
+const RIDGE_OCTAVES = [[2, 1], [5, 0.6], [11, 0.4], [27, 0.2], [61, 0.1], [131, 0.04]];   // 山の起伏 [1 周での山の数, 振幅]
+// 山並み（遠い順）。dist: 距離、height: 高さ、sides: 左右（東西）の盛り上がり（谷の両側の斜面）、peak: 尖り具合（大きいほど峰が鋭い）
+const RIDGES = [
+  { dist: 2100, height: 650, sides: 0.2, peak: 1.6, color: [0.007, 0.009, 0.015] },   // 遠くの高い雪山
+  { dist: 1100, height: 180, sides: 1.0, peak: 1.0, color: [0.0045, 0.0057, 0.0096] },  // 谷の奥
+  { dist: 600, height: 45, sides: 5.0, peak: 1.0, color: [0.003, 0.0039, 0.0066] },    // 谷の両側の斜面
+];
+const TREE_COUNT = 3000;
+const TREE_HEIGHT = [7, 22];
+const TREE_WIDTH = [0.22, 0.3];   // 木の半径（高さに対する割合）
+const TREE_DIST = [15, 500];      // 木を置く距離の範囲
+const TREE_FRONT_CLEAR = 90;      // 正面（北）は、この距離だけ手前を空ける（オーロラを隠さないように）
+const TREE_TIERS = 6;             // 枝の段の数（重ねた三角形の数）
+const TREE_FAR_COLOR = [0.0022, 0.0028, 0.005];   // いちばん遠い木の色（手前の木は黒。遠いほど空気で霞んでこの色に近づく）
+const TREE_HAZE_DIST = [60, 500];  // 木が霞み始める距離と、TREE_FAR_COLOR になる距離
+
+// オーロラの明かり。幕のある方位ほど明るく、なだらかに変わる
+const LIGHT_BINS = 32;            // 方位の分割数
+const LIGHT_SMOOTH = 0.9;         // 方位をならす幅（片側。rad）
+const LIGHT_EASE = 3;             // 明かりの変化をならす時間（秒）
+// 照らす強さ（明かりの強さ × 幕の平均の色に掛けて、元の色に足す）
+const GROUND_GLOW = 0.08;         // 雪原
+const RIDGE_GLOW = 0.013;         // 山並み
+const TREE_GLOW = 0.005;          // いちばん遠い木（手前の木ほど弱い）
+const SKY_GLOW = 6.3;             // 空（空の色に (1 + これ × 明かり) を掛ける。地平線の近くほど明るい色なので目立つ）
+
+// 描画
+const AURORA_BLUR = 0.004;        // オーロラの横のぼかしの半径（画面の幅に対する割合）。幕の折り返しの硬い縁をなじませ、1 本につながって見せる
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での GPU の負荷を抑える）
+// ブルームの強さ・広がり・しきい値
+const BLOOM = { strength: 0.65, radius: 0.85, threshold: 0.1 };
+// ブルームを計算する解像度（CSS ピクセルに対する縦横の倍率。解像度の倍率には左右されない）。ブルームは描画の負荷の大半を占めるが、ぼかした光なので低い解像度でも見た目はほぼ同じ
+const BLOOM_SCALE = 0.5;
+
+// ---- ユーティリティ ----
+const lerp = ([a, b], t) => a + (b - a) * t;
+const smoothstep = THREE.MathUtils.smoothstep;
+
+// 方位 az（北が 0、東（右）が正。rad）・距離 r・高さ y の点
+const azimuthPoint = (az, r, y) => [r * Math.sin(az), y, -r * Math.cos(az)];
+// 上から見た位置 (x, z) の方位を 0..1 で（北が 0、東回り）
+const azimuthFraction = (x, z) => (Math.atan2(x, -z) / TAU + 1) % 1;
+
+// 縦 2 つずつ [下, 上] 並べた頂点の列を、帯の三角形にする添字
+function stripIndex(columns) {
+  const index = [];
+  for (let i = 0; i < columns - 1; i++) {
+    const a = i * 2;
+    index.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+  return index;
+}
+
+// 波 { k: 波数, speed, phase }。len・speed は [下限, 上限]。向きはランダム
+function randomWave({ len, speed }) {
+  return { k: TAU / randIn(len), speed: randIn(speed) * randSign(), phase: rand(0, TAU) };
+}
+
+// ---- シェーダー ----
+// オーロラの幕。uv.x は幕の長さ方向の位置（筋の模様の座標）、uv.y は下端 0 → 上端 1。
+// aBright は頂点ごとの明るさ（明るさのむら・両端の薄まり・斜めから見た明るさを JS で掛けたもの）
+const curtainVertex = /* glsl */ `
+  attribute float aBright;
+  varying vec2 vUv;
+  varying float vBright;
+  void main() {
+    vUv = uv;
+    vBright = aBright;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const curtainFragment = /* glsl */ `
+  uniform sampler2D uRays;
+  uniform vec2 uRayShift;     // 筋の模様のずらし量 [細かい筋, 太い筋]（JS で 0..1 に収める）
+  uniform vec3 uLow, uMid, uHigh;
+  uniform float uLowEnd;      // uLow から uMid に変わり終わる高さ（下端 0 → 上端 1）
+  uniform float uHighStart;   // uHigh に変わり始める高さ（同じ単位）
+  varying vec2 vUv;
+  varying float vBright;
+  void main() {
+    float fine = texture2D(uRays, vec2(vUv.x + uRayShift.x, 0.5)).r;
+    float broad = texture2D(uRays, vec2(vUv.x * ${RAY_BROAD.toFixed(3)} + uRayShift.y, 0.5)).r;
+    // 補間の誤差で 0..1 をわずかにはみ出すことがある。はみ出すと pow が NaN になり、
+    // ブルームがその 1 画素を画面全体に広げて、1 コマだけ画面が真っ黒になる
+    float v = clamp(vUv.y, 0.0, 1.0);
+    // 細かい筋は下の方だけ。上の方は太い筋だけの、ぼやけた光にする
+    float rays = mix(0.6 + 0.4 * fine * (0.3 + broad), 0.4 + 0.4 * broad, smoothstep(0.15, 0.6, v));
+    // 下の縁は少しぼかし、上へはゆるやかに消える（明るい筋ほど上まで）。下の縁がいちばん明るい
+    float shape = smoothstep(0.0, 0.07, v) * pow(1.0 - v, 3.5 - 2.0 * min(rays, 1.0));
+    shape *= 1.0 + 0.8 * (1.0 - smoothstep(0.0, 0.1, v));
+    // 色は下の縁 → 中ほど → 上の方で移り変わる
+    vec3 color = mix(uLow, uMid, smoothstep(0.0, uLowEnd, v));
+    color = mix(color, uHigh, smoothstep(uHighStart, uHighStart + ${COLOR_BLEND.toFixed(3)}, v));
+    gl_FragColor = vec4(color * (vBright * rays * shape), 1.0);
+  }
+`;
+
+// オーロラの描画先を、画面に全面で写す（ぼかす処理と、シーンへの重ね描きで使う）
+const auroraQuadVertex = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+// 横にぼかす。線形補間で読むので、間を空けて読んでも筋がむらにならない
+const auroraBlurFragment = /* glsl */ `
+  uniform sampler2D uTexture;
+  uniform float uStep;        // 読む間隔（画面の幅に対する割合）
+  varying vec2 vUv;
+  vec3 pair(float t) {
+    vec2 d = vec2(uStep * t, 0.0);
+    return texture2D(uTexture, vUv + d).rgb + texture2D(uTexture, vUv - d).rgb;
+  }
+  void main() {
+    vec3 c = 0.204 * texture2D(uTexture, vUv).rgb;
+    c += 0.180 * pair(1.0) + 0.125 * pair(2.0) + 0.066 * pair(3.0) + 0.028 * pair(4.0);
+    gl_FragColor = vec4(c, 1.0);
+  }
+`;
+
+const auroraCopyFragment = /* glsl */ `
+  uniform sampler2D uTexture;
+  varying vec2 vUv;
+  void main() {
+    gl_FragColor = vec4(texture2D(uTexture, vUv).rgb, 1.0);
+  }
+`;
+
+// オーロラに照らされる地上と空。position はそのまま世界座標（動かさない）。明かりは頂点ごとに方位で引く
+const litVertex = /* glsl */ `
+  uniform float uLight[${LIGHT_BINS}];
+  varying vec3 vColor;
+  varying float vLight;
+  void main() {
+    #ifdef USE_COLOR
+      vColor = color;
+    #else
+      vColor = vec3(1.0);
+    #endif
+    float t = fract(atan(position.x, -position.z) / ${TAU.toFixed(6)}) * ${LIGHT_BINS.toFixed(1)};
+    int i = int(t) % ${LIGHT_BINS};
+    vLight = mix(uLight[i], uLight[(i + 1) % ${LIGHT_BINS}], fract(t));
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const litFragment = /* glsl */ `
+  uniform vec3 uBase, uLightColor;
+  uniform float uGlow;
+  varying vec3 vColor;
+  varying float vLight;
+  void main() {
+    gl_FragColor = vec4(vColor * (uBase + uGlow * vLight * uLightColor), 1.0);
+  }
+`;
+
+// ---- three.js 初期化 ----
+// シーンはブルーム用の別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 1, CURTAIN_LENGTH[1] * 1.5);
+camera.position.set(0, CAM_HEIGHT, 0);
+camera.rotation.order = 'YXZ';
+
+// 色が 1 を超えるので、半精度浮動小数点の描画先に描き、トーンマッピングは最後（OutputPass）に掛ける
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
+// composer は描画先の画素数を渡してくるので、CSS ピクセルに戻して BLOOM_SCALE 倍にする
+// （ぼかした光なので、解像度の倍率を上げても細かくする必要がない）
+const setBloomSize = bloom.setSize.bind(bloom);
+bloom.setSize = (w, h) => {
+  const scale = BLOOM_SCALE / renderer.getPixelRatio();
+  setBloomSize(Math.ceil(w * scale), Math.ceil(h * scale));
+};
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// オーロラだけを別の描画先に描き、横にぼかしてからシーンへ足す（星や地上はぼかさない）
+const auroraScene = new THREE.Scene();
+const newAuroraTarget = (samples) => new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false, samples });
+const auroraTarget = newAuroraTarget(2), auroraBlurTarget = newAuroraTarget(0);   // 幕の折り返しの縁がぎざぎざにならないよう、幕を描く方だけ MSAA を掛ける
+const auroraBlur = new FullScreenQuad(new THREE.ShaderMaterial({
+  uniforms: { uTexture: { value: auroraTarget.texture }, uStep: { value: AURORA_BLUR / 4 } },
+  vertexShader: auroraQuadVertex, fragmentShader: auroraBlurFragment, depthTest: false, depthWrite: false,
+}));
+// 地上（renderOrder 1）より先に描き、山や木に隠れるようにする
+const auroraLayer = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+  uniforms: { uTexture: { value: auroraBlurTarget.texture } },
+  vertexShader: auroraQuadVertex, fragmentShader: auroraCopyFragment,
+  transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+}));
+auroraLayer.frustumCulled = false;
+scene.add(auroraLayer);
+
+// レンダラーの画素数に合わせて、描画先の大きさを決める
+function setAuroraSize() {
+  const { x, y } = renderer.getDrawingBufferSize(new THREE.Vector2());
+  auroraTarget.setSize(x, y);
+  auroraBlurTarget.setSize(x, y);
+}
+setAuroraSize();
+
+function renderAurora() {
+  renderer.setRenderTarget(auroraTarget);
+  renderer.render(auroraScene, camera);
+  renderer.setRenderTarget(auroraBlurTarget);
+  auroraBlur.render(renderer);
+  renderer.setRenderTarget(null);
+}
+
+// ---- 状態 ----
+let time = 0;              // 経過秒
+let activity = 0;          // いまの活動の強さ（0..1。サブストームの分へゆっくり近づく）
+let substorm = null;       // 起きているサブストーム { t: 始まってからの秒数 }。無ければ null
+let substormWait = randomInterval(SUBSTORM_INTERVAL);   // 次のサブストームまでの秒数
+let skyPhase = 0;          // 星空の回転の位相（0..1）
+let brightScale = 1;       // オーロラの明るさの倍率（リセットのたびに AURORA_BRIGHT_RANGE から選ぶ）
+// 活動の強さから決まる値（updateActivity で求める）
+const act = { curtains: 1, bright: 1, speed: 1, height: 1 };
+
+// ---- オーロラの明かり ----
+const lightRaw = new Float32Array(LIGHT_BINS);   // このコマの方位ごとの幕の明るさ（Curtain が足し、updateLight で空にする）
+const lightUniforms = {
+  uLight: { value: new Float32Array(LIGHT_BINS) },   // 方位ごとの明かりの強さ
+  uLightColor: { value: new THREE.Vector3() },       // 幕の平均の色（applyPreset で決める）
+};
+let lightSnap = true;      // 次の updateLight で、ならさずに合わせる（リセットの直後）
+
+// オーロラに照らされるマテリアル。base: 元の色、glow: 照らす強さ
+function litMaterial(base, glow, options) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uBase: { value: new THREE.Vector3(...base) }, uGlow: { value: glow }, ...lightUniforms },
+    vertexShader: litVertex, fragmentShader: litFragment, ...options,
+  });
+}
+
+// 幕の明るさの方位の分布を、方位と時間の両方でならして明かりにする
+function updateLight(dt) {
+  const n = LIGHT_BINS, w = Math.round(LIGHT_SMOOTH / TAU * n), light = lightUniforms.uLight.value;
+  const ease = lightSnap ? 1 : 1 - Math.exp(-dt / LIGHT_EASE);
+  lightSnap = false;
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let k = -w; k <= w; k++) sum += lightRaw[(i + k + n) % n] * (w + 1 - Math.abs(k));
+    light[i] += (sum * n / (w + 1) ** 2 - light[i]) * ease;   // 全方位の平均が、幕の明るさの平均になるように n を掛ける
+  }
+  lightRaw.fill(0);
+}
+
+// ---- 空と星 ----
+// 空: 地平線から天頂へのグラデーション（頂点の色）。オーロラの明かりで明るくなり、もとから明るい地平線の近くほど目立つ
+const sky = (() => {
+  const g = new THREE.SphereGeometry(SKY_RADIUS, 48, 24);
+  const pos = g.attributes.position, col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const t = Math.sqrt(smoothstep(pos.getY(i) / SKY_RADIUS, 0, 0.8));
+    for (let c = 0; c < 3; c++) col[i * 3 + c] = SKY_HORIZON[c] + (SKY_ZENITH[c] - SKY_HORIZON[c]) * t;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mesh = new THREE.Mesh(g, litMaterial([1, 1, 1], SKY_GLOW, { vertexColors: true, side: THREE.BackSide, depthWrite: false }));
+  mesh.renderOrder = -1;
+  return mesh;
+})();
+scene.add(sky);
+
+// 星: 球の全体に散らし、天の北極のまわりに回す（地平線の下の星は地面に隠れる）。
+// 小さな四角い点だと、空が回って星が画素の境目をまたぐたびに塗る画素の数が変わり、明るさが跳ねてちらつく。
+// ふちのぼけた丸い点にして、画素の境目のどこにあっても明るさの合計がほぼ同じになるようにする
+const POLE_AXIS = new THREE.Vector3(...azimuthPoint(0, Math.cos(POLE_ALTITUDE), Math.sin(POLE_ALTITUDE)));
+const stars = (() => {
+  const pos = new Float32Array(STAR_COUNT * 3), col = new Float32Array(STAR_COUNT * 3);
+  const tints = [[1, 0.85, 0.7], [1, 1, 1], [0.75, 0.85, 1]];
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const z = rand(-1, 1), a = rand(0, TAU), r = Math.sqrt(1 - z * z);
+    pos.set([r * Math.cos(a) * STAR_RADIUS, z * STAR_RADIUS, r * Math.sin(a) * STAR_RADIUS], i * 3);
+    const b = 0.03 + 0.9 * Math.random() ** STAR_BRIGHT_EXP;
+    col.set(pick(tints).map((t) => t * b), i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 32 });
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  return new THREE.Points(g, new THREE.PointsMaterial({
+    size: STAR_SIZE, sizeAttenuation: false, vertexColors: true, map: new THREE.CanvasTexture(canvas),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+})();
+scene.add(stars);
+
+function updateStars(dt) {
+  skyPhase = (skyPhase + dt / SKY_ROTATION_PERIOD) % 1;
+  stars.quaternion.setFromAxisAngle(POLE_AXIS, -skyPhase * TAU);
+}
+
+// ---- 地上 ----
+// 地上のもの（雪原・山並み・木）はオーロラより後に描き、オーロラの幕がどこにあっても手前に重ねる
+// （本物のオーロラは山よりずっと遠い）。後に描くため、透明の扱い（不透明度は 1）にする
+function addTerrain(geometry, color, glow) {
+  const mesh = new THREE.Mesh(geometry, litMaterial(color, glow, { transparent: true, side: THREE.DoubleSide }));
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  return mesh;
+}
+
+// 雪原: 手前ほど明るい（頂点の色で明暗を付ける。オーロラの明かりで色づく）
+const ground = (() => {
+  const g = new THREE.RingGeometry(0.5, WORLD_RADIUS, 64, 48).rotateX(-Math.PI / 2);
+  const pos = g.attributes.position, col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    col.fill(0.25 + 0.75 * (1 - smoothstep(Math.hypot(pos.getX(i), pos.getZ(i)), 0, 300)), i * 3, i * 3 + 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mesh = addTerrain(g, SNOW_COLOR, GROUND_GLOW);
+  mesh.material.vertexColors = true;
+  return mesh;
+})();
+
+// 山並み: カメラを囲む輪の帯。稜線の高さを方位で決める（phases: 起伏の位相。リセットのたびに選ぶ）
+const ridges = RIDGES.map((def) => ({ def, mesh: addTerrain(new THREE.BufferGeometry(), def.color, RIDGE_GLOW), phases: [] }));
+
+function ridgeHeight(az, def, phases) {
+  let n = 0, total = 0;
+  RIDGE_OCTAVES.forEach(([freq, amp], i) => { n += amp * Math.sin(freq * az + phases[i]); total += amp; });
+  n = (0.5 + 0.5 * n / total) ** def.peak;   // 0..1
+  return def.height * (0.2 + 0.8 * n) * (1 + def.sides * Math.sin(az) ** 2);
+}
+
+// 山並みの稜線を選び直す
+function buildRidges() {
+  for (const r of ridges) {
+    r.phases = RIDGE_OCTAVES.map(() => rand(0, TAU));
+    const pos = [];
+    for (let i = 0; i <= RIDGE_SEGMENTS; i++) {
+      const az = i / RIDGE_SEGMENTS * TAU;
+      pos.push(...azimuthPoint(az, r.def.dist, -20), ...azimuthPoint(az, r.def.dist, ridgeHeight(az, r.def, r.phases)));
+    }
+    r.mesh.geometry.dispose();
+    r.mesh.geometry = new THREE.BufferGeometry();
+    r.mesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    r.mesh.geometry.setIndex(stripIndex(RIDGE_SEGMENTS + 1));
+  }
+  buildSkyline();
+}
+
+// 方位 az で、いちばん高く見える山並みの稜線の仰角（rad）
+function skylineElevation(az) {
+  let e = 0;
+  for (const { def, phases } of ridges) e = Math.max(e, Math.atan2(ridgeHeight(az, def, phases) - CAM_HEIGHT, def.dist));
+  return e;
+}
+
+// 方位ごとの稜線の仰角を、山の形をならした表にしておく（どの方位でも実際の稜線以上になる）
+const skyline = new Float32Array(RIDGE_SEGMENTS);
+
+function buildSkyline() {
+  const n = RIDGE_SEGMENTS, w = Math.round(SKYLINE_SMOOTH / TAU * n);
+  const around = (src, i) => Array.from({ length: 2 * w + 1 }, (_, k) => src[(i + k - w + n) % n]);
+  const raw = skyline.map((_, i) => skylineElevation(i / n * TAU));
+  const peak = raw.map((_, i) => Math.max(...around(raw, i)));
+  skyline.set(peak.map((_, i) => around(peak, i).reduce((a, b) => a + b) / (2 * w + 1)));
+}
+
+// 上から見た位置 (x, z) の方位の、ならした稜線の仰角
+function skylineAt(x, z) {
+  const t = azimuthFraction(x, z) * RIDGE_SEGMENTS;
+  const i = Math.floor(t);
+  return lerp([skyline[i % RIDGE_SEGMENTS], skyline[(i + 1) % RIDGE_SEGMENTS]], t - i);
+}
+
+// 針葉樹: カメラは動かず向きを変えるだけなので、木はカメラの方を向いた平たいシルエットで十分（立体と見分けがつかない）。
+// 幹の四角と段々の三角形だけで描き、全部の木を 1 つのメッシュにまとめる（1 本 8 枚の三角形）
+const trees = addTerrain(new THREE.BufferGeometry(), TREE_FAR_COLOR, TREE_GLOW);
+trees.material.vertexColors = true;   // 頂点の色は霞み具合（0: 黒 〜 1: 元の色と明かり）
+trees.frustumCulled = false;
+
+// 木を TREE_COUNT 本、置き直す。正面（北）の手前は空けておく
+function placeTrees() {
+  const pos = [], col = [];
+  for (let i = 0; i < TREE_COUNT; i++) {
+    const az = rand(-Math.PI, Math.PI);
+    const near = TREE_DIST[0] + TREE_FRONT_CLEAR * Math.max(0, Math.cos(az)) ** 2;
+    const dist = rand(near, TREE_DIST[1]);
+    const [x0, , z0] = azimuthPoint(az, dist, 0);
+    const haze = smoothstep(dist, ...TREE_HAZE_DIST);
+    const h = randIn(TREE_HEIGHT), w = h * randIn(TREE_WIDTH);
+    const rx = Math.cos(az), rz = Math.sin(az);   // カメラから見た右向き（視線に垂直な水平の向き）
+    const p = (u, y) => {
+      pos.push(x0 + rx * u, y, z0 + rz * u);
+      col.push(haze, haze, haze);
+    };
+    // 幹
+    const tw = 0.08 * w, th = 0.15 * h;
+    p(-tw, 0); p(tw, 0); p(tw, th);
+    p(-tw, 0); p(tw, th); p(-tw, th);
+    // 枝の段（下の段ほど幅が広い三角形）。いちばん上の段の先が木の高さ
+    for (let k = 0; k < TREE_TIERS; k++) {
+      const f = k / TREE_TIERS;
+      const bottom = 0.06 + 0.76 * f, top = k === TREE_TIERS - 1 ? 1 : bottom + 0.25, hw = (1 - 0.8 * f) * w;
+      p(-hw, bottom * h); p(hw, bottom * h); p(0, top * h);
+    }
+  }
+  trees.geometry.dispose();
+  trees.geometry = new THREE.BufferGeometry();
+  trees.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  trees.geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+}
+
+// ---- オーロラ ----
+// 光の筋の模様（1 次元）。まばらに明るい所があり、となりと少しならして筋に幅を持たせる
+const rayTexture = (() => {
+  const n = RAY_TEXELS, raw = Array.from({ length: n }, () => Math.random() ** 3);
+  const data = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const v = (raw[(i + n - 1) % n] + 2 * raw[i] + raw[(i + 1) % n]) / 4;
+    data.fill(Math.round(Math.min(1, v * 2.5) * 255), i * 4, i * 4 + 3);
+    data[i * 4 + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, n, 1);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;   // 遠い幕で筋がちらつかないように
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+// 全部の幕で共通の色（applyPreset で決める）
+const auroraColors = {
+  uLow: { value: new THREE.Vector3() },
+  uMid: { value: new THREE.Vector3() },
+  uHigh: { value: new THREE.Vector3() },
+  uLowEnd: { value: 0 },
+  uHighStart: { value: 0 },
+};
+
+class Curtain {
+  constructor(index) {
+    this.index = index;                // 0 がいちばん明るい主役の幕。活動が弱いときは番号の大きい幕から消える
+    const n = CURTAIN_COLUMNS;
+    // 頂点は列ごとに [下端, 上端]
+    this.pos = new Float32Array(n * 2 * 3);
+    this.bright = new Float32Array(n * 2);
+    this.uv = new Float32Array(n * 2 * 2);
+    this.posAttr = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.brightAttr = new THREE.BufferAttribute(this.bright, 1).setUsage(THREE.DynamicDrawUsage);
+    this.uvAttr = new THREE.BufferAttribute(this.uv, 2);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', this.posAttr);
+    g.setAttribute('aBright', this.brightAttr);
+    g.setAttribute('uv', this.uvAttr);
+    g.setIndex(stripIndex(n));
+    this.uniforms = { uRays: { value: rayTexture }, uRayShift: { value: new THREE.Vector2() }, ...auroraColors };
+    this.mesh = new THREE.Mesh(g, new THREE.ShaderMaterial({
+      uniforms: this.uniforms, vertexShader: curtainVertex, fragmentShader: curtainFragment,
+      transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    this.mesh.frustumCulled = false;   // 頂点が毎フレーム変わるので、範囲での間引きはしない
+    auroraScene.add(this.mesh);
+    this.vis = 0;                      // 出ている度合い (0..1)
+  }
+
+  // 列 i の、手前の端からの位置（長さ方向）。遠くは画面の上で詰まるので、手前ほど細かく分ける
+  columnOffset(i) {
+    return (i / (CURTAIN_COLUMNS - 1)) ** 2 * this.length;
+  }
+
+  // 位置・形・動きをランダムに選び直す
+  randomize() {
+    this.start = randIn(CURTAIN_START);
+    this.length = randIn(CURTAIN_LENGTH);
+    const sign = randSign();
+    this.side = sign * (randIn(CURTAIN_SIDE) + CURTAIN_SIDE_STEP * this.index);
+    const heading = -sign * randIn(CURTAIN_HEADING);
+    this.dir = [Math.sin(heading), -Math.cos(heading)];    // 幕の向き（上から見た x, z）
+    this.perp = [Math.cos(heading), Math.sin(heading)];    // それに垂直な向き（うねりの向き）
+    this.altitude = randIn(CURTAIN_ALTITUDE);
+    this.height = randIn(CURTAIN_HEIGHT);
+    this.bend = -sign * randIn(CURTAIN_BEND) * this.length;
+    this.folds = FOLDS.map((f) => ({
+      ...randomWave(f), amp: randIn(f.amp),
+      breath: { speed: randIn(FOLD_BREATH_SPEED) * randSign(), phase: rand(0, TAU) },
+    }));
+    this.brightWave = randomWave(BRIGHT_WAVE);
+    this.heightWave = randomWave(HEIGHT_WAVE);
+    this.altitudeWave = randomWave(ALTITUDE_WAVE);
+    // 時間で位相が進むもの（update でまとめて進める）
+    this.waves = [...this.folds, ...this.folds.map((w) => w.breath), this.brightWave, this.heightWave, this.altitudeWave];
+    this.rayShift = [Math.random(), Math.random()];
+    this.rayDrift = RAY_DRIFT.map((d) => d * rand(0.6, 1.4) * randSign());
+    for (let i = 0; i < CURTAIN_COLUMNS; i++) {
+      const u = this.columnOffset(i) / RAY_REPEAT;
+      this.uv.set([u, 0, u, 1], i * 4);
+    }
+    this.uvAttr.needsUpdate = true;
+  }
+
+  update(dt) {
+    // 位相は JS で 0〜2π（筋のずらし量は 0〜1）に収める
+    const sp = act.speed * dt;
+    for (const w of this.waves) w.phase = (w.phase + w.speed * sp) % TAU;
+    for (let j = 0; j < 2; j++) this.rayShift[j] = (this.rayShift[j] + this.rayDrift[j] * sp + 1) % 1;
+    this.uniforms.uRayShift.value.fromArray(this.rayShift);
+    const target = clamp(act.curtains - this.index, 0, 1);
+    this.vis += clamp(target - this.vis, -dt / CURTAIN_FADE, dt / CURTAIN_FADE);
+    this.mesh.visible = this.vis > 0;
+    if (this.mesh.visible) this.updateColumns();
+  }
+
+  // 上から見た位置 (x, z)、手前の端から s の所の下端の高さ。
+  // オーロラは山より上空にあり、山に隠れない。稜線より上に見えるのに要る高さまで、遠い所ほど下端を持ち上げる
+  // （和の平方根でなめらかにつなぐ。頭上では元の高さ、遠くでは稜線の少し上に見える高さになる）
+  bottomHeight(x, z, s) {
+    const aw = this.altitudeWave;
+    const lift = Math.hypot(x, z) * Math.tan(skylineAt(x, z) + SKYLINE_MARGIN);
+    return CAM_HEIGHT + Math.hypot(this.altitude + ALTITUDE_WAVE.amp * Math.sin(aw.k * s + aw.phase) - CAM_HEIGHT, lift);
+  }
+
+  // 列ごとに、頂点の位置と明るさを求め直す
+  updateColumns() {
+    const { dir, perp, length } = this;
+    const bw = this.brightWave, hw = this.heightWave;
+    // 幕の明るさ（明るさのむら・両端の薄まり・斜めから見た明るさを除く）
+    const bright = this.vis * act.bright * brightScale * AURORA_BRIGHT * CURTAIN_DIM ** this.index;
+    for (let i = 0; i < CURTAIN_COLUMNS; i++) {
+      const s = this.columnOffset(i), f = i / (CURTAIN_COLUMNS - 1);
+      const along = this.start + s;
+      const grow = clamp(along / FOLD_GROW, 0.3, 1.2);
+      // 上から見た横のずれ（幕に垂直な向き）と、その傾き（d/ds）
+      let side = this.side + this.bend * f ** 4;
+      let slope = 2 * this.bend * f * f / length;
+      for (const w of this.folds) {
+        const fade = smoothstep(TAU / w.k / Math.max(along, 1), ...FOLD_FADE);
+        const amp = w.amp * grow * fade * (1 + FOLD_BREATH * Math.sin(w.breath.phase));
+        side += amp * Math.sin(w.k * s + w.phase);
+        slope += amp * w.k * Math.cos(w.k * s + w.phase);
+      }
+      const x = dir[0] * along + perp[0] * side, z = dir[1] * along + perp[1] * side;
+      const y0 = this.bottomHeight(x, z, s);
+      const h = this.height * act.height * (1 + HEIGHT_WAVE.amp * Math.sin(hw.k * s + hw.phase));
+      this.pos.set([x, y0, z, x, y0 + h, z], i * 6);
+      // 明るさ: 両端の薄まり × 明るさのむら × 斜めから見た明るさ（下端と上端で、視線と幕の法線 perp - slope × dir のなす角から求める）
+      const edge = smoothstep(s, 0, CURTAIN_NEAR_FADE) * smoothstep(length - s, 0, length * FAR_FADE);
+      const wave = 1 - BRIGHT_WAVE_DEPTH * (0.5 + 0.5 * Math.sin(bw.k * s + bw.phase));
+      const b = bright * edge * wave;
+      // 方位ごとの明かりに足す（columnOffset の傾きが、この列が受け持つ長さの割合）
+      lightRaw[Math.floor(azimuthFraction(x, z) * LIGHT_BINS)] += b * 2 * f / (CURTAIN_COLUMNS - 1);
+      const nx = perp[0] - slope * dir[0], nz = perp[1] - slope * dir[1], nl = Math.hypot(nx, nz);
+      for (let j = 0; j < 2; j++) {
+        const dy = (j ? y0 + h : y0) - CAM_HEIGHT;
+        const cos = Math.abs(nx * x + nz * z) / (nl * Math.hypot(x, dy, z));
+        this.bright[i * 2 + j] = b * Math.min(1 / Math.max(cos, 1e-3), EDGE_MAX);
+      }
+    }
+    this.posAttr.needsUpdate = true;
+    this.brightAttr.needsUpdate = true;
+  }
+
+}
+
+const curtains = Array.from({ length: Math.ceil(ACT_CURTAINS[1]) }, (_, i) => new Curtain(i));
+
+// ---- オーロラの色 ----
+// プリセットを chance の確率で 1 つ選ぶ
+function pickPreset() {
+  let r = Math.random();
+  return AURORA_PRESETS.find((p) => (r -= p.chance) < 0) ?? AURORA_PRESETS[0];
+}
+
+// 幕全体の平均の色（シェーダーの縦の色を、上の方ほど暗い明るさで粗く平均する）
+function averageColor({ low, mid, high, lowEnd, highStart, bright }) {
+  const color = [0, 0, 0];
+  let total = 0;
+  for (let v = 0.025; v < 1; v += 0.05) {
+    const weight = (1 - v) ** 2.5, toMid = smoothstep(v, 0, lowEnd), toHigh = smoothstep(v, highStart, highStart + COLOR_BLEND);
+    for (let k = 0; k < 3; k++) color[k] += weight * lerp([lerp([low[k], mid[k]], toMid), high[k]], toHigh);
+    total += weight;
+  }
+  return color.map((c) => c * bright / total);
+}
+
+// プリセットの色を幕と明かりに渡す
+function applyPreset(preset) {
+  const { low, mid, high, lowEnd, highStart, bright } = preset;
+  auroraColors.uLow.value.fromArray(low).multiplyScalar(bright);
+  auroraColors.uMid.value.fromArray(mid).multiplyScalar(bright);
+  auroraColors.uHigh.value.fromArray(high).multiplyScalar(bright);
+  auroraColors.uLowEnd.value = lowEnd;
+  auroraColors.uHighStart.value = highStart;
+  lightUniforms.uLightColor.value.fromArray(averageColor(preset));
+  lightSnap = true;
+}
+
+// ---- 活動の強さとサブストーム ----
+// サブストームの強さ (0..1)。t: 始まってからの秒数。終わったら -1
+function substormEnvelope(t) {
+  const [rise, hold, fall] = SUBSTORM_TIME;
+  if (t < rise) return smoothstep(t, 0, rise);
+  if (t < rise + hold) return 1;
+  if (t < rise + hold + fall) return 1 - smoothstep(t, rise + hold, rise + hold + fall);
+  return -1;
+}
+
+function startSubstorm() {
+  substorm = { t: 0 };
+  substormWait = randomInterval(SUBSTORM_INTERVAL);
+}
+
+// 活動の強さをサブストームの分へゆっくり近づけ、そこから幕の数・明るさなどを決める
+function updateActivity(dt) {
+  let target = 0;
+  if (substorm) {
+    substorm.t += dt;
+    const e = substormEnvelope(substorm.t);
+    if (e < 0) substorm = null;
+    else target = e;
+  } else {
+    substormWait -= dt;
+    if (substormWait <= 0) startSubstorm();
+  }
+  activity += (target - activity) * (1 - Math.exp(-dt / ACTIVITY_EASE));
+  act.curtains = lerp(ACT_CURTAINS, activity);
+  act.bright = lerp(ACT_BRIGHT, activity);
+  act.speed = lerp(ACT_SPEED, activity);
+  act.height = lerp(ACT_HEIGHT, activity);
+}
+
+// ---- カメラ ----
+// 北の空を見上げたまま、ゆっくり左右上下を見回す（位相は JS で 0〜2π に収める）
+function updateCamera() {
+  const yaw = CAM_SWAY[0] * Math.sin((time / CAM_SWAY_PERIOD[0] % 1) * TAU);
+  const pitch = CAM_PITCH + CAM_SWAY[1] * Math.sin((time / CAM_SWAY_PERIOD[1] % 1) * TAU);
+  camera.rotation.set(pitch, yaw, 0);
+}
+
+// ---- シーン切替 ----
+// オーロラの色のプリセット・明るさ・幕と、山並み・木の位置を選び直す。
+// 幕は山並みの高さに合わせて持ち上げるので、山並みより後に選ぶ
+function reset() {
+  applyPreset(pickPreset());
+  const [lo, hi] = AURORA_BRIGHT_RANGE;
+  brightScale = lo * (hi / lo) ** Math.random();
+  buildRidges();
+  placeTrees();
+  for (const c of curtains) {
+    c.randomize();
+    c.vis = clamp(act.curtains - c.index, 0, 1);   // 最初から出しておく
+  }
+}
+
+// ---- メインループ ----
+let last = performance.now();
+let nextDraw = 0;          // 次に描いてよい時刻 (ms)
+function tick(now) {
+  // MAX_FPS より速くは描かない。描いてよい時刻は一定の間隔で進め、画面の更新の間隔の揺れで 1 回飛ばさないよう少し余裕を持たせる
+  if (now < nextDraw - 2) return;
+  nextDraw = Math.max(nextDraw + 1000 / MAX_FPS, now);
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  time += dt;
+  updateActivity(dt);
+  for (const c of curtains) c.update(dt);
+  updateLight(dt);
+  updateCamera();
+  updateStars(dt);
+  renderAurora();
+  composer.render();
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。暗転している間にリセットする
+  changeScene: () => fadeAndRun(reset),
+  // 作品だけのキー操作
+  keys: {
+    KeyC: startSubstorm,            // デバッグ用の隠しコマンド（HUDには出さない）
+  },
+  onResize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    composer.setSize(innerWidth, innerHeight);
+    setAuroraSize();
+  },
+});
+
+// ---- 開始 ----
+updateActivity(0);
+reset();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
