@@ -164,6 +164,7 @@ const LAND_MIST = 0.008;          // 水面近くを霧でかすませる高さ�
 
 // 描画
 const MAX_PIXEL_RATIO = 1.5;      // 解像度の倍率の上限（高解像度画面での負荷を抑える）
+const TOUCH_MAX_PIXEL_RATIO = 1;  // タッチ操作の端末（スマホなど）での上限。画面の密度が高く GPU も非力なので低く抑える
 
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
@@ -640,8 +641,10 @@ const WaterShader = {
 };
 
 // ---- three.js 初期化 ----
+// スマホなどタッチ操作の端末か。解像度の上限と、画面を消さない処理を切り替える
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? TOUCH_MAX_PIXEL_RATIO : MAX_PIXEL_RATIO));
 renderer.setSize(innerWidth, innerHeight);
 renderer.setClearColor(0x000000, 0);   // 波紋のテクスチャを 0 で消すため
 document.body.appendChild(renderer.domElement);
@@ -1253,8 +1256,7 @@ function wake() {
 // タブが隠れると解除されるので、タブに戻ったときや画面に触れたときに取り直す
 let wakeLockRequest = null;   // 取得中・取得済みの間は Promise、解除されたら null
 function keepScreenOn() {
-  if (wakeLockRequest || !navigator.wakeLock || document.visibilityState !== 'visible') return;
-  if (!matchMedia('(pointer: coarse)').matches) return;
+  if (!IS_TOUCH || wakeLockRequest || !navigator.wakeLock || document.visibilityState !== 'visible') return;
   wakeLockRequest = navigator.wakeLock.request('screen').then(
     (lock) => lock.addEventListener('release', () => { wakeLockRequest = null; }),
     () => { wakeLockRequest = null; },   // 操作の前や省電力モードでは断られる。次に触れたときに取り直す
