@@ -92,25 +92,21 @@
 
   // ---- 操作の受け付け ----
   // changeScene: シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る処理。場面が 1 つだけなら null
-  // intensity:   強度（↑↓・上下スワイプ）。{ up, down, level }。level はゲージの位置（0..1）を返す。強度の無い作品では省く
+  // intensity:   強度（↑↓・上下スワイプ）。{ up, down, level }。level はゲージの位置（0..1）を返す
   // keys:        作品だけのキー操作。{ KeyJ: toggleJoint } のように KeyboardEvent.code で書く
   // onResize:    画面の大きさが変わったときの処理
-  function setupControls({ changeScene = null, intensity = null, keys = {}, onResize }) {
+  function setupControls({ changeScene = null, intensity, keys = {}, onResize }) {
     // 暗転は body の先頭に置き、操作ガイドとゲージは暗転の上に重ねる
     fadeEl = Object.assign(document.createElement('div'), { id: 'fade' });
     document.body.prepend(fadeEl);
-    if (intensity) {
-      intensityEl = document.body.appendChild(Object.assign(document.createElement('div'), { id: 'intensity' }));
-      intensityEl.appendChild(Object.assign(document.createElement('div'), { className: 'fill' }));
-    }
+    intensityEl = document.body.appendChild(Object.assign(document.createElement('div'), { id: 'intensity' }));
+    intensityEl.appendChild(Object.assign(document.createElement('div'), { className: 'fill' }));
 
     const keyActions = {
       Space: changeScene,
       KeyF: toggleFullscreen,
-      ...(intensity && {
-        ArrowUp: () => adjustIntensity(intensity, 1),
-        ArrowDown: () => adjustIntensity(intensity, -1),
-      }),
+      ArrowUp: () => adjustIntensity(intensity, 1),
+      ArrowDown: () => adjustIntensity(intensity, -1),
       ...keys,
     };
     addEventListener('keydown', (e) => {
@@ -138,7 +134,7 @@
       if (ax >= 2 * ay) {
         wake();
         changeScene?.();
-      } else if (intensity && ay >= 2 * ax) {
+      } else if (ay >= 2 * ax) {
         wake();
         adjustIntensity(intensity, dy < 0 ? 1 : -1);
       }

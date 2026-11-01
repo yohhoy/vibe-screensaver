@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="hud">
-  Space: リセット / F・ダブルクリック: 全画面
+  Space: リセット / F・ダブルクリック: 全画面 / ↑↓: オーロラの帯の数
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -52,7 +52,7 @@ const CURTAIN_SIDE_STEP = 300;    // 2 枚目から、1 枚ごとに CURTAIN_SID
 const CURTAIN_HEADING = [0.1, 0.4];   // 幕の向き（北から、手前の端と反対側へのずれ。rad）
 const CURTAIN_BEND = [0.05, 0.15];  // 遠い端がさらに反対側へ曲がる量（長さに対する割合）
 const CURTAIN_ALTITUDE = [380, 440];  // 下端の高さ
-const CURTAIN_HEIGHT = [350, 650];    // 幕の高さ（活動の強さで ACT_HEIGHT 倍になる）。空高く立ち上がるよう、本物より縦に誇張する
+const CURTAIN_HEIGHT = [540, 1000];   // 幕の高さ（活動の強さで ACT_HEIGHT 倍になる）。空高く立ち上がるよう、本物より縦に誇張する
 const SKYLINE_MARGIN = 0.025;      // 下端を山並みの稜線よりどれだけ上に見せるか（仰角 rad）
 const SKYLINE_SMOOTH = 0.06;      // 稜線をならす幅（方位 rad。下端が山の形をなぞらないように）
 const CURTAIN_NEAR_FADE = 150;    // 手前の端で薄くなる範囲（カメラの後ろなので見えない）
@@ -79,8 +79,9 @@ const BRIGHT_WAVE_DEPTH = 0.65;   // 明るさのむらの深さ（0: むら無�
 
 // オーロラの光り方
 const AURORA_BRIGHT = 0.52;       // 明るさの倍率（プリセットの色に掛ける）
-const AURORA_BRIGHT_RANGE = [0.4, 1];   // リセットのたびに選ぶ明るさの倍率の範囲（対数で一様に選ぶ）
+const AURORA_BRIGHT_RANGE = [0.6, 1];   // リセットのたびに選ぶ明るさの倍率の範囲（対数で一様に選ぶ）
 const CURTAIN_DIM = 0.55;         // 2 枚目からの幕の明るさ（1 枚ごとにこの倍率を掛ける。主役の 1 本を目立たせ、重なって白く飛ばないように）
+const CURTAIN_DIM_MIN = 0.25;     // その下限（幕を増やしたときに、後ろの幕が見えなくならないように）
 const FAR_FADE = 0.75;            // 遠い端で薄くなる範囲（長さに対する割合）
 // 薄い幕を斜めから見ると、視線が幕の中を長く通るので明るい（1 / |cos(視線と幕の法線の角)|）。その上限。
 // ひだが横向きになった所がくっきり明るく光る
@@ -102,17 +103,21 @@ const AURORA_PRESETS = [
 ];
 const COLOR_BLEND = 0.25;         // mid から high へ移り変わる幅（下端 0 → 上端 1）
 
+// 強度（↑↓・上下スワイプ）。幕の数だけを変える（操作ガイドでは「帯」と呼ぶ）
+const CURTAIN_LEVELS = [1, 1.75, 3, 4, 5, 6];   // 段ごとの幕の数（端数のぶんは薄く出す）
+const BASE_CURTAIN_LEVEL = 1;     // 最初の段（CURTAIN_LEVELS の添字）
+const CURTAIN_FADE = 4;           // 幕が現れる・消えるまでの秒数
+
 // 活動の強さ（ふだんは 0、サブストームの頂点で 1）。これで変わる値は [ふだん, 頂点]
 const ACTIVITY_EASE = 1.5;        // 活動の強さがなじむまでの時間の目安（秒）
-const ACT_CURTAINS = [1.75, 2.625];   // 幕の数（端数のぶんは薄く出す）
 const ACT_BRIGHT = [0.4125, 0.54375]; // 明るさの倍率
 const ACT_SPEED = [1.1375, 1.88125];  // 動きの速さの倍率
 const ACT_HEIGHT = [0.975, 1.2375];   // 幕の高さの倍率
-const CURTAIN_FADE = 4;           // 幕が現れる・消えるまでの秒数
 
 // サブストーム（ときどき急に明るくなり、激しく動いて、ゆっくり収まる）
 const SUBSTORM_INTERVAL = [180, 60, 480];   // 間隔 [平均, 下限, 上限]（秒）
 const SUBSTORM_TIME = [6, 12, 40];    // [強まる, 続く, 収まる] 秒
+const SUBSTORM_CURTAINS = 0.875;  // 頂点で増える幕の数
 
 // 空と星
 const SKY_ZENITH = [0.001, 0.0012, 0.0025];
@@ -120,11 +125,13 @@ const SKY_HORIZON = [0.008, 0.009, 0.014];
 const STAR_COUNT = 1500;
 const STAR_SIZE = 4;              // 点の大きさ（CSS ピクセル。ふちのぼけた丸なので、見た目は 2px ほど）
 const STAR_BRIGHT_EXP = 3;        // 明るさの分布（大きいほど暗い星が多い）
-const POLE_ALTITUDE = 1.15;       // 天の北極の高さ（rad。高緯度の土地）
-const SKY_ROTATION_PERIOD = 1800; // 星空が 1 周する秒数（本物より速い）
+const POLE_ALTITUDE = 0.75;       // 天の北極の高さ（rad）。本物のオーロラの土地（約 1.15）より低くして、回転の中心を画面に入れる
+const POLARIS_COLOR = [1, 0.95, 0.85];   // 北極星の色（天の北極に置く。動かない）
+const SKY_ROTATION_PERIOD = 3600; // 星空が 1 周する秒数（本物は約 24 時間。動きが分かるよう 24 倍ほど速くする）
 
 // 地上（山並みと針葉樹は、細部を描かない平たい色のシルエット。遠いものほど空の色に近い）
 const SNOW_COLOR = [0.035, 0.038, 0.05];   // 谷底の雪原（長時間露光の写真のように、ほんのり明るい）
+const SNOW_FADE = { dist: [20, 150], far: 0.5 };   // 雪原が奥へ暗くなる範囲（dist: 距離 [暗くなり始める, 暗くなり終わる]、far: 奥の明るさの倍率）
 const RIDGE_SEGMENTS = 720;       // 山並みの分割数
 const RIDGE_OCTAVES = [[2, 1], [5, 0.6], [11, 0.4], [27, 0.2], [61, 0.1], [131, 0.04]];   // 山の起伏 [1 周での山の数, 振幅]
 // 山並み（遠い順）。dist: 距離、height: 高さ、sides: 左右（東西）の盛り上がり（谷の両側の斜面）、peak: 尖り具合（大きいほど峰が鋭い）
@@ -152,13 +159,37 @@ const RIDGE_GLOW = 0.013;         // 山並み
 const TREE_GLOW = 0.005;          // いちばん遠い木（手前の木ほど弱い）
 const SKY_GLOW = 6.3;             // 空（空の色に (1 + これ × 明かり) を掛ける。地平線の近くほど明るい色なので目立つ）
 
+// 隠し要素のサンタクロース（トナカイの引くそりが単色のシルエットで空を横切り、通ったあとに灰色の粒子が落ちる）
+const SANTA_INTERVAL = [106, 60, 600];   // 現れる間隔 [指数分布の平均, 下限, 上限]（秒）。下限・上限で丸めたあとの実際の平均が約 120 秒になる値
+const SANTA_FLIGHT_TIME = 12;     // 画面を横切る秒数
+const SANTA_SCREEN_Y = [0.54, 0.66];  // 通る高さ（画面の上端 0 → 下端 1）
+const SANTA_SLOPE = 0.04;         // 飛ぶ道の傾き（画面の左右の端での高さのずれの最大。±、同じ単位）。SANTA_SCREEN_Y と合わせて 0.5〜0.7 に収める
+const SANTA_DIST = 1200;          // カメラからの奥行き（奥行きの判定はしないので、大きさにだけ効く）
+const SANTA_SCALE = 23;           // 大きさ（シルエットの座標 1 あたりの長さ。全体の幅は 1280×720 の画面で約 60px）
+const SANTA_COLOR = [0.001, 0.001, 0.0015];   // シルエットの色（手前の木と同じほぼ黒。オーロラの前を通るときに形が浮かぶ）
+const SANTA_GLOW_COLOR = [0.05, 0.06, 0.08];   // シルエットのまわりのほのかな光の色（加算。暗い空でも形が分かるように）
+const SANTA_GLOW_SIZE = 0.5;      // その光の広がり（シルエットの座標）
+const SANTA_EDGE_SOFT = 0.08;     // シルエットの縁のぼかしの幅（シルエットの座標）
+const SANTA_TEXELS = [96, 32];    // Canvas の解像度（シルエットの座標 1 あたりの画素数）[シルエット, 光]。光はぼかすので粗くてよい
+const REINDEER_BOB = { amp: 0.08, speed: 7 };   // トナカイの上下の動き（amp: シルエットの座標、speed: rad/秒）
+const DUST_COUNT = 80;            // 同時に出せる灰色の粒子の数（DUST_RATE × DUST_LIFE の上限より多く）
+const DUST_RATE = 25;             // 1 秒に出す数
+const DUST_LIFE = [1.5, 3];       // 消えるまでの秒数
+const DUST_FALL = [25, 45];       // 落ちる速さ（長さ/秒）
+const DUST_SPREAD = 20;           // 出る位置のばらつき（±長さ）
+const DUST_SIZE = 8;              // 点の大きさ（CSS ピクセル。ふちのぼけた丸なので、見た目は 4px ほど）
+const DUST_COLOR = [0.3, 0.3, 0.3];
+const DUST_FADE = { in: 0.3, out: 0.4 };   // in: 現れるまでの秒数, out: 消え始める時点（寿命に対する割合）
+
 // 描画
+const AURORA_RESOLUTION = 0.5;    // オーロラの描画先の解像度（画面に対する縦横の倍率）。描画の負荷をいちばん左右する。もともとぼかすので、低くても目立ちにくい
+const AURORA_MSAA = 2;            // オーロラの描画先の MSAA の数（0 にすると少し軽いが、幕の急な折り返しの縁に段差が出る）
 const AURORA_BLUR = 0.004;        // オーロラの横のぼかしの半径（画面の幅に対する割合）。幕の折り返しの硬い縁をなじませ、1 本につながって見せる
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での GPU の負荷を抑える）
 // ブルームの強さ・広がり・しきい値
 const BLOOM = { strength: 0.65, radius: 0.85, threshold: 0.1 };
-// ブルームを計算する解像度（CSS ピクセルに対する縦横の倍率。解像度の倍率には左右されない）。ブルームは描画の負荷の大半を占めるが、ぼかした光なので低い解像度でも見た目はほぼ同じ
+// ブルームを計算する解像度（CSS ピクセルに対する縦横の倍率。解像度の倍率には左右されない）。ぼかした光なので低い解像度でも見た目はほぼ同じ
 const BLOOM_SCALE = 0.5;
 
 // ---- ユーティリティ ----
@@ -316,7 +347,7 @@ composer.addPass(new OutputPass());
 // オーロラだけを別の描画先に描き、横にぼかしてからシーンへ足す（星や地上はぼかさない）
 const auroraScene = new THREE.Scene();
 const newAuroraTarget = (samples) => new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false, samples });
-const auroraTarget = newAuroraTarget(2), auroraBlurTarget = newAuroraTarget(0);   // 幕の折り返しの縁がぎざぎざにならないよう、幕を描く方だけ MSAA を掛ける
+const auroraTarget = newAuroraTarget(AURORA_MSAA), auroraBlurTarget = newAuroraTarget(0);
 const auroraBlur = new FullScreenQuad(new THREE.ShaderMaterial({
   uniforms: { uTexture: { value: auroraTarget.texture }, uStep: { value: AURORA_BLUR / 4 } },
   vertexShader: auroraQuadVertex, fragmentShader: auroraBlurFragment, depthTest: false, depthWrite: false,
@@ -333,8 +364,9 @@ scene.add(auroraLayer);
 // レンダラーの画素数に合わせて、描画先の大きさを決める
 function setAuroraSize() {
   const { x, y } = renderer.getDrawingBufferSize(new THREE.Vector2());
-  auroraTarget.setSize(x, y);
-  auroraBlurTarget.setSize(x, y);
+  const w = Math.ceil(x * AURORA_RESOLUTION), h = Math.ceil(y * AURORA_RESOLUTION);
+  auroraTarget.setSize(w, h);
+  auroraBlurTarget.setSize(w, h);
 }
 setAuroraSize();
 
@@ -348,12 +380,13 @@ function renderAurora() {
 
 // ---- 状態 ----
 let time = 0;              // 経過秒
+let curtainLevel = BASE_CURTAIN_LEVEL;   // 強度（CURTAIN_LEVELS の添字）
 let activity = 0;          // いまの活動の強さ（0..1。サブストームの分へゆっくり近づく）
 let substorm = null;       // 起きているサブストーム { t: 始まってからの秒数 }。無ければ null
 let substormWait = randomInterval(SUBSTORM_INTERVAL);   // 次のサブストームまでの秒数
 let skyPhase = 0;          // 星空の回転の位相（0..1）
 let brightScale = 1;       // オーロラの明るさの倍率（リセットのたびに AURORA_BRIGHT_RANGE から選ぶ）
-// 活動の強さから決まる値（updateActivity で求める）
+// 強度と活動の強さから決まる値（updateActivity で求める）
 const act = { curtains: 1, bright: 1, speed: 1, height: 1 };
 
 // ---- オーロラの明かり ----
@@ -386,6 +419,19 @@ function updateLight(dt) {
 }
 
 // ---- 空と星 ----
+// ふちのぼけた丸（星と灰色の粒子の点）
+const softDot = (() => {
+  const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 32 });
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(canvas);
+})();
+
 // 空: 地平線から天頂へのグラデーション（頂点の色）。オーロラの明かりで明るくなり、もとから明るい地平線の近くほど目立つ
 const sky = (() => {
   const g = new THREE.SphereGeometry(SKY_RADIUS, 48, 24);
@@ -401,7 +447,7 @@ const sky = (() => {
 })();
 scene.add(sky);
 
-// 星: 球の全体に散らし、天の北極のまわりに回す（地平線の下の星は地面に隠れる）。
+// 星: 球の全体に散らし、北極星を中心に、北を向いて反時計回りに回す（地平線の下の星は地面に隠れる）。
 // 小さな四角い点だと、空が回って星が画素の境目をまたぐたびに塗る画素の数が変わり、明るさが跳ねてちらつく。
 // ふちのぼけた丸い点にして、画素の境目のどこにあっても明るさの合計がほぼ同じになるようにする
 const POLE_AXIS = new THREE.Vector3(...azimuthPoint(0, Math.cos(POLE_ALTITUDE), Math.sin(POLE_ALTITUDE)));
@@ -414,19 +460,14 @@ const stars = (() => {
     const b = 0.03 + 0.9 * Math.random() ** STAR_BRIGHT_EXP;
     col.set(pick(tints).map((t) => t * b), i * 3);
   }
+  // 先頭の星を北極星にする（回転軸の上にあるので動かない）
+  pos.set(POLE_AXIS.clone().multiplyScalar(STAR_RADIUS).toArray(), 0);
+  col.set(POLARIS_COLOR, 0);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 32 });
-  const ctx = canvas.getContext('2d');
-  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.35, 'rgba(255,255,255,0.45)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 32, 32);
   return new THREE.Points(g, new THREE.PointsMaterial({
-    size: STAR_SIZE, sizeAttenuation: false, vertexColors: true, map: new THREE.CanvasTexture(canvas),
+    size: STAR_SIZE, sizeAttenuation: false, vertexColors: true, map: softDot,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   }));
 })();
@@ -447,17 +488,15 @@ function addTerrain(geometry, color, glow) {
   return mesh;
 }
 
-// 雪原: 手前ほど明るい（頂点の色で明暗を付ける。オーロラの明かりで色づく）
-const ground = (() => {
+// 雪原: 奥へ行くほどわずかに暗い（頂点の色で明暗を付ける。オーロラの明かりで色づく）
+(() => {
   const g = new THREE.RingGeometry(0.5, WORLD_RADIUS, 64, 48).rotateX(-Math.PI / 2);
   const pos = g.attributes.position, col = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
-    col.fill(0.25 + 0.75 * (1 - smoothstep(Math.hypot(pos.getX(i), pos.getZ(i)), 0, 300)), i * 3, i * 3 + 3);
+    col.fill(1 - (1 - SNOW_FADE.far) * smoothstep(Math.hypot(pos.getX(i), pos.getZ(i)), ...SNOW_FADE.dist), i * 3, i * 3 + 3);
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const mesh = addTerrain(g, SNOW_COLOR, GROUND_GLOW);
-  mesh.material.vertexColors = true;
-  return mesh;
+  addTerrain(g, SNOW_COLOR, GROUND_GLOW).material.vertexColors = true;
 })();
 
 // 山並み: カメラを囲む輪の帯。稜線の高さを方位で決める（phases: 起伏の位相。リセットのたびに選ぶ）
@@ -580,7 +619,7 @@ const auroraColors = {
 
 class Curtain {
   constructor(index) {
-    this.index = index;                // 0 がいちばん明るい主役の幕。活動が弱いときは番号の大きい幕から消える
+    this.index = index;                // 0 がいちばん明るい主役の幕。数を減らすときは番号の大きい幕から消える
     const n = CURTAIN_COLUMNS;
     // 頂点は列ごとに [下端, 上端]
     this.pos = new Float32Array(n * 2 * 3);
@@ -665,7 +704,7 @@ class Curtain {
     const { dir, perp, length } = this;
     const bw = this.brightWave, hw = this.heightWave;
     // 幕の明るさ（明るさのむら・両端の薄まり・斜めから見た明るさを除く）
-    const bright = this.vis * act.bright * brightScale * AURORA_BRIGHT * CURTAIN_DIM ** this.index;
+    const bright = this.vis * act.bright * brightScale * AURORA_BRIGHT * Math.max(CURTAIN_DIM ** this.index, CURTAIN_DIM_MIN);
     for (let i = 0; i < CURTAIN_COLUMNS; i++) {
       const s = this.columnOffset(i), f = i / (CURTAIN_COLUMNS - 1);
       const along = this.start + s;
@@ -699,10 +738,9 @@ class Curtain {
     this.posAttr.needsUpdate = true;
     this.brightAttr.needsUpdate = true;
   }
-
 }
 
-const curtains = Array.from({ length: Math.ceil(ACT_CURTAINS[1]) }, (_, i) => new Curtain(i));
+const curtains = Array.from({ length: Math.ceil(Math.max(...CURTAIN_LEVELS) + SUBSTORM_CURTAINS) }, (_, i) => new Curtain(i));
 
 // ---- オーロラの色 ----
 // プリセットを chance の確率で 1 つ選ぶ
@@ -763,7 +801,7 @@ function updateActivity(dt) {
     if (substormWait <= 0) startSubstorm();
   }
   activity += (target - activity) * (1 - Math.exp(-dt / ACTIVITY_EASE));
-  act.curtains = lerp(ACT_CURTAINS, activity);
+  act.curtains = CURTAIN_LEVELS[curtainLevel] + SUBSTORM_CURTAINS * activity;
   act.bright = lerp(ACT_BRIGHT, activity);
   act.speed = lerp(ACT_SPEED, activity);
   act.height = lerp(ACT_HEIGHT, activity);
@@ -777,6 +815,171 @@ function updateCamera() {
   camera.rotation.set(pitch, yaw, 0);
 }
 
+// ---- サンタクロース（隠し要素） ----
+// 針葉樹と同じ、三角形を重ねた角ばったシルエットで描く。Canvas に描いて縁を少しぼかし、板に貼る（小さく描くのでギザギザを出さない）。
+// 後ろに、同じ形を大きくぼかした光の板を重ね、暗い空でも形がほのかに分かるようにする。
+// 地上より先、オーロラと星より後に描き、奥行きの判定はしない（幕の前を飛び、山や木には隠れる）
+const SANTA_ORDER = 0.5;   // シルエットの renderOrder（オーロラの 0 と地上の 1 の間。粒子・光・シルエットの順に描く）
+
+// 多角形 [[x, y], ...] の並びをぼかして Canvas に描き、板のメッシュにする
+function softPlane(polygons, soft, texels, color, options) {
+  const points = polygons.flat(), pad = soft * 3;
+  const xs = points.map(([x]) => x), ys = points.map(([, y]) => y);
+  const left = Math.min(...xs) - pad, right = Math.max(...xs) + pad, bottom = Math.min(...ys) - pad, top = Math.max(...ys) + pad;
+  const w = right - left, h = top - bottom;
+  const canvas = Object.assign(document.createElement('canvas'), {
+    width: Math.ceil(w * texels), height: Math.ceil(h * texels),
+  });
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = '#fff';   // ctx.filter は Safari で使えないので、影でぼかす
+  ctx.shadowBlur = soft * texels;
+  for (const polygon of polygons) {
+    ctx.beginPath();
+    for (const [x, y] of polygon) ctx.lineTo((x - left) * texels, (top - y) * texels);
+    ctx.fill();
+  }
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h).translate((left + right) / 2, (bottom + top) / 2, 0),
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(...color), map: new THREE.CanvasTexture(canvas),
+      transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, ...options,
+    }),
+  );
+  mesh.renderOrder = SANTA_ORDER;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+// シルエットと、その後ろの光（右向きに飛ぶ形で書く）
+function silhouettePlane(polygons) {
+  const mesh = softPlane(polygons, SANTA_EDGE_SOFT, SANTA_TEXELS[0], SANTA_COLOR);
+  const glow = softPlane(polygons, SANTA_GLOW_SIZE, SANTA_TEXELS[1], SANTA_GLOW_COLOR, { blending: THREE.AdditiveBlending });
+  glow.renderOrder = SANTA_ORDER - 0.05;
+  mesh.add(glow);
+  return mesh;
+}
+
+const REINDEER_X = 2.1, REINDEER_Y = 0.1;   // トナカイの位置（そりが原点）
+const SANTA_MARGIN = 3.5;  // 飛び始めと飛び終わりに全身を画面の外へ出す幅（シルエットの座標）
+const santa = (() => {
+  const group = new THREE.Group();
+  group.add(silhouettePlane([
+    [[0.9, 0.48], [REINDEER_X + 0.4, 0.44], [REINDEER_X + 0.4, 0.38], [0.9, 0.42]],   // 手綱
+    [[-1.2, 0.3], [-0.55, 0.3], [-0.88, 1.1]],                                        // 袋
+    [[-0.6, 0.25], [0.42, 0.25], [0.45, 0.55], [0.22, 0.92], [-0.4, 0.92], [-0.6, 0.6]],   // サンタの体（幅広のずんぐりした形）
+    [[-0.34, 0.85], [0.16, 0.85], [-0.12, 1.5]],                                      // 頭と帽子
+    [[-0.12, 1.5], [-0.52, 1.32], [-0.2, 1.18]],                                      // 帽子の先（後ろへ折れる）
+    [[-1.2, -0.12], [0.75, -0.12], [1.1, 0.6], [0.55, 0.3], [-1.2, 0.35]],            // そり
+    [[-1.3, -0.26], [0.85, -0.26], [1.25, 0.05], [0.8, -0.12], [-1.3, -0.12]],        // 滑り木
+  ]));
+  group.visible = false;
+  scene.add(group);
+  return group;
+})();
+const reindeer = silhouettePlane([
+  [[-0.55, 0.22], [0.3, 0.25], [0.55, 0.7], [0.95, 0.55], [0.55, 0.42], [0.35, 0], [-0.45, 0]],   // 胴・首・頭
+  [[-0.45, 0.05], [-0.7, -0.42], [-0.2, 0]],                  // 後ろ脚
+  [[0.1, 0.02], [0.45, -0.42], [0.35, 0.02]],                 // 前脚
+  [[0.5, 0.65], [0.3, 1.15], [0.6, 0.7]],                     // 角
+  [[0.55, 0.66], [0.8, 1.15], [0.65, 0.6]],
+]);
+reindeer.position.x = REINDEER_X;
+santa.add(reindeer);
+
+// 灰色の粒子。通ったあとの空から、静かに落ちて消える
+const dustPool = Array.from({ length: DUST_COUNT }, () => ({ age: 0, life: 0, fall: 0 }));
+const dustPos = new Float32Array(DUST_COUNT * 3), dustCol = new Float32Array(DUST_COUNT * 3);
+const dust = (() => {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(dustPos, 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('color', new THREE.BufferAttribute(dustCol, 3).setUsage(THREE.DynamicDrawUsage));
+  const points = new THREE.Points(g, new THREE.PointsMaterial({
+    size: DUST_SIZE, sizeAttenuation: false, vertexColors: true, map: softDot,
+    transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+  }));
+  points.renderOrder = SANTA_ORDER - 0.1;
+  points.frustumCulled = false;
+  points.visible = false;
+  scene.add(points);
+  return points;
+})();
+
+let flight = null;         // 飛んでいるサンタ { t: 飛び始めてからの秒数, dir: 向き（1: 右へ, -1: 左へ）, y: 通る高さ, slope: 傾き }。いなければ null
+let santaWait = randomInterval(SANTA_INTERVAL);   // 次に現れるまでの秒数
+let dustDebt = 0;          // まだ出していない粒子の数（端数を次のコマに持ち越す）
+
+function startSanta() {
+  if (flight) return;
+  flight = { t: 0, dir: randSign(), y: randIn(SANTA_SCREEN_Y), slope: rand(-SANTA_SLOPE, SANTA_SLOPE) };
+  santaWait = randomInterval(SANTA_INTERVAL);
+  santa.scale.set(flight.dir * SANTA_SCALE, SANTA_SCALE, 1);   // 左向きに飛ぶときは裏返す
+  santa.visible = true;
+}
+
+function emitDust() {
+  const i = dustPool.findIndex((p) => p.age >= p.life);
+  if (i < 0) return;
+  Object.assign(dustPool[i], { age: 0, life: randIn(DUST_LIFE), fall: randIn(DUST_FALL) });
+  const { x, y, z } = santa.position, jitter = () => rand(-DUST_SPREAD, DUST_SPREAD);
+  dustPos.set([x + jitter(), y + jitter(), z + jitter()], i * 3);
+}
+
+function updateDust(dt) {
+  let alive = false;
+  dustPool.forEach((p, i) => {
+    if (p.age >= p.life) return;
+    p.age += dt;
+    alive = true;
+    dustPos[i * 3 + 1] -= p.fall * dt;
+    // サンタが通り過ぎてから現れ、後半で消える
+    const b = smoothstep(p.age, 0, DUST_FADE.in) * (1 - smoothstep(p.age, p.life * DUST_FADE.out, p.life));
+    for (let k = 0; k < 3; k++) dustCol[i * 3 + k] = DUST_COLOR[k] * b;
+  });
+  dust.visible = alive;
+  if (alive) {
+    dust.geometry.attributes.position.needsUpdate = true;
+    dust.geometry.attributes.color.needsUpdate = true;
+  }
+}
+
+// 画面の上の位置に置く。カメラの座標で置くので、見回しても通る高さは変わらず、大きさも一定で、形も歪まない
+function placeSanta({ t, dir, y, slope }) {
+  const halfH = SANTA_DIST * Math.tan(THREE.MathUtils.degToRad(CAM_FOV / 2)), halfW = halfH * camera.aspect;
+  const x = dir * (2 * t / SANTA_FLIGHT_TIME - 1) * (halfW + SANTA_SCALE * SANTA_MARGIN);
+  santa.position.set(x, (1 - 2 * (y + slope * x / halfW)) * halfH, -SANTA_DIST).applyQuaternion(camera.quaternion).add(camera.position);
+  santa.quaternion.copy(camera.quaternion);
+  santa.rotateZ(Math.atan(-2 * slope * halfH / halfW));
+  reindeer.position.y = REINDEER_Y + REINDEER_BOB.amp * Math.sin(t * REINDEER_BOB.speed);
+}
+
+function updateSanta(dt) {
+  if (flight) {
+    flight.t += dt;
+    if (flight.t >= SANTA_FLIGHT_TIME) {
+      flight = null;
+      santa.visible = false;
+    } else {
+      placeSanta(flight);
+      dustDebt += DUST_RATE * dt;
+      for (; dustDebt >= 1; dustDebt--) emitDust();
+    }
+  } else {
+    santaWait -= dt;
+    if (santaWait <= 0) startSanta();
+  }
+  updateDust(dt);
+}
+
+// リセットのときは飛んでいるサンタと粒子を消す
+function clearSanta() {
+  flight = null;
+  santa.visible = false;
+  for (const p of dustPool) p.life = 0;
+  dustCol.fill(0);
+  dust.visible = false;
+}
+
 // ---- シーン切替 ----
 // オーロラの色のプリセット・明るさ・幕と、山並み・木の位置を選び直す。
 // 幕は山並みの高さに合わせて持ち上げるので、山並みより後に選ぶ
@@ -786,10 +989,16 @@ function reset() {
   brightScale = lo * (hi / lo) ** Math.random();
   buildRidges();
   placeTrees();
+  clearSanta();
   for (const c of curtains) {
     c.randomize();
     c.vis = clamp(act.curtains - c.index, 0, 1);   // 最初から出しておく
   }
+}
+
+// ---- 強度 ----
+function setCurtainLevel(value) {
+  curtainLevel = clamp(value, 0, CURTAIN_LEVELS.length - 1);
 }
 
 // ---- メインループ ----
@@ -808,18 +1017,25 @@ function tick(now) {
   updateLight(dt);
   updateCamera();
   updateStars(dt);
+  updateSanta(dt);
   renderAurora();
   composer.render();
 }
 
 // ---- 入力・UI ----
-// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプは common.js
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
   // シーン切替（Space・左右スワイプ）。暗転している間にリセットする
   changeScene: () => fadeAndRun(reset),
+  // 強度（↑↓・上下スワイプ）。幕の数
+  intensity: {
+    up: () => setCurtainLevel(curtainLevel + 1),
+    down: () => setCurtainLevel(curtainLevel - 1),
+    level: () => curtainLevel / (CURTAIN_LEVELS.length - 1),   // ゲージの位置（0..1）
+  },
   // 作品だけのキー操作
   keys: {
-    KeyC: startSubstorm,            // デバッグ用の隠しコマンド（HUDには出さない）
+    KeyC: startSanta,               // サンタをすぐに呼ぶ隠しコマンド（HUDには出さない）
   },
   onResize() {
     camera.aspect = innerWidth / innerHeight;
