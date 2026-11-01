@@ -4,30 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>3D Pipes</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  /* スマホでダブルタップ・ピンチで拡大したり、長押しで文字を選んだりしない（PC はそのまま） */
-  @media (pointer: coarse) {
-    body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  }
-  canvas { display: block; }
-  body.idle { cursor: none; }
-  #fade {
-    position: fixed; inset: 0; background: #000; opacity: 0;
-    pointer-events: none; transition: opacity 0.8s ease;
-  }
-  #hud {
-    /* ノッチやホームバーに重ならないよう、セーフエリアの内側に置く。幅は画面に収めて折り返す */
-    position: fixed; color: #ccc; width: fit-content;
-    left: max(16px, env(safe-area-inset-left));
-    right: max(16px, env(safe-area-inset-right));
-    bottom: max(16px, env(safe-area-inset-bottom));
-    font: 12px/1.6 ui-monospace, Menlo, monospace;
-    background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
-    transition: opacity 0.6s ease;
-  }
-  body.idle #hud { opacity: 0; }
-</style>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -36,13 +14,13 @@
 </script>
 </head>
 <body>
-<div id="fade"></div>
 <div id="hud">
   Space: リセット / F・ダブルクリック: 全画面 / J: ジョイント切替 / ↑↓: 速度
 </div>
 <script type="module">
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
 
 // ---- 設定 ----
 const GRID = { x: 20, y: 14, z: 20 };     // グリッドのセル数
@@ -70,11 +48,6 @@ const SPEED_STEP = 1.25;                   // ↑↓ 1回あたりの倍率
 // 描画
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 
-// UI
-const FADE_MS = 850;                       // #fade の transition より少し長く
-const IDLE_MS = 3000;                      // カーソルとHUDを隠すまでの時間
-const SWIPE_MIN_PX = 60;                   // 左右スワイプとみなす横の移動量（CSS ピクセル）
-
 // ---- ユーティリティ ----
 const randInt = (n) => Math.floor(Math.random() * n);
 const pick = (arr) => arr[randInt(arr.length)];
@@ -87,8 +60,6 @@ const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1
 const alignY = (dir) => new THREE.Quaternion().setFromUnitVectors(UP, dir);
 
 // ---- three.js 初期化 ----
-// スマホなどタッチ操作の端末か。解像度の倍率の上限と、画面を消さない処理を切り替える
-const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
 renderer.setSize(innerWidth, innerHeight);
@@ -405,97 +376,30 @@ function tick(now) {
 }
 
 // ---- 入力・UI ----
-const fadeEl = document.getElementById('fade');
-let fading = false;
-
-// 暗転している間に change() を実行して、明るく戻す
-function fadeAndRun(change) {
-  if (fading) return;
-  fading = true;
-  fadeEl.style.opacity = 1;
-  setTimeout(() => {
-    change();
-    fadeEl.style.opacity = 0;
-    fading = false;
-  }, FADE_MS);
-}
-
-function toggleFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen?.();
-}
-
-// 操作が無ければカーソルとHUDを隠す
-let idleTimer;
-function wake() {
-  document.body.classList.remove('idle');
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
-}
-
-// スマホなどタッチ操作の端末では、眺めている間は画面を自動で消さない（Screen Wake Lock 対応ブラウザのみ）。
-// PC では OS のスリープやスクリーンセーバを妨げないよう何もしない。
-// タブが隠れると解除されるので、タブに戻ったときや画面に触れたときに取り直す
-let wakeLockRequest = null;   // 取得中・取得済みの間は Promise、解除されたら null
-function keepScreenOn() {
-  if (!IS_TOUCH || wakeLockRequest || !navigator.wakeLock || document.visibilityState !== 'visible') return;
-  wakeLockRequest = navigator.wakeLock.request('screen').then(
-    (lock) => lock.addEventListener('release', () => { wakeLockRequest = null; }),
-    () => { wakeLockRequest = null; },   // 操作の前や省電力モードでは断られる。次に触れたときに取り直す
-  );
-}
-
-// シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
-const changeScene = reset;
-
-const KEY_ACTIONS = {
-  Space: changeScene,
-  KeyF: toggleFullscreen,
-  KeyJ: toggleJoint,
-  ArrowUp: () => setSpeed(speed * SPEED_STEP),
-  ArrowDown: () => setSpeed(speed / SPEED_STEP),
-};
-
-addEventListener('keydown', (e) => {
-  wake();
-  // Cmd+F や Ctrl+J などのブラウザのショートカットは横取りしない
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const action = KEY_ACTIONS[e.code];
-  if (!action) return;
-  e.preventDefault();
-  action();
-});
-
-// スマホでは、左右にスワイプするとシーン切替
-let swipeStart = null;   // 指を置いた位置。指が離れるまで覚えておく
-addEventListener('pointerdown', (e) => {
-  if (e.pointerType === 'touch' && e.isPrimary) swipeStart = { x: e.clientX, y: e.clientY };
-});
-addEventListener('pointerup', (e) => {
-  if (!swipeStart || !e.isPrimary) return;
-  const dx = e.clientX - swipeStart.x, dy = e.clientY - swipeStart.y;
-  swipeStart = null;
-  // 横に十分動き、縦の動きより十分大きいときだけ左右スワイプとみなす
-  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < 2 * Math.abs(dy)) return;
-  wake();
-  changeScene?.();
-});
-addEventListener('pointercancel', () => { swipeStart = null; });
-addEventListener('dblclick', toggleFullscreen);
-addEventListener('mousemove', wake);
-document.addEventListener('visibilitychange', keepScreenOn);
-addEventListener('pointerdown', keepScreenOn);
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  placeCamera();
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
+  changeScene: reset,
+  // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
+  intensity: {
+    up: () => setSpeed(speed * SPEED_STEP),
+    down: () => setSpeed(speed / SPEED_STEP),
+    level: () => logPosition(speed, MIN_SPEED, MAX_SPEED),   // ゲージの位置（0..1）
+  },
+  // 作品だけのキー操作
+  keys: {
+    KeyJ: toggleJoint,
+  },
+  onResize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    placeCamera();
+  },
 });
 
 // ---- 開始 ----
 start();
-wake();
-keepScreenOn();
 renderer.setAnimationLoop(tick);
 </script>
 </body>

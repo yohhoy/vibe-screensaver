@@ -1,0 +1,38 @@
+/* 全作品で共通の見た目（画面全体・暗転・操作ガイド・強度のゲージ） */
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+/* スマホでダブルタップ・ピンチで拡大したり、長押しで文字を選んだりしない（PC はそのまま） */
+@media (pointer: coarse) {
+  body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+}
+canvas { display: block; }
+body.idle { cursor: none; }
+
+/* 暗転。common.js が作る */
+#fade {
+  position: fixed; inset: 0; background: #000; opacity: 0;
+  pointer-events: none; transition: opacity 0.8s ease;
+}
+
+/* 操作ガイド。中身は作品ごとに HTML に書く */
+#hud {
+  /* ノッチやホームバーに重ならないよう、セーフエリアの内側に置く。幅は画面に収めて折り返す */
+  position: fixed; color: #ccc; width: fit-content;
+  left: max(16px, env(safe-area-inset-left));
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  font: 12px/1.6 ui-monospace, Menlo, monospace;
+  background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
+  transition: opacity 0.6s ease;
+}
+body.idle #hud { opacity: 0; }
+
+/* 強度のゲージ。common.js が作り、変えたときだけ右端に少しの間だけ薄く出す */
+#intensity {
+  position: fixed; top: 50%; transform: translateY(-50%);
+  right: max(12px, env(safe-area-inset-right));
+  width: 6px; height: min(160px, 40vh); border-radius: 3px; overflow: hidden;
+  background: rgba(255,255,255,0.15);
+  opacity: 0; transition: opacity 0.6s ease; pointer-events: none;
+}
+#intensity.show { opacity: 0.8; }
+#intensity .fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.7); }
