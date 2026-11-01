@@ -68,8 +68,7 @@ const MAX_SPEED = 60;
 const SPEED_STEP = 1.25;                   // ↑↓ 1回あたりの倍率
 
 // 描画
-const MAX_PIXEL_RATIO = 2;                 // 解像度の倍率の上限（高解像度画面での負荷を抑える）
-const TOUCH_MAX_PIXEL_RATIO = 1;           // タッチ操作の端末（スマホなど）での上限。画面の密度が高く GPU も非力なので低く抑える
+const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 
 // UI
 const FADE_MS = 850;                       // #fade の transition より少し長く
@@ -87,10 +86,10 @@ const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1
 const alignY = (dir) => new THREE.Quaternion().setFromUnitVectors(UP, dir);
 
 // ---- three.js 初期化 ----
-// スマホなどタッチ操作の端末か。解像度の上限と、画面を消さない処理を切り替える
+// スマホなどタッチ操作の端末か。解像度の倍率の上限と、画面を消さない処理を切り替える
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? TOUCH_MAX_PIXEL_RATIO : MAX_PIXEL_RATIO));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

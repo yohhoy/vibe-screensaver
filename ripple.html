@@ -163,8 +163,7 @@ const FOREST_OPACITY = 0.32;      // 森の濃さ
 const LAND_MIST = 0.008;          // 水面近くを霧でかすませる高さ（空の角度 rad）
 
 // 描画
-const MAX_PIXEL_RATIO = 1.5;      // 解像度の倍率の上限（高解像度画面での負荷を抑える）
-const TOUCH_MAX_PIXEL_RATIO = 1;  // タッチ操作の端末（スマホなど）での上限。画面の密度が高く GPU も非力なので低く抑える
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
@@ -641,10 +640,10 @@ const WaterShader = {
 };
 
 // ---- three.js 初期化 ----
-// スマホなどタッチ操作の端末か。解像度の上限と、画面を消さない処理を切り替える
+// スマホなどタッチ操作の端末か。解像度の倍率の上限と、画面を消さない処理を切り替える
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? TOUCH_MAX_PIXEL_RATIO : MAX_PIXEL_RATIO));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
 renderer.setSize(innerWidth, innerHeight);
 renderer.setClearColor(0x000000, 0);   // 波紋のテクスチャを 0 で消すため
 document.body.appendChild(renderer.domElement);
