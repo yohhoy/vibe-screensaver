@@ -30,7 +30,7 @@
 <body>
 <div id="fade"></div>
 <div id="hud">
-  Space: シーンを変更 / F・ダブルクリック: 全画面 / ↑↓: 泡の筋の数
+  Space: リセット / F・ダブルクリック: 全画面 / ↑↓: 泡の筋の数
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -59,10 +59,7 @@ const CAM_DRIFT_PERIOD = [97, 61];   // その周期（秒）
 
 // クラゲの形（ミズクラゲ風: 平たい傘に短い触手がびっしり、傘の上に 4 つの輪、傘の下に口腕）。
 // どのクラゲもほぼ同じ大きさ・形にする。長さ・幅は傘の半径に対する倍率
-const JELLY_COUNT = 14;           // 起動したときの数
-// 起動したときの大きさ・傘の縦横比・足の長さ（全部のクラゲで共通。Space で選び直す）。
-// size: 傘の半径、flat: 傘の高さ / 半径、legs: 触手と口腕の長さの倍率
-const BASE_SHAPE = { size: 0.46, flat: 0.42, legs: 1 };
+// クラゲの大きさ・傘の縦横比・足の長さ（全部のクラゲで共通）は、起動・Space のときに SHAPE_RANGE から選ぶ
 const SHAPE_JITTER = 0.04;        // クラゲごとの大きさ・足の長さのばらつき（±割合）
 const BELL_ANGLE = 1.75;          // 傘の縁が頂点から何 rad 回り込むか
 const TENTACLE_COUNT = 40;        // 縁の触手の本数
@@ -83,7 +80,9 @@ const ARM_SEGMENTS = 14;          // 口腕の節の数
 const GONAD_SEGMENTS = 16;        // 生殖腺の輪の分割数
 
 // クラゲの動き
-const PULSE_RATE = [0.4, 0.7];    // 傘が縮む回数（回/秒）
+const BASE_SIZE = 0.46;           // 基準の傘の半径（拍動の速さ・クラゲの数をこの大きさのときの値で決める）
+const PULSE_RATE = [0.4, 0.7];    // 傘が縮む回数（回/秒。傘の半径が BASE_SIZE のとき）
+const PULSE_SIZE_EXP = 1;         // 拍動の速さを (BASE_SIZE / 傘の半径) の何乗に比例させるか（大きい傘ほどゆっくり。足の長さには関係しない）
 const PULSE_SHARE = 0.35;         // 1 回のうち縮んでいる時間の割合（残りでゆっくり戻る）
 const PULSE_SQUEEZE = 0.22;       // 縮んだときに縁が細くなる割合
 const PULSE_STRETCH = 0.25;       // 縮んだときに傘が縦に伸びる割合
@@ -116,7 +115,7 @@ const FAR_DIM = 0.3;              // 水槽のいちばん奥のものの明る�
 
 // 泡
 const MAX_BUBBLES = 800;          // 泡の筋が MAX_STREAMS 本でも足りる数
-const BUBBLE_RATE = 4;            // 1 本の筋に 1 秒に出る数
+const BUBBLE_RATE = 3;            // 1 本の筋に 1 秒に出る数
 const STONE_SIZE = 0.14;          // 泡の出る石の半径（泡はこの範囲から出る。石は画面の下の外にあり、描かない）
 const BUBBLE_SIZE = [0.012, 0.035];   // 半径の範囲
 const BUBBLE_RISE = [0.45, 4];    // 上る速さ = [0] + [1] × 半径（大きい泡ほど速い）
@@ -132,24 +131,24 @@ const MIN_STREAMS = 1;
 const MAX_STREAMS = 10;
 
 // 大きな泡がまとまって出る（クラゲをひっくり返す）
-const BURST_INTERVAL = [35, 15, 80];  // 間隔 [平均, 下限, 上限]（秒）
+const BURST_INTERVAL = [29, 10, 120];  // 間隔 [平均, 下限, 上限]（秒）。平均は下限・上限で切る前の値で、切ったあとの平均はほぼ 30 秒
 const BURST_COUNT = 24;           // 1 回に出る数
 const BURST_TIME = 2;             // 出し終えるまでの秒数
 const BURST_SIZE = [0.06, 0.14];   // 半径の範囲
 
 // 色。クラゲは全部同じ色で、時間とともに虹色を一巡する。s・l は彩度・明度、glow は明るさの倍率
 const RAINBOW_PERIOD = 300;       // クラゲの色が一巡する秒数
-const RAINBOW_START = 0.55;       // 起動したときの色相（0..1。0.55 は水色）
 const JELLY_COLOR = { s: 0.85, l: 0.5, glow: 1.8 };
 const GONAD_COLOR = { s: 0.4, l: 0.65, glow: 1.4 };     // 生殖腺（クラゲと同じ色相で、白っぽく）
 const BACKDROP_COLOR = { s: 0.5, l: 0.5, glow: 0.035 };   // 奥の壁のほのかな明かり（同じ色相）
 const BUBBLE_COLOR = [0.7, 1.0, 1.3];
 const BACKGROUND = [0.0, 0.012, 0.035];   // 背景（画面に出る値）
 
-// シーンの切り替え（Space。暗転している間に、クラゲの形・数・位置、色相、泡の筋の位置を選び直す）
-const SHAPE_RANGE = { size: [0.3, 0.62], flat: [0.25, 1.0], legs: [0.4, 2.5] };   // 形の範囲（BASE_SHAPE と同じ項目）
+// シーンの選び方（起動したときと Space のとき。クラゲの形・数・位置、色相、泡の筋の位置をランダムに選ぶ）
+// 形の範囲。size: 傘の半径、flat: 傘の高さ / 半径、legs: 触手と口腕の長さの倍率
+const SHAPE_RANGE = { size: [0.3, 0.62], flat: [0.25, 1.0], legs: [0.4, 2.5] };
 const SHAPE_MIN_CHANGE = 0.25;    // 形のどの値も、いまの値から最低これだけ変える（範囲の幅に対する割合）
-// クラゲの数の範囲（傘の大きさが BASE_SHAPE.size のとき）。傘の面積に反比例させ、大きいクラゲほど少なくする
+// クラゲの数の範囲（傘の半径が BASE_SIZE のとき）。傘の面積に反比例させ、大きいクラゲほど少なくする
 const JELLY_COUNT_RANGE = [9, 18];
 const MAX_JELLIES = 24;
 const HUE_MIN_CHANGE = 0.2;       // 色相を、いまの色相から最低これだけ変える（0..0.5）
@@ -161,7 +160,7 @@ const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz な�
 const MSAA_SAMPLES = 4;           // 線のぎざぎざを抑えるマルチサンプルの数
 const MAX_LINES = 40000;          // 1 フレームに描ける線分の数
 // ブルームの強さ・広がり・しきい値
-const BLOOM = { strength: 0.5, radius: 0.3, threshold: 0.15 };
+const BLOOM = { strength: 0.35, radius: 0.3, threshold: 0.15 };
 
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
@@ -219,9 +218,9 @@ const loop = { cy: WATER_LEVEL / 2, a: 1, b: 1 };
 // いまのクラゲと生殖腺の色（updateColors で求める）
 const jellyColor = [0, 0, 0];
 const gonadColor = [0, 0, 0];
-// いまのクラゲの形（Space で選び直す。全部のクラゲで共通）
-const shape = { ...BASE_SHAPE };
-let hueShift = 0;          // 色相のずらし量（Space で選び直す。0..1）
+// いまのクラゲの形（起動・Space のときに選ぶ。全部のクラゲで共通）
+const shape = { size: 0, flat: 0, legs: 0 };
+let hueShift = 0;          // 色相のずらし量（起動・Space のときに選ぶ。0..1）
 
 // ---- 線 ----
 // 線はすべて 1 つの LineSegments にまとめ、毎フレーム頂点を詰め直す。
@@ -370,7 +369,7 @@ class Jelly {
     this.size = shape.size * (1 + rand(-1, 1) * SHAPE_JITTER);
     this.legJitter = 1 + rand(-1, 1) * SHAPE_JITTER;
     this.seed = rand(0, TAU);
-    this.rate = randIn(PULSE_RATE);
+    this.rate = randIn(PULSE_RATE) * (BASE_SIZE / this.size) ** PULSE_SIZE_EXP;
     this.phase = Math.random();
     this.squeeze = 0;                      // 傘の縮み具合 (0..1)
     // 水流の輪の中で好む位置と、好む奥行き
@@ -750,7 +749,7 @@ function hueColor(hue, { s, l, glow }, out) {
 
 // クラゲ・生殖腺・奥の壁の明かりを、いまの色相にする（位相は JS で 0〜1 に収める）
 function updateColors() {
-  const hue = (RAINBOW_START + hueShift + time / RAINBOW_PERIOD) % 1;
+  const hue = (hueShift + time / RAINBOW_PERIOD) % 1;
   hueColor(hue, JELLY_COLOR, jellyColor);
   hueColor(hue, GONAD_COLOR, gonadColor);
   const b = BACKDROP_COLOR;
@@ -766,11 +765,14 @@ function randomAway([lo, hi], v) {
   return x;
 }
 
-// クラゲの形（大きさ・傘の縦横比・足の長さ）・数・位置、色相、泡の筋の位置を選び直す（暗転している間に呼ぶ）
-function nextScene() {
-  for (const key in SHAPE_RANGE) shape[key] = randomAway(SHAPE_RANGE[key], shape[key]);
-  hueShift = (hueShift + rand(HUE_MIN_CHANGE, 1 - HUE_MIN_CHANGE)) % 1;
-  const area = (BASE_SHAPE.size / shape.size) ** 2;
+// クラゲの形（大きさ・傘の縦横比・足の長さ）・数・位置、色相、泡の筋の位置をランダムに選ぶ。
+// 起動したとき（first）は範囲全体から、Space のとき（暗転している間に呼ぶ）はいまの値から離れた値を選ぶ
+function nextScene(first = false) {
+  for (const key in SHAPE_RANGE) {
+    shape[key] = first ? randIn(SHAPE_RANGE[key]) : randomAway(SHAPE_RANGE[key], shape[key]);
+  }
+  hueShift = first ? Math.random() : (hueShift + rand(HUE_MIN_CHANGE, 1 - HUE_MIN_CHANGE)) % 1;
+  const area = (BASE_SIZE / shape.size) ** 2;
   spawnJellies(clamp(Math.round(randIn(JELLY_COUNT_RANGE) * area), 1, MAX_JELLIES));
   replaceStreams();
   prewarm();
@@ -905,9 +907,8 @@ addEventListener('resize', () => {
 });
 
 // ---- 開始 ----
-spawnJellies(JELLY_COUNT);
 setStreams(BASE_STREAMS);
-prewarm();
+nextScene(true);
 wake();
 renderer.setAnimationLoop(tick);
 </script>
