@@ -8,6 +8,8 @@ Webブラウザで動く、スクリーンセーバ風のアニメーション�
 
 上の URL を開くか、手元で [index.html](index.html) をブラウザで開きます。WebGL2 対応のブラウザとインターネット接続が必要です。
 
+スマホでも表示できます。スマホでは、表示している間は画面が自動で消えないようにしています（対応ブラウザのみ）。
+
 ## [3D パイプ](https://yohhoy.github.io/vibe-screensaver/pipes.html)
 
 [<img src="docs/images/pipes.jpg" width="480" alt="3D パイプ">](https://yohhoy.github.io/vibe-screensaver/pipes.html)

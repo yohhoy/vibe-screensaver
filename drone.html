@@ -2,10 +2,14 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Night Drone</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* スマホでダブルタップ・ピンチで拡大したり、長押しで文字を選んだりしない（PC はそのまま） */
+  @media (pointer: coarse) {
+    body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  }
   canvas { display: block; }
   body.idle { cursor: none; }
   #fade {
@@ -13,7 +17,11 @@
     pointer-events: none; transition: opacity 0.8s ease;
   }
   #hud {
-    position: fixed; left: 16px; bottom: 16px; color: #ccc;
+    /* ノッチやホームバーに重ならないよう、セーフエリアの内側に置く。幅は画面に収めて折り返す */
+    position: fixed; color: #ccc; width: fit-content;
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(16px, env(safe-area-inset-bottom));
     font: 12px/1.6 ui-monospace, Menlo, monospace;
     background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 4px;
     transition: opacity 0.6s ease;
@@ -903,6 +911,19 @@ function wake() {
   idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_MS);
 }
 
+// スマホなどタッチ操作の端末では、眺めている間は画面を自動で消さない（Screen Wake Lock 対応ブラウザのみ）。
+// PC では OS のスリープやスクリーンセーバを妨げないよう何もしない。
+// タブが隠れると解除されるので、タブに戻ったときや画面に触れたときに取り直す
+let wakeLockRequest = null;   // 取得中・取得済みの間は Promise、解除されたら null
+function keepScreenOn() {
+  if (wakeLockRequest || !navigator.wakeLock || document.visibilityState !== 'visible') return;
+  if (!matchMedia('(pointer: coarse)').matches) return;
+  wakeLockRequest = navigator.wakeLock.request('screen').then(
+    (lock) => lock.addEventListener('release', () => { wakeLockRequest = null; }),
+    () => { wakeLockRequest = null; },   // 操作の前や省電力モードでは断られる。次に触れたときに取り直す
+  );
+}
+
 const KEY_ACTIONS = {
   Space: nextCourse,
   KeyF: toggleFullscreen,
@@ -921,6 +942,8 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('dblclick', toggleFullscreen);
 addEventListener('mousemove', wake);
+document.addEventListener('visibilitychange', keepScreenOn);
+addEventListener('pointerdown', keepScreenOn);
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -934,6 +957,7 @@ updatePointScale();
 setSpeed(BASE_SPEED);
 loadCourse(Math.floor(Math.random() * COURSES.length));
 wake();
+keepScreenOn();
 renderer.setAnimationLoop(tick);
 </script>
 </body>
