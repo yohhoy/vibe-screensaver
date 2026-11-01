@@ -124,6 +124,7 @@ const BLOOM = { strength: 0.7, radius: 0.45, threshold: 0.1 };
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
 const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+const SWIPE_MIN_PX = 60;          // 左右スワイプとみなす横の移動量（CSS ピクセル）
 
 // コース
 // - points: 閉じたコースの制御点 [x, 高さ, z]
@@ -935,8 +936,11 @@ function keepScreenOn() {
   );
 }
 
+// シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
+const changeScene = nextCourse;
+
 const KEY_ACTIONS = {
-  Space: nextCourse,
+  Space: changeScene,
   KeyF: toggleFullscreen,
   ArrowUp: () => setSpeed(speed * SPEED_STEP),
   ArrowDown: () => setSpeed(speed / SPEED_STEP),
@@ -951,6 +955,22 @@ addEventListener('keydown', (e) => {
   e.preventDefault();
   action();
 });
+
+// スマホでは、左右にスワイプするとシーン切替
+let swipeStart = null;   // 指を置いた位置。指が離れるまで覚えておく
+addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' && e.isPrimary) swipeStart = { x: e.clientX, y: e.clientY };
+});
+addEventListener('pointerup', (e) => {
+  if (!swipeStart || !e.isPrimary) return;
+  const dx = e.clientX - swipeStart.x, dy = e.clientY - swipeStart.y;
+  swipeStart = null;
+  // 横に十分動き、縦の動きより十分大きいときだけ左右スワイプとみなす
+  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < 2 * Math.abs(dy)) return;
+  wake();
+  changeScene?.();
+});
+addEventListener('pointercancel', () => { swipeStart = null; });
 addEventListener('dblclick', toggleFullscreen);
 addEventListener('mousemove', wake);
 document.addEventListener('visibilitychange', keepScreenOn);

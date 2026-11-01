@@ -39,7 +39,7 @@
 <div id="fade"></div>
 <div id="hud">
   景色: <span id="scene-name"></span><br>
-  Space: 景色を変更 / F・ダブルクリック: 全画面 / ↑↓: 雨の強さ
+  Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: 雨の強さ
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -168,6 +168,7 @@ const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限�
 // UI
 const FADE_MS = 850;              // #fade の transition より少し長く
 const IDLE_MS = 3000;             // カーソルとHUDを隠すまでの時間
+const SWIPE_MIN_PX = 60;          // 左右スワイプとみなす横の移動量（CSS ピクセル）
 
 // 景色（色はすべて画面に出る値 0..1）
 //   zenith / horizon: 天頂と地平線の空の色
@@ -1262,8 +1263,11 @@ function keepScreenOn() {
   );
 }
 
+// シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
+const changeScene = nextScene;
+
 const KEY_ACTIONS = {
-  Space: nextScene,
+  Space: changeScene,
   KeyF: toggleFullscreen,
   KeyC: triggerEvent,             // デバッグ用の隠しコマンド（HUDには出さない）
   ArrowUp: () => setRainRate(rainRate * RAIN_STEP),
@@ -1279,6 +1283,22 @@ addEventListener('keydown', (e) => {
   e.preventDefault();
   action();
 });
+
+// スマホでは、左右にスワイプするとシーン切替
+let swipeStart = null;   // 指を置いた位置。指が離れるまで覚えておく
+addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' && e.isPrimary) swipeStart = { x: e.clientX, y: e.clientY };
+});
+addEventListener('pointerup', (e) => {
+  if (!swipeStart || !e.isPrimary) return;
+  const dx = e.clientX - swipeStart.x, dy = e.clientY - swipeStart.y;
+  swipeStart = null;
+  // 横に十分動き、縦の動きより十分大きいときだけ左右スワイプとみなす
+  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < 2 * Math.abs(dy)) return;
+  wake();
+  changeScene?.();
+});
+addEventListener('pointercancel', () => { swipeStart = null; });
 addEventListener('dblclick', toggleFullscreen);
 addEventListener('mousemove', wake);
 document.addEventListener('visibilitychange', keepScreenOn);
