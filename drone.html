@@ -24,7 +24,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, randInt, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 街
@@ -151,6 +152,29 @@ const COURSES = [
   },
 ];
 
+// ---- ユーティリティ ----
+// シード付き乱数（mulberry32）。コースごとに毎回同じ街を作る
+function createRandom(seed) {
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const wrapDist = (d) => ((d % course.length) + course.length) % course.length;
+const courseT = (d) => wrapDist(d) / course.length;
+
+// 2 点 a, b（[x, z]）の間を f で補間する
+const lerp2 = ([ax, az], [bx, bz], f) => [ax + (bx - ax) * f, az + (bz - az) * f];
+
+// 中心 (x, z)・半幅 w の正方形の 4 隅
+const squareCorners = (x, z, w, d = w) => [[x - w, z - d], [x + w, z - d], [x + w, z + d], [x - w, z + d]];
+
+// 街の奥行き方向の端（海があれば海岸線まで）
+const cityZMax = (city) => city.waterZ ?? CITY_SIZE;
+
 // ---- シェーダー ----
 // 街のワイヤーフレーム。頂点ごとの色に、距離で黒に溶けるフォグを掛ける
 const CityLineShader = {
@@ -261,29 +285,6 @@ let course;                       // createCourse() の戻り値
 let droneDist = 0;                // コース上の距離
 let bank = 0;
 let clock = 0;
-
-// ---- ユーティリティ ----
-// シード付き乱数（mulberry32）。コースごとに毎回同じ街を作る
-function createRandom(seed) {
-  return () => {
-    seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const wrapDist = (d) => ((d % course.length) + course.length) % course.length;
-const courseT = (d) => wrapDist(d) / course.length;
-
-// 2 点 a, b（[x, z]）の間を f で補間する
-const lerp2 = ([ax, az], [bx, bz], f) => [ax + (bx - ax) * f, az + (bz - az) * f];
-
-// 中心 (x, z)・半幅 w の正方形の 4 隅
-const squareCorners = (x, z, w, d = w) => [[x - w, z - d], [x + w, z - d], [x + w, z + d], [x - w, z + d]];
-
-// 街の奥行き方向の端（海があれば海岸線まで）
-const cityZMax = (city) => city.waterZ ?? CITY_SIZE;
 
 // ---- 夜景 ----
 // 街の部品は線と点を配列に溜めていき、最後に LineSegments と Points 1 つずつにまとめる。
@@ -570,7 +571,7 @@ function addLandmark({ colors, line, point, box }, { x, z, height, base, top, de
 function addSkyline({ rng, colors, line, point }, city) {
   const outline = colors.wire.clone().multiplyScalar(0.6);
   for (let n = 0; n < 400; n++) {
-    const a = rng() * Math.PI * 2;
+    const a = rng() * TAU;
     const r = CITY_SIZE + 60 + rng() * 400;
     const x = r * Math.cos(a);
     const z = r * Math.sin(a);
@@ -595,7 +596,7 @@ function addStars({ rng, colors, point }) {
   const R = 1500;
   const minElev = Math.asin(STAR_MIN_HEIGHT / R);
   for (let n = 0; n < 500; n++) {
-    const a = rng() * Math.PI * 2;
+    const a = rng() * TAU;
     const elev = minElev + rng() * (1.35 - minElev);
     point(R * Math.cos(a) * Math.cos(elev), R * Math.sin(elev), R * Math.sin(a) * Math.cos(elev),
       colors.cool, STAR_SIZE * (0.5 + rng()), { twinkle: 0.5, noFog: 1 });
@@ -762,7 +763,7 @@ function updateDrone(dt) {
 
   // 左へ曲がるとき（曲率が正）は左翼を下げる
   const curvature = tmp.crossVectors(fwd, ahead).y / BANK_LOOK;
-  const targetBank = THREE.MathUtils.clamp(-curvature * BANK_STRENGTH, -MAX_BANK, MAX_BANK);
+  const targetBank = clamp(-curvature * BANK_STRENGTH, -MAX_BANK, MAX_BANK);
   bank += (targetBank - bank) * (1 - Math.exp(-dt * 3));
 
   // 進行方向を向け、バンクで傾けて、ふわふわ揺らす
@@ -844,12 +845,13 @@ function loadCourse(index) {
   updateTrails();
 }
 
-// ---- 速度・コースの切り替え ----
-function setSpeed(value) {
-  speed = THREE.MathUtils.clamp(value, MIN_SPEED, MAX_SPEED);
-}
-
+// ---- シーン切替 ----
 const nextCourse = () => fadeAndRun(() => loadCourse(courseIndex + 1));
+
+// ---- 強度 ----
+function setSpeed(value) {
+  speed = clamp(value, MIN_SPEED, MAX_SPEED);
+}
 
 // ---- メインループ ----
 let last = performance.now();
@@ -889,7 +891,7 @@ setupControls({
 // ---- 開始 ----
 updatePointScale();
 setSpeed(BASE_SPEED);
-loadCourse(Math.floor(Math.random() * COURSES.length));
+loadCourse(randInt(COURSES.length));
 renderer.setAnimationLoop(tick);
 </script>
 </body>

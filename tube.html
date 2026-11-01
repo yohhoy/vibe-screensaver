@@ -24,7 +24,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randInt, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // トンネル形状
@@ -230,11 +231,11 @@ let roll = 0;
 // 大きな円周上に制御点を並べ、半径と高さを揺らして交差しない閉じたコースを作る
 function createCourseCurve() {
   const pts = [];
-  const phase = Math.random() * 10;
+  const phase = rand(0, 10);
   for (let i = 0; i < CONTROL_POINTS; i++) {
-    const a = (i / CONTROL_POINTS) * Math.PI * 2;
-    const r = COURSE_RADIUS + Math.sin(a * 3 + phase) * 25 + (Math.random() - 0.5) * 30;
-    const y = Math.sin(a * 2 + phase * 1.7) * 30 + (Math.random() - 0.5) * 24;
+    const a = (i / CONTROL_POINTS) * TAU;
+    const r = COURSE_RADIUS + Math.sin(a * 3 + phase) * 25 + rand(-15, 15);
+    const y = Math.sin(a * 2 + phase * 1.7) * 30 + rand(-12, 12);
     pts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r));
   }
   return new THREE.CatmullRomCurve3(pts, true, 'centripetal');
@@ -271,7 +272,7 @@ const courseAhead = (dist) => (progress + dist / course.length) % 1;
 
 // ハッチの奥の穴。トンネル壁の一部を外側へ HATCH_DEPTH だけ掘った形
 function createShaftGeometry() {
-  const halfAngle = (HATCH_HALF.y / AROUND_LINES) * Math.PI * 2;
+  const halfAngle = (HATCH_HALF.y / AROUND_LINES) * TAU;
   const r0 = TUBE_RADIUS - 0.02;
   const r1 = TUBE_RADIUS + HATCH_DEPTH;
   const z1 = HATCH_HALF.x * RING_SPACING;
@@ -338,8 +339,7 @@ const moveToward = (x, target, step) =>
   x < target ? Math.min(x + step, target) : Math.max(x - step, target);
 
 // 指数分布で次の出現までの秒数を決め、続けて出たりしばらく出なかったりする不規則さを出す
-const nextInterval = () =>
-  Math.min(-Math.log(1 - Math.random()) * MASCOT_MEAN_INTERVAL, MASCOT_MAX_INTERVAL);
+const nextInterval = () => randomInterval([MASCOT_MEAN_INTERVAL, 0, MASCOT_MAX_INTERVAL]);
 
 // ハッチの出現からマスコットのジャンプまでを管理する。
 // フェーズ: idle → signal（点滅）→ open → jump → close → idle
@@ -391,11 +391,11 @@ function createHatch() {
     const ahead = Math.min(LAND_DIST + speed * (SIGNAL_TIME + HATCH_OPEN_TIME + JUMP_TIME), HATCH_MAX_AHEAD);
     const uc = Math.floor(courseAhead(ahead) * course.rings) + HATCH_HALF.x;
     if (uc + HATCH_HALF.x + 1 > course.rings) { waitTimer = 0.5; return; }   // コースの継ぎ目は避ける
-    const vc = 1 + Math.floor(Math.random() * (AROUND_LINES - HATCH_SIZE.y - 1)) + HATCH_HALF.y;
+    const vc = 1 + randInt(AROUND_LINES - HATCH_SIZE.y - 1) + HATCH_HALF.y;
 
     courseT = uc / course.rings;
     const i = Math.round(courseT * TUBULAR_SEGMENTS);
-    const angle = (vc / AROUND_LINES) * Math.PI * 2;
+    const angle = (vc / AROUND_LINES) * TAU;
     // TubeGeometry と同じ式で、ハッチ中心の外向き方向を求める
     outward.copy(course.normals[i]).multiplyScalar(-Math.cos(angle))
       .addScaledVector(course.binormals[i], Math.sin(angle));
@@ -442,9 +442,9 @@ function createHatch() {
 
     // カメラの方を向いて見上げる
     group.worldToLocal(camLocal.copy(camera.position));
-    const yaw = THREE.MathUtils.clamp(Math.atan2(-camLocal.x, -camLocal.z), -0.8, 0.8);
+    const yaw = clamp(Math.atan2(-camLocal.x, -camLocal.z), -0.8, 0.8);
     const headY = root.position.y + 3 * PIXEL;
-    const pitch = THREE.MathUtils.clamp(
+    const pitch = clamp(
       Math.atan2(camLocal.y - headY, Math.hypot(camLocal.x, camLocal.z)), -0.2, 0.6);
     root.rotation.y += (yaw - root.rotation.y) * follow;
     root.rotation.x += (pitch - root.rotation.x) * follow;
@@ -490,12 +490,28 @@ function createHatch() {
 
 const hatch = createHatch();
 
-// ---- 速度・配色・コースの切り替え ----
-function setSpeed(value) {
-  speed = THREE.MathUtils.clamp(value, MIN_SPEED, MAX_SPEED);
-  zoomBlur.uniforms.uStrength.value = Math.min(MAX_BLUR, BLUR_STRENGTH * speed / BASE_SPEED);
+// ---- カメラ ----
+const tmpPos = new THREE.Vector3();
+const tmpLook = new THREE.Vector3();
+const tmpUp = new THREE.Vector3();
+const tmpTan = new THREE.Vector3();
+
+function updateCamera(dt) {
+  progress = courseAhead(dt * speed);
+  roll += dt * ROLL_SPEED;
+
+  course.curve.getPointAt(progress, tmpPos);
+  course.curve.getPointAt(courseAhead(LOOK_AHEAD), tmpLook);
+  course.curve.getTangentAt(progress, tmpTan);
+  frameNormalAt(progress, tmpUp).applyAxisAngle(tmpTan, roll);
+
+  // 中心から少しずらして、カーブで壁が流れる感じを出す
+  camera.position.copy(tmpPos).addScaledVector(tmpUp, Math.sin(roll * 2.3) * SWAY);
+  camera.up.copy(tmpUp);
+  camera.lookAt(tmpLook);
 }
 
+// ---- シーン切替 ----
 function setTheme(index) {
   themeIndex = index % THEMES.length;
   const { hue, spread } = THEMES[themeIndex];
@@ -518,25 +534,10 @@ const nextCourse = () => fadeAndRun(() => {
   loadCourse();
 });
 
-// ---- カメラ移動 ----
-const tmpPos = new THREE.Vector3();
-const tmpLook = new THREE.Vector3();
-const tmpUp = new THREE.Vector3();
-const tmpTan = new THREE.Vector3();
-
-function updateCamera(dt) {
-  progress = courseAhead(dt * speed);
-  roll += dt * ROLL_SPEED;
-
-  course.curve.getPointAt(progress, tmpPos);
-  course.curve.getPointAt(courseAhead(LOOK_AHEAD), tmpLook);
-  course.curve.getTangentAt(progress, tmpTan);
-  frameNormalAt(progress, tmpUp).applyAxisAngle(tmpTan, roll);
-
-  // 中心から少しずらして、カーブで壁が流れる感じを出す
-  camera.position.copy(tmpPos).addScaledVector(tmpUp, Math.sin(roll * 2.3) * SWAY);
-  camera.up.copy(tmpUp);
-  camera.lookAt(tmpLook);
+// ---- 強度 ----
+function setSpeed(value) {
+  speed = clamp(value, MIN_SPEED, MAX_SPEED);
+  zoomBlur.uniforms.uStrength.value = Math.min(MAX_BLUR, BLUR_STRENGTH * speed / BASE_SPEED);
 }
 
 // ---- メインループ ----
@@ -576,7 +577,7 @@ setupControls({
 
 // ---- 開始 ----
 setSpeed(BASE_SPEED);
-setTheme(Math.floor(Math.random() * THEMES.length));
+setTheme(randInt(THEMES.length));
 loadCourse();
 renderer.setAnimationLoop(tick);
 </script>

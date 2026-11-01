@@ -1,10 +1,10 @@
-// 全作品で共通の入力・UI。
-// 暗転、全画面、カーソルと操作ガイドを隠す処理、画面を消さない処理、キー操作とスワイプ、強度のゲージ。
+// 全作品で共通の入力・UI と小さな関数。
+// 暗転、全画面、カーソルと操作ガイドを隠す処理、画面を消さない処理、キー操作とスワイプ、強度のゲージ、乱数など。
 //
 // file:// で直接開いても動くよう、ES モジュールではなく通常のスクリプトとして読み込み、
 // 使うものは window.Common に置く。各作品は
-//   const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
-// で取り出し、「入力・UI」節で setupControls() を 1 回呼ぶ。
+//   const { TAU, rand, IS_TOUCH, fadeAndRun, setupControls } = Common;
+// のように使うものだけ取り出し、「入力・UI」節で setupControls() を 1 回呼ぶ。
 (() => {
   // ---- 設定 ----
   const FADE_MS = 850;              // 暗転の時間。common.css の #fade の transition より少し長く
@@ -14,6 +14,19 @@
 
   // スマホなどタッチ操作の端末か。解像度の倍率の上限などと、画面を消さない処理を切り替える
   const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+
+  // ---- 小さな関数 ----
+  const TAU = 2 * Math.PI;
+  const clamp = (x, min, max) => Math.min(max, Math.max(min, x));
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randIn = ([a, b]) => rand(a, b);
+  const randInt = (n) => Math.floor(Math.random() * n);   // 0〜n-1 の整数
+  const randSign = () => (Math.random() < 0.5 ? -1 : 1);
+  const pick = (arr) => arr[randInt(arr.length)];
+  // 平均 mean の指数分布。ランダムに起こる出来事の待ち時間に使う
+  const randExp = (mean) => -Math.log(1 - Math.random()) * mean;
+  // 指数分布で平均 mean 秒の間隔（min〜max に収める）
+  const randomInterval = ([mean, min, max]) => clamp(randExp(mean), min, max);
 
   // ---- 暗転 ----
   let fadeEl = null;
@@ -30,6 +43,9 @@
       fading = false;
     }, FADE_MS);
   }
+
+  // 暗転している最中か。暗転の間は動きを止めておきたい作品が使う
+  const isFading = () => fading;
 
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
@@ -135,5 +151,8 @@
     keepScreenOn();
   }
 
-  window.Common = { IS_TOUCH, fadeAndRun, logPosition, setupControls };
+  window.Common = {
+    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval,
+    IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls,
+  };
 })();

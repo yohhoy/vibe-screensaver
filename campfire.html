@@ -24,7 +24,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randomInterval, IS_TOUCH, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 炎・火の粉・おき火の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
@@ -167,17 +168,9 @@ const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限�
 const BLOOM = { strength: 0.8, radius: 0.5, threshold: 0.7 };
 
 // ---- ユーティリティ ----
-const TAU = 2 * Math.PI;
 const GOLDEN_ANGLE = 2.39996;     // 黄金角 (rad)。この角度ずつずらすと、何個並べても偏らない
 const SKY_RADIUS = 300;
-const rand = (a, b) => a + Math.random() * (b - a);
-const randIn = ([a, b]) => rand(a, b);
-const { clamp, smoothstep } = THREE.MathUtils;
-
-// 指数分布で平均 mean 秒の間隔（min〜max に収める）
-function randomInterval([mean, min, max]) {
-  return clamp(-Math.log(1 - Math.random()) * mean, min, max);
-}
+const { smoothstep } = THREE.MathUtils;
 
 // 画面に出る色 [r, g, b]（sRGB）を THREE.Color に
 const srgb = (c) => new THREE.Color().setRGB(...c, THREE.SRGBColorSpace);
@@ -709,7 +702,7 @@ function updateTongues(dt) {
 
 function spawnFlame() {
   const f = fireScale;
-  const g = tongues[Math.floor(Math.random() * f.tongues)];
+  const g = tongues[randInt(f.tongues)];
   const [x, z] = polar(g.radius, g.angle);
   return {
     x: x + rand(-1, 1) * TONGUE_SPREAD, y: rand(0.1, 0.25), z: z + rand(-1, 1) * TONGUE_SPREAD,
@@ -899,7 +892,7 @@ function updateCamera() {
   sky.position.copy(camera.position);
 }
 
-// ---- 火の強さ ----
+// ---- 強度 ----
 // 炎の大きさは、粒を大きくせずに背の高さと舌の数で出し、明るさの密度は保つ
 function setFire(value) {
   fire = clamp(value, MIN_FIRE, MAX_FIRE);

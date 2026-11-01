@@ -20,7 +20,8 @@
 </div>
 <script type="module">
 import * as THREE from 'three';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // カメラ
@@ -178,17 +179,7 @@ const SCENES = [
 ];
 
 // ---- ユーティリティ ----
-const TAU = 2 * Math.PI;
 const GRAVITY = 9.8;
-const rand = (a, b) => a + Math.random() * (b - a);
-const randSign = () => (Math.random() < 0.5 ? -1 : 1);
-const randIn = ([a, b]) => rand(a, b);
-
-// 指数分布で平均 mean 秒の間隔（min〜max に収める）
-function randomInterval([mean, min, max]) {
-  return THREE.MathUtils.clamp(-Math.log(1 - Math.random()) * mean, min, max);
-}
-
 // 方位 az（正面が 0、右が正）と高度 el (rad) の向きを target に入れる。正面は -Z、右が +X
 function skyDir(az, el, target) {
   return target.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
@@ -812,8 +803,6 @@ function setScene(index) {
   resetBoat();
 }
 
-const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
-
 // ---- 雨と波紋 ----
 const raycaster = new THREE.Raycaster();
 const waterPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -1160,11 +1149,6 @@ function updateCamera() {
   sky.position.copy(camera.position);
 }
 
-// ---- 雨の強さ ----
-function setRainRate(value) {
-  rainRate = THREE.MathUtils.clamp(value, MIN_RAIN, MAX_RAIN);
-}
-
 // ---- 時間で動く位相 ----
 // GPU の float は精度が低く、経過秒をそのまま渡すと長時間動かしたときに動きが荒れる。
 // 位相は JS（倍精度）で 0..2π に収めてから渡す
@@ -1174,6 +1158,15 @@ function updatePhases() {
   const phases = waterUniforms.uWavePhase.value;
   for (let i = 0; i < WAVE_OMEGAS.length; i++) phases[i] = (WAVE_OMEGAS[i] * time) % TAU;
   skyUniforms.uBeaconPhase.value = (time / CITY_BEACON_PERIOD % 1) * TAU;
+}
+
+// ---- シーン切替 ----
+// 暗転している間に、次の景色へ
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+
+// ---- 強度 ----
+function setRainRate(value) {
+  rainRate = clamp(value, MIN_RAIN, MAX_RAIN);
 }
 
 // ---- メインループ ----
@@ -1217,7 +1210,7 @@ setupControls({
 
 // ---- 開始 ----
 setRainRate(BASE_RAIN);
-setScene(Math.floor(Math.random() * SCENES.length));
+setScene(randInt(SCENES.length));
 updateCamera();
 prefillRipples();
 renderer.setAnimationLoop(tick);

@@ -20,7 +20,8 @@
 <script type="module">
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 const GRID = { x: 20, y: 14, z: 20 };     // グリッドのセル数
@@ -49,9 +50,6 @@ const SPEED_STEP = 1.25;                   // ↑↓ 1回あたりの倍率
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 
 // ---- ユーティリティ ----
-const randInt = (n) => Math.floor(Math.random() * n);
-const pick = (arr) => arr[randInt(arr.length)];
-
 const UP = new THREE.Vector3(0, 1, 0);
 // 6方向の単位ベクトル。共有するので変更されないよう凍結しておく
 const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
@@ -98,7 +96,7 @@ function createBolts() {
   const parts = [];
   const pcd = PIPE_RADIUS * 1.75;          // ボルト穴の配置半径
   for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    const a = (i / 6) * TAU + Math.PI / 6;
     const x = Math.cos(a) * pcd, z = Math.sin(a) * pcd;
     const nut = (y) => new THREE.CylinderGeometry(0.038, 0.038, 0.03, 6).translate(x, y, z);
     parts.push(new THREE.CylinderGeometry(0.018, 0.018, 0.21, 8).translate(x, 0, z), nut(0.09), nut(-0.09));
@@ -311,9 +309,19 @@ class Pipe {
   }
 }
 
+// パイプを伸ばす。画面が埋まるか、すべて行き止まりになったらリセットする
+function updatePipes(dt) {
+  pipes.forEach((p, i) => {
+    segmentCount += p.update(dt);
+    // 行き止まりのパイプは新しい色で別の場所から再出発
+    if (!p.alive) pipes[i] = Pipe.spawn() ?? p;
+  });
+  if (segmentCount > MAX_SEGMENTS || pipes.every(p => !p.alive)) reset();
+}
+
 // ---- カメラ ----
 function randomizeCamera() {
-  camAngle = { az: Math.random() * Math.PI * 2, el: Math.random() * 0.6 - 0.15 };
+  camAngle = { az: rand(0, TAU), el: rand(-0.15, 0.45) };
   placeCamera();
 }
 
@@ -328,7 +336,7 @@ function placeCamera() {
   camera.lookAt(0, 0, 0);
 }
 
-// ---- 全体制御 ----
+// ---- シーン切替 ----
 // すべて片付けて、新しいカメラ角度でパイプを伸ばし直す
 function start() {
   for (const m of pipeMaterials) m.dispose();
@@ -346,23 +354,15 @@ function start() {
 
 const reset = () => fadeAndRun(start);
 
-function updatePipes(dt) {
-  pipes.forEach((p, i) => {
-    segmentCount += p.update(dt);
-    // 行き止まりのパイプは新しい色で別の場所から再出発
-    if (!p.alive) pipes[i] = Pipe.spawn() ?? p;
-  });
-  if (segmentCount > MAX_SEGMENTS || pipes.every(p => !p.alive)) reset();
-}
-
-// ---- 速度・ジョイントの切り替え ----
-function setSpeed(value) {
-  speed = THREE.MathUtils.clamp(value, MIN_SPEED, MAX_SPEED);
-}
-
+// ジョイントを球 ⇔ エルボーで切り替えて、リセットする（J キー）
 function toggleJoint() {
   jointMode = jointMode === 'sphere' ? 'elbow' : 'sphere';
   reset();
+}
+
+// ---- 強度 ----
+function setSpeed(value) {
+  speed = clamp(value, MIN_SPEED, MAX_SPEED);
 }
 
 // ---- メインループ ----
@@ -371,7 +371,7 @@ function tick(now) {
   // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
-  if (!fading) updatePipes(dt);   // 暗転中は止めておく
+  if (!isFading()) updatePipes(dt);   // 暗転中は止めておく
   renderer.render(scene, camera);
 }
 

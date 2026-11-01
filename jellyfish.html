@@ -23,7 +23,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-const { IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;   // 共通の入力・UI（common.js）
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randExp, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
 
 // ---- 設定 ----
 // すべて光る線で描く。線の色は光の強さそのままの値（1 を超えるとブルームで強く光る）。背景の色だけは画面に出る値 (0..1)
@@ -45,7 +46,7 @@ const CAM_DRIFT_PERIOD = [97, 61];   // その周期（秒）
 
 // クラゲの形（ミズクラゲ風: 平たい傘に短い触手がびっしり、傘の上に 4 つの輪、傘の下に口腕）。
 // どのクラゲもほぼ同じ大きさ・形にする。長さ・幅は傘の半径に対する倍率
-// クラゲの大きさ・傘の縦横比・足の長さ（全部のクラゲで共通）は、起動・Space のときに SHAPE_RANGE から選ぶ
+// クラゲの大きさ・傘の縦横比・足の長さ（全部のクラゲで共通）は、起動・シーン切替のときに SHAPE_RANGE から選ぶ
 const SHAPE_JITTER = 0.04;        // クラゲごとの大きさ・足の長さのばらつき（±割合）
 const BELL_ANGLE = 1.75;          // 傘の縁が頂点から何 rad 回り込むか
 const TENTACLE_COUNT = 40;        // 縁の触手の本数
@@ -130,7 +131,7 @@ const BACKDROP_COLOR = { s: 0.5, l: 0.5, glow: 0.035 };   // 奥の壁のほの�
 const BUBBLE_COLOR = [0.7, 1.0, 1.3];
 const BACKGROUND = [0.0, 0.012, 0.035];   // 背景（画面に出る値）
 
-// シーンの選び方（起動したときと Space のとき。クラゲの形・数・位置、色相、泡の筋の位置をランダムに選ぶ）
+// シーンの選び方（起動したときとシーン切替のとき。クラゲの形・数・位置、色相、泡の筋の位置をランダムに選ぶ）
 // 形の範囲。size: 傘の半径、flat: 傘の高さ / 半径、legs: 触手と口腕の長さの倍率
 const SHAPE_RANGE = { size: [0.3, 0.62], flat: [0.25, 1.0], legs: [0.4, 2.5] };
 const SHAPE_MIN_CHANGE = 0.25;    // 形のどの値も、いまの値から最低これだけ変える（範囲の幅に対する割合）
@@ -149,18 +150,9 @@ const MAX_LINES = 40000;          // 1 フレームに描ける線分の数
 const BLOOM = { strength: 0.35, radius: 0.3, threshold: 0.15 };
 
 // ---- ユーティリティ ----
-const TAU = 2 * Math.PI;
 const CURRENT_SPEED = TAU / CURRENT_PERIOD;   // 水流の角速度 (rad/秒)
 const VIEW_FOV = 2 * Math.atan((VIEW_TOP - VIEW_BOTTOM) / 2 / CAM_DIST) * 180 / Math.PI;   // 縦の画角（度）
 const VIEW_CENTER_Y = (VIEW_TOP + VIEW_BOTTOM) / 2;
-const rand = (a, b) => a + Math.random() * (b - a);
-const randIn = ([a, b]) => rand(a, b);
-const { clamp } = THREE.MathUtils;
-
-// 指数分布で平均 mean 秒の間隔（min〜max に収める）
-function randomInterval([mean, min, max]) {
-  return clamp(-Math.log(1 - Math.random()) * mean, min, max);
-}
 
 const EQUATOR_U = Math.PI / 2 / BELL_ANGLE;   // 傘がいちばん太い所の位置（頂点 0 → 縁 1）
 
@@ -200,9 +192,9 @@ const loop = { cy: WATER_LEVEL / 2, a: 1, b: 1 };
 // いまのクラゲと生殖腺の色（updateColors で求める）
 const jellyColor = [0, 0, 0];
 const gonadColor = [0, 0, 0];
-// いまのクラゲの形（起動・Space のときに選ぶ。全部のクラゲで共通）
+// いまのクラゲの形（起動・シーン切替のときに選ぶ。全部のクラゲで共通）
 const shape = { size: 0, flat: 0, legs: 0 };
-let hueShift = 0;          // 色相のずらし量（起動・Space のときに選ぶ。0..1）
+let hueShift = 0;          // 色相のずらし量（起動・シーン切替のときに選ぶ。0..1）
 
 // ---- 線 ----
 // 線はすべて 1 つの LineSegments にまとめ、毎フレーム頂点を詰め直す。
@@ -664,7 +656,7 @@ function updateBubbles(dt) {
     st.wait -= dt;
     while (st.wait <= 0) {
       spawnBubble(st, BUBBLE_SIZE);
-      st.wait += -Math.log(1 - Math.random()) / BUBBLE_RATE;
+      st.wait += randExp(1 / BUBBLE_RATE);
     }
   }
   // 大きな泡
@@ -738,7 +730,17 @@ function updateColors() {
   backdrop.material.color.setHSL(hue, b.s, b.l).multiplyScalar(b.glow);
 }
 
-// ---- シーンの切り替え ----
+// ---- カメラ ----
+// 正面を向いたまま、ゆっくり左右上下に漂う
+function updateCamera() {
+  // 位相は JS で 0〜2π に収める
+  const x = CAM_DRIFT[0] * Math.sin((time / CAM_DRIFT_PERIOD[0] % 1) * TAU);
+  const y = VIEW_CENTER_Y + CAM_DRIFT[1] * Math.sin((time / CAM_DRIFT_PERIOD[1] % 1) * TAU);
+  camera.position.set(x, y, CAM_DIST);
+  camera.updateMatrixWorld();
+}
+
+// ---- シーン切替 ----
 // 範囲 [lo, hi] から、v と SHAPE_MIN_CHANGE 以上離れた値をランダムに選ぶ
 function randomAway([lo, hi], v) {
   const gap = (hi - lo) * SHAPE_MIN_CHANGE;
@@ -748,7 +750,7 @@ function randomAway([lo, hi], v) {
 }
 
 // クラゲの形（大きさ・傘の縦横比・足の長さ）・数・位置、色相、泡の筋の位置をランダムに選ぶ。
-// 起動したとき（first）は範囲全体から、Space のとき（暗転している間に呼ぶ）はいまの値から離れた値を選ぶ
+// 起動したとき（first）は範囲全体から、シーン切替のとき（暗転している間に呼ぶ）はいまの値から離れた値を選ぶ
 function nextScene(first = false) {
   for (const key in SHAPE_RANGE) {
     shape[key] = first ? randIn(SHAPE_RANGE[key]) : randomAway(SHAPE_RANGE[key], shape[key]);
@@ -760,7 +762,7 @@ function nextScene(first = false) {
   prewarm();
 }
 
-// ---- 泡の筋の数 ----
+// ---- 強度 ----
 // 石をいちばん広く空いている所に 1 つ足す。いまある泡の筋は動かさない
 function addStone() {
   const xs = [-1, ...stones.map((st) => st.fx).sort((a, b) => a - b), 1];
@@ -775,7 +777,7 @@ function addStone() {
 function setStreams(n) {
   n = clamp(n, MIN_STREAMS, MAX_STREAMS);
   while (stones.length < n) addStone();
-  while (stones.length > n) stones.splice(Math.floor(Math.random() * stones.length), 1);
+  while (stones.length > n) stones.splice(randInt(stones.length), 1);
 }
 
 // 泡の筋を、数を変えずに置き直す。いま上っている泡は消す
@@ -785,16 +787,6 @@ function replaceStreams() {
   bubbles.length = 0;
   bursts.length = 0;
   setStreams(n);
-}
-
-// ---- カメラ ----
-// 正面を向いたまま、ゆっくり左右上下に漂う
-function updateCamera() {
-  // 位相は JS で 0〜2π に収める
-  const x = CAM_DRIFT[0] * Math.sin((time / CAM_DRIFT_PERIOD[0] % 1) * TAU);
-  const y = VIEW_CENTER_Y + CAM_DRIFT[1] * Math.sin((time / CAM_DRIFT_PERIOD[1] % 1) * TAU);
-  camera.position.set(x, y, CAM_DIST);
-  camera.updateMatrixWorld();
 }
 
 // ---- メインループ ----
