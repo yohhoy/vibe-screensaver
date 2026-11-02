@@ -27,7 +27,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randSign, gray, emit, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray, emit, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 座標: 滝壺の水面が y = 0、滝の中心が x = 0。カメラは +z の側から -z の向きに滝を見る。長さの単位はメートルのつもり
@@ -45,6 +45,11 @@ const BASE_WATER = 1;
 const MIN_WATER = 0.13;
 const MAX_WATER = 2;
 const WATER_STEP = 1.25;          // ↑↓ 1回あたりの倍率
+// 水量が 1 より少ないときの変化。倍率 = 水量 ^ この値。大きいほど、水量を減らしたときの変化が強い
+const THIN_FOAM = 0.6;            // 泡が広がる距離と、滝の近くの波の強さ
+const THIN_MIST_OPACITY = 0.35;   // 霧の不透明度
+const THIN_MIST_SIZE = 0.4;       // 霧の大きさ
+const THIN_SPRAY = 0.4;           // しぶきの跳ねる速さ
 
 // 滝（水の帯を何本も重ねる。中央の帯から順に使うので、水量が増えると滝の幅が広がる）
 const FALL_HEIGHT = 50;           // 滝口の高さ
@@ -54,32 +59,45 @@ const STREAM_SEGMENTS = 22;       // 帯 1 本の縦の分割数
 const STREAM_WIDTH = [1.7, 0.7];  // 帯の幅の半分（滝の中央 / 端）
 const STREAM_SPREAD = 0.7;        // 滝壺に着くまでに帯の幅が広がる割合
 const STREAM_ORDER_JITTER = 3;    // 中央から順に使う順番の乱れ（距離）
-const STREAM_SWAY = 0.5;          // 帯が風で揺れる幅（滝壺の近くで最大）
+const STREAM_ORDER_CORE = 4;      // 順番を乱さない中央の範囲（距離）。水量が少なくても帯が中央に集まり、濃い水の柱になる
+const FALL_MIN_HALF = 2.3;        // いまの滝の幅の半分の下限。水量が少ないときに、霧・しぶき・泡と、端を薄くする範囲が細くなりすぎないように
+const FALL_FAN = 0.18;            // 滝壺に着くまでに滝全体の幅が広がる割合
+const FALL_WANDER = 2.2;          // 帯が左右に寄り道する幅。隣の帯と揃って動くので、滝の輪郭がでこぼこになる
+const STREAM_SWAY = 0.8;          // 帯が風で揺れる幅（滝壺の近くで最大）
 const STREAM_SWAY_SPEED = 0.7;    // 帯が風で揺れる速さ（rad/秒）
 const FALL_GRAVITY = 9.8;
 const LIP_SPEED = [3, 2.2];       // 滝口での水の速さ（下向き、手前向き）
 const STREAK_RATE = [0.55, 0.23]; // 筋の模様 2 枚の流れる速さ（1 秒の落下で模様の何枚ぶん進むか）
 
-// 滝のまわりに落ちる水滴（線で描く）
-const MAX_DROPS = 500;
+// 滝のまわりに落ちる水滴と、滝壺から噴き上がる水（線で描く）
+const MAX_DROPS = IS_TOUCH ? 1200 : 1500;
 const DROP_RATE = 150;            // 1 秒に生まれる数（水量 1 のとき）
 const DROP_STREAK = 0.035;        // 線の長さ（速さ × この秒数）
 
 // 滝壺のしぶき
-const MAX_SPRAY = 900;
-const SPRAY_RATE = 280;           // 1 秒に生まれる数（水量 1 のとき）
-const SPRAY_SPEED = [3, 14];      // 跳ね上がる速さの範囲
-const SPRAY_SIZE = [0.05, 0.2];
+const MAX_SPRAY = 1500;
+const SPRAY_RATE = 420;           // 1 秒に生まれる数（水量 1 のとき）
+const SPRAY_SPEED = [3, 12];      // 跳ね上がる速さの範囲
+const SPRAY_SIZE = [0.05, 0.22];
 const SPRAY_GRAVITY = 7;          // 細かい粒なので、空気の抵抗も込みで弱めにする
 
+// 水が砕けて塊で噴き上がる所（1 か所から、しぶきと水煙を少しの間だけ出す）
+const BURST_INTERVAL = [0.35, 0.1, 1.2];   // 起こる間隔 [平均, 最短, 最長]（秒。水量 1 のとき）
+const BURST_TIME = 0.5;           // 1 回が噴き上がり続ける秒数
+const BURST_WIDTH = 2.5;          // 噴き上がる所の幅の半分
+const BURST_JET_RATE = IS_TOUCH ? 50 : 100;      // 1 回が 1 秒に出す水の線の数
+const BURST_JET_SPEED = [5, 13];  // 水の線が跳ね上がる速さの範囲
+const BURST_PUFF_RATE = IS_TOUCH ? 10 : 30;      // 1 回が 1 秒に出す水煙の数
+const BURST_PUFF_RISE = [2, 5];   // 水煙が上る速さの範囲
+
 // 滝壺から立ちのぼる霧
-const MAX_MIST = IS_TOUCH ? 90 : 210;
-const MIST_RATE = IS_TOUCH ? 7 : 17;   // 1 秒に生まれる数（水量 1 のとき）
+const MAX_MIST = IS_TOUCH ? 180 : 560;
+const MIST_RATE = IS_TOUCH ? 12 : 34;  // 1 秒に生まれる数（水量 1 のとき）
 const MIST_LIFE = [6, 12];        // 消えるまでの秒数の範囲
-const MIST_RISE = [1.2, 3.4];     // 上る速さの範囲
+const MIST_RISE = [1, 2.6];     // 上る速さの範囲
 const MIST_DRIFT = 3;             // 手前へ流れる速さの上限
 const MIST_SIZE = [7, 27];        // 生まれたとき / 消えるときの大きさ
-const BOIL_SHARE = 0.4;           // そのうち、滝の足もとで低くわき立つ霧の割合（滝と水面の境をぼかす）
+const BOIL_SHARE = 0.7;           // そのうち、滝の足もとで低くわき立つ霧の割合（滝と水面の境をぼかす）
 
 // 崖
 const CLIFF_COLS = IS_TOUCH ? 200 : 360;   // 崖の横の分割数
@@ -90,6 +108,8 @@ const PLATEAU_DEPTH = 130;        // 崖の上の台地の奥行き
 const GORGE_CURVE = 45;           // 崖が両側で手前に迫る量（x = GORGE_WIDTH の所で）
 const GORGE_WIDTH = 60;
 const RIM_RISE = 7;               // 滝口の両側で崖の上が高くなる量
+const LIP_SAG = 2;                // 滝口の線が中央から両端へ上がる量。水は中央のくぼみに集まって落ちる
+const LIP_ROUGH = 1.6;            // 滝口の線の細かな高低差
 const RECESS = 7;                 // 滝の裏で崖がえぐれている深さ
 const TALUS_HEIGHT = 11;          // 崖の足もとの崩れた斜面の高さ
 const TALUS_REACH = 20;           // 崩れた斜面が手前へ張り出す長さ
@@ -103,8 +123,8 @@ const ROCK_TILE = 16;             // 岩の模様のテクスチャ 1 枚が受�
 const BOULDER_COUNT = 40;
 const BOULDER_SHAPES = 4;         // 岩の形の種類
 const BOULDER_COLOR = [0.3, 0.29, 0.27];
-const LIP_ROCK_COUNT = 3;         // 滝口の岩の数
-const LIP_ROCK_SIZE = [0.6, 1.3]; // 滝口の岩の大きさの範囲
+const LIP_ROCK_COUNT = 4;         // 滝口の岩の数
+const LIP_ROCK_SIZE = [1.2, 2.6]; // 滝口の岩の大きさの範囲
 const LIP_ROCK_REJOIN = 0.3;      // 岩で分かれた水が合流し終える位置（滝口 0 〜 滝壺 1。落ちる時間の割合）
 
 // 木
@@ -135,9 +155,11 @@ const TRUNK_COLOR = [0.2, 0.16, 0.12];
 // 滝壺の水面
 const POOL_SIZE = 700;
 const REFLECTION_SIZE = IS_TOUCH ? 256 : 360;   // 水面に映す景色を描く解像度（画面の高さに当たる画素数）
-const FOAM_REACH = 11;            // 泡が滝壺から広がる距離（1/e になる距離）
+const FOAM_REACH = 20;            // 泡が滝壺から広がる距離（1/e になる距離）
 const WAVE_SPEED = [0.05, 0.12, 0.09];   // 波 2 枚と泡の模様が外へ流れる速さ（1 秒に模様の何枚ぶんか）
 const WAVE_STRENGTH = 0.05;       // 波で映り込みが揺れる強さ
+const SWELL_LENGTH = 13;          // 滝壺から外へ押し出す白波の輪の間隔
+const SWELL_SPEED = 7;            // 白波の輪が広がる速さ（1 秒の距離）
 
 // 空
 const SKY_RADIUS = 900;
@@ -186,7 +208,7 @@ const SCENES = [
     ambient: { sky: [0.5, 0.48, 0.72], ground: [0.16, 0.14, 0.18], intensity: 1.2 },
     light: { color: [1, 0.68, 0.44], intensity: 2.4, dir: [0.8, 0.22, 0.55] },
     disc: null,
-    lit: [1, 0.84, 0.74], shade: [0.42, 0.34, 0.44], glass: [0.42, 0.33, 0.36],
+    lit: [1, 0.84, 0.74], shade: [0.54, 0.42, 0.44], glass: [0.42, 0.33, 0.36],
     mist: [1, 0.78, 0.68, 0.06], spray: [1, 0.9, 0.8],
     deep: [0.06, 0.06, 0.12], foam: [1, 0.86, 0.78],
     rainbow: 0, bloom: { strength: 0.3, threshold: 0.8 }, exposure: 1,
@@ -240,10 +262,13 @@ function fbm(x, y) {
   return sum;
 }
 
-// 崖の上端の高さ。滝口は FALL_HEIGHT ちょうどで、両側へ高くなる
+// 崖の上端の高さ。滝口は FALL_HEIGHT のあたりで、両側へ高くなる
 function rimY(x) {
   const center = Math.exp(-((x / (FALL_MAX_HALF * 1.8)) ** 4));
-  return FALL_HEIGHT + (1 - center) * (RIM_RISE + 7 * fbm(x * 0.04, 3.7) + 14 * (x / 130) ** 2);
+  const sag = 1 - Math.exp(-((x / FALL_MAX_HALF) ** 2));
+  const lip = LIP_SAG * sag + center * LIP_ROUGH * (fbm(x * 0.25, 6.2) - 0.5);
+  const rim = (1 - center) * (RIM_RISE + 7 * fbm(x * 0.04, 3.7) + 14 * (x / 130) ** 2);
+  return FALL_HEIGHT + lip + rim;
 }
 
 // 滝口の奥行きの位置（崖の凹凸を除いた、弧を描く崖の線）
@@ -331,7 +356,7 @@ const StreamShader = {
     uLit: { value: new THREE.Color() },
     uShade: { value: new THREE.Color() },
     uGlass: { value: new THREE.Color() },
-    uHalf: { value: 1 },                          // いまの滝の幅の半分
+    uHalf: { value: 1 },                          // いまの滝の幅の半分（滝口）
   },
   vertexShader: /* glsl */`
     attribute float aSide;    // 帯の幅の向きの位置（-1..1）
@@ -359,13 +384,14 @@ const StreamShader = {
     void main() {
       float a = texture2D(uStreak, vec2(vX * 0.09 + vSeed, vTime * ${STREAK_RATE[0].toFixed(3)} + vSeed * 3.0 - uPhase.x)).r;
       float b = texture2D(uStreak, vec2(vX * 0.035 + vSeed * 5.0, vTime * ${STREAK_RATE[1].toFixed(3)} + vSeed * 7.0 - uPhase.y)).r;
-      float foam = (a * 0.75 + b * 0.65) * (0.65 + 0.5 * vSeed);   // 帯ごとに白さを変えて、縦の柱の模様にする
+      float foam = (a * 0.75 + b * 0.65) * (0.5 + 0.8 * vSeed);   // 帯ごとに白さを変えて、縦の柱の模様にする
       float edge = 1.0 - vSide * vSide;
       float aerated = smoothstep(0.0, 0.16, vFall);   // 滝口はなめらかで、落ちるにつれて白く泡立つ
       vec3 col = mix(uShade, uLit, smoothstep(0.2, 0.85, foam));
       col = mix(uGlass, col, aerated);
       float alpha = edge * mix(0.6, 0.1 + 0.7 * smoothstep(0.1, 0.75, foam), aerated);
-      alpha *= 0.3 + 0.7 * smoothstep(1.0, 0.65, abs(vX) / uHalf);   // 滝の端ほど薄く、岩が透けて見える
+      float halfHere = uHalf * (1.0 + ${FALL_FAN.toFixed(2)} * vFall);   // その高さでの滝の幅の半分
+      alpha *= 0.3 + 0.7 * smoothstep(1.0, 0.65, abs(vX) / halfHere);   // 滝の端ほど薄く、岩が透けて見える
       gl_FragColor = vec4(col, alpha * (1.0 - smoothstep(0.93, 1.0, vFall)));
     }`,
 };
@@ -411,6 +437,8 @@ const PoolShader = {
     uFoam: { value: new THREE.Color() },
     uFogColor: { value: new THREE.Color() },
     uFogDensity: { value: 0 },
+    uForce: { value: 1 },                         // 泡が広がる距離と滝の近くの波の倍率（水量が少ないほど小さい）
+    uSwell: { value: 0 },                         // 白波の輪の位相（0..2π。JS で求める）
   },
   vertexShader: /* glsl */`
     uniform mat4 textureMatrix;
@@ -426,7 +454,7 @@ const PoolShader = {
     uniform sampler2D tDiffuse, uNoise;
     uniform vec3 uPhase, uDeep, uFoam, uFogColor;
     uniform vec2 uImpact;
-    uniform float uFogDensity;
+    uniform float uFogDensity, uForce, uSwell;
     varying vec4 vReflect;
     varying vec3 vPos;
     void main() {
@@ -437,19 +465,21 @@ const PoolShader = {
       // 波。滝に近いほど大きく揺らす
       vec2 w1 = texture2D(uNoise, flow * vec2(0.03, 0.06) - vec2(0.0, uPhase.x)).gb - 0.5;
       vec2 w2 = texture2D(uNoise, flow * vec2(0.3, 0.22) - vec2(0.0, uPhase.y)).gb - 0.5;
-      vec2 tilt = (w1 + w2 * 0.45) * ${WAVE_STRENGTH.toFixed(3)} * (1.0 + 2.5 * exp(-d / 40.0));
+      vec2 tilt = (w1 + w2 * 0.45) * ${WAVE_STRENGTH.toFixed(3)} * (1.0 + 2.5 * uForce * exp(-d / 40.0));
       // 映り込み（縦に長く揺らす）とフレネル
       vec3 view = normalize(cameraPosition - vPos);
       float fresnel = 0.05 + 0.95 * pow(1.0 - clamp(view.y + tilt.y, 0.0, 1.0), 4.0);
       vec3 refl = texture2D(tDiffuse, vReflect.xy / vReflect.w + tilt * vec2(0.05, 1.6)).rgb;
       vec3 col = mix(uDeep, refl, fresnel);
       // 泡。滝に近いほど多く、外へ流れながら細かくなって消える
-      float reach = exp(-d / ${FOAM_REACH.toFixed(1)});
+      float reach = exp(-d / (${FOAM_REACH.toFixed(1)} * uForce));
       float n = texture2D(uNoise, flow * vec2(0.16, 0.09) - vec2(0.0, uPhase.z)).r * 0.6
               + texture2D(uNoise, flow * vec2(0.55, 0.3) - vec2(0.0, uPhase.z * 2.0)).g * 0.4;
-      float edge = mix(0.72, 0.3, reach);
-      float foam = smoothstep(edge, edge + 0.2, n);
-      col = mix(col, uFoam, foam * smoothstep(0.03, 0.3, reach));
+      // 輪の山では泡が増える。模様で位相をずらして、輪が切れ切れの白波に見えるようにする
+      float swell = smoothstep(0.3, 1.0, sin(d * ${(TAU / SWELL_LENGTH).toFixed(3)} - uSwell + n * 4.0));
+      float edge = mix(0.7, 0.2, reach) - 0.3 * swell;
+      float foam = smoothstep(edge, edge + 0.3, n);
+      col = mix(col, uFoam, foam * smoothstep(0.12, 0.55, reach));
       // 遠くを霞ませる
       float fog = uFogDensity * length(cameraPosition - vPos);
       gl_FragColor = vec4(mix(uFogColor, col, exp(-fog * fog)), 1.0);
@@ -540,10 +570,12 @@ camera.layers.enable(MAIN_ONLY_LAYER);
 
 // ---- 状態 ----
 let water = BASE_WATER;    // 水量
+const thin = (power) => Math.min(1, water ** power);   // 水量が 1 より少ないほど小さくなる倍率。水量が 1 以上なら 1
 let time = 0;              // 経過秒
 let sceneIndex = 0;        // いまの景色
 let streamsInUse = 0;      // いま描いている水の帯の数
-let activeHalf = 0;        // いまの滝の幅の半分
+let activeHalf = 0;        // いまの滝の幅の半分（滝口）
+let impactHalf = 0;        // いまの滝の幅の半分（水面に落ちる所）
 let mistOpacity = 0;       // いまの景色の霧の不透明度
 
 // ---- テクスチャ ----
@@ -1185,11 +1217,16 @@ for (let i = 0; i < STREAM_COUNT; i++) {
   streams.push({
     x, rejoinX: original, y0, z0: lipZ(x) + 0.2, life: fallTime(y0),
     width,
-    seed: Math.random(),
+    // 乱数に位置のノイズを混ぜ、隣の帯と白さや揺れを揃える。滝に太い柱の模様が出る
+    seed: smoothstep(fbm(original * 0.3, 9.7), 0.32, 0.68) * 0.8 + rand(0, 0.2),
   });
 }
-// 中央に近い順に並べる。順番を少し乱して、水量が増えたときに端へ細い筋から増えていくようにする
-for (const st of streams) st.order = Math.abs(st.x) + rand(0, STREAM_ORDER_JITTER);
+// 中央に近い順に並べる。順番を少し乱して、水量が増えたときに端へ細い筋から増えていくようにする。
+// 中央は乱さない。乱すと、水量が少ないときに帯が散らばって薄く見える
+for (const st of streams) {
+  const d = Math.abs(st.x);
+  st.order = d + rand(0, STREAM_ORDER_JITTER) * smoothstep(d, 0, STREAM_ORDER_CORE);
+}
 streams.sort((a, b) => a.order - b.order);
 
 const streamMesh = (() => {
@@ -1202,10 +1239,13 @@ const streamMesh = (() => {
   for (const s of streams) {
     for (let j = 0; j <= STREAM_SEGMENTS; j++) {
       const k = j / STREAM_SEGMENTS, t = k * s.life;
+      // 滝口の近くでは寄り道を抑える
+      const wander = FALL_WANDER * 2 * (fbm(s.rejoinX * 0.14 + 3, k * 1.8) - 0.5) * smoothstep(k, 0, 0.45);
+      // 岩でよけた帯は、落ちるうちに元の位置へ戻る（岩の下で水が合流する）
+      const cx = (mix(s.x, s.rejoinX, smoothstep(k, 0, LIP_ROCK_REJOIN)) + wander) * (1 + FALL_FAN * k);
+      const half = s.width * (1 + STREAM_SPREAD * k);
       for (const sd of [-1, 1]) {
-        // 岩でよけた帯は、落ちるうちに元の位置へ戻る（岩の下で水が合流する）
-        const cx = mix(s.x, s.rejoinX, smoothstep(k, 0, LIP_ROCK_REJOIN));
-        position.set([cx + sd * s.width * (1 + STREAM_SPREAD * k), fallY(s.y0, t), fallZ(s.z0, t)], v * 3);
+        position.set([cx + sd * half, fallY(s.y0, t), fallZ(s.z0, t)], v * 3);
         side[v] = sd;
         fallT[v] = t;
         fallK[v] = k;
@@ -1250,6 +1290,19 @@ function moveParticle(p, dt) {
   p.z += p.vz * dt;
 }
 
+// いま噴き上がっている所。水の線と水煙はここから出す
+const bursts = [];
+let nextBurst = 0;
+function updateBursts(dt) {
+  for (const b of bursts) b.left -= dt;
+  while (bursts.length && bursts[0].left <= 0) bursts.shift();
+  nextBurst -= dt * water;
+  if (nextBurst <= 0) {
+    nextBurst = randomInterval(BURST_INTERVAL);
+    bursts.push({ x: rand(-impactHalf, impactHalf), left: BURST_TIME });
+  }
+}
+
 // 滝のまわりに落ちる細い水滴。速さの向きに伸ばした線で描く
 const drops = (() => {
   const position = new Float32Array(MAX_DROPS * 6);
@@ -1275,6 +1328,16 @@ function updateDrops(dt) {
       x: s.x + rand(-1.6, 1.6) * s.width, y: fallY(s.y0, t), z: fallZ(s.z0, t) + rand(-0.5, 1.5),
       vx: rand(-0.7, 0.7), vy: -LIP_SPEED[0] - FALL_GRAVITY * t, vz: LIP_SPEED[1] + rand(-0.3, 0.9),
       a: rand(0.1, 0.5),
+    };
+  });
+  // 噴き上がる水。落ちる水と同じ重力の線にする（軽い粒で描くと、舞う雪に見える）
+  const force = thin(THIN_SPRAY);
+  emit(drops, BURST_JET_RATE * bursts.length, dt, () => {
+    const x = pick(bursts).x + rand(-BURST_WIDTH, BURST_WIDTH);
+    return {
+      x, y: 0.2, z: lipZ(x) + IMPACT_Z + rand(0, 2),
+      vx: rand(-6, 6) * force, vy: randIn(BURST_JET_SPEED) * force, vz: rand(0, 7) * force,
+      a: rand(0.3, 0.9),
     };
   });
   const { position, color, tint } = drops;
@@ -1346,12 +1409,13 @@ spray.points.layers.set(MAIN_ONLY_LAYER);
 const mist = createParticles(MAX_MIST, { map: puffTexture, depthTest: false, order: 5 });
 
 function updateSpray(dt) {
+  const force = thin(THIN_SPRAY);
   emit(spray, SPRAY_RATE * water, dt, () => {
-    const x = rand(-activeHalf, activeHalf);
+    const x = rand(-impactHalf, impactHalf);
     return {
       x, y: 0.2, z: lipZ(x) + IMPACT_Z + rand(-1.5, 1.5),
-      vx: rand(-3, 3), vy: randIn(SPRAY_SPEED) * Math.random() ** 0.5, vz: rand(-1, 6),
-      size: randIn(SPRAY_SIZE), a: rand(0.15, 0.6),
+      vx: rand(-5, 5) * force, vy: randIn(SPRAY_SPEED) * Math.random() ** 0.5 * force, vz: rand(-1, 9) * force,
+      size: randIn(SPRAY_SIZE), a: rand(0.2, 0.7),
     };
   });
   let n = 0;
@@ -1367,18 +1431,28 @@ function updateSpray(dt) {
 }
 
 function updateMist(dt) {
+  emit(mist, BURST_PUFF_RATE * bursts.length, dt, () => {
+    const x = pick(bursts).x + rand(-BURST_WIDTH, BURST_WIDTH);
+    return {
+      x, y: rand(0, 2), z: lipZ(x) + IMPACT_Z + rand(0, 4),
+      vx: rand(-1.5, 1.5), vy: randIn(BURST_PUFF_RISE), vz: rand(1, 4),
+      age: 0, life: rand(2, 3.5), angle: rand(0, TAU), spin: rand(-0.3, 0.3),
+      grow: rand(0.4, 0.8), strength: 3.5,
+    };
+  });
   emit(mist, MIST_RATE * water, dt, () => {
-    const x = rand(-activeHalf, activeHalf) * 1.1;
     const boil = Math.random() < BOIL_SHARE;
+    const x = rand(-impactHalf, impactHalf) * (boil ? 1.3 : 1.1);
     return {
       x, y: boil ? rand(0, 2) : rand(0, 4), z: lipZ(x) + IMPACT_Z + (boil ? rand(0, 4) : rand(-1, 7)),
-      vx: x * 0.03 + rand(-0.7, 0.7), vy: boil ? rand(0.2, 0.9) : randIn(MIST_RISE), vz: rand(0.6, MIST_DRIFT),
+      vx: x * 0.03 + rand(-0.7, 0.7), vy: boil ? rand(0.4, 1.6) : randIn(MIST_RISE), vz: rand(0.6, MIST_DRIFT),
       age: 0, life: boil ? rand(2, 4) : randIn(MIST_LIFE), angle: rand(0, TAU), spin: rand(-0.12, 0.12),
-      grow: boil ? rand(0.4, 0.6) : rand(0.75, 1.2), strength: boil ? 1.8 : 1,
+      grow: boil ? rand(0.4, 0.7) : rand(0.75, 1.2), strength: boil ? 2.8 : 1,
     };
   });
   let n = 0;
-  const opacity = mistOpacity * Math.pow(water, 0.25);
+  const opacity = mistOpacity * Math.pow(water, 0.25) * thin(THIN_MIST_OPACITY);
+  const sizeScale = thin(THIN_MIST_SIZE);
   for (const p of mist.list) {
     p.age += dt;
     if (p.age >= p.life) continue;
@@ -1387,7 +1461,7 @@ function updateMist(dt) {
     p.y += p.vy * (1 - 0.6 * t) * dt;
     p.z += p.vz * dt;
     p.angle += p.spin * dt;
-    writeParticle(mist, n, p, opacity * p.strength * Math.sin(Math.PI * t), mix(MIST_SIZE[0], MIST_SIZE[1], t) * p.grow);
+    writeParticle(mist, n, p, opacity * p.strength * Math.sin(Math.PI * t), mix(MIST_SIZE[0], MIST_SIZE[1], t) * p.grow * sizeScale);
     mist.list[n++] = p;
   }
   mist.list.length = n;
@@ -1423,6 +1497,7 @@ function updateReflectionSize() {
 function updatePool() {
   poolUniforms.uPhase.value.set(
     (time * WAVE_SPEED[0]) % 1, (time * WAVE_SPEED[1]) % 1, (time * WAVE_SPEED[2]) % 1);
+  poolUniforms.uSwell.value = (time * SWELL_SPEED / SWELL_LENGTH % 1) * TAU;
 }
 
 // ---- 虹 ----
@@ -1443,7 +1518,7 @@ const rainbowUniforms = rainbow.material.uniforms;
 function updateRainbow() {
   const strength = SCENES[sceneIndex].rainbow;
   rainbow.visible = strength > 0;
-  rainbowUniforms.uStrength.value = strength * Math.min(1, Math.sqrt(water));
+  rainbowUniforms.uStrength.value = strength * water ** 0.5;
   rainbowUniforms.uReach.value = activeHalf + RAINBOW_SPREAD;
 }
 
@@ -1519,10 +1594,12 @@ function setWater(value) {
   water = clamp(value, MIN_WATER, MAX_WATER);
   streamsInUse = clamp(Math.round(STREAM_COUNT * water / MAX_WATER), 1, STREAM_COUNT);
   streamMesh.geometry.setDrawRange(0, streamsInUse * STREAM_SEGMENTS * 6);
-  activeHalf = 0;
+  activeHalf = FALL_MIN_HALF;
   for (let i = 0; i < streamsInUse; i++) activeHalf = Math.max(activeHalf, Math.abs(streams[i].x));
+  impactHalf = activeHalf * (1 + FALL_FAN);
   streamUniforms.uHalf.value = activeHalf;
-  poolUniforms.uImpact.value.set(activeHalf, IMPACT_Z);
+  poolUniforms.uForce.value = thin(THIN_FOAM);
+  poolUniforms.uImpact.value.set(impactHalf, IMPACT_Z);
   updateRainbow();
 }
 
@@ -1530,6 +1607,7 @@ function setWater(value) {
 function step(dt) {
   time += dt;
   updateStreams();
+  updateBursts(dt);
   updateDrops(dt);
   updateSpray(dt);
   updateMist(dt);
