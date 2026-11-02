@@ -98,9 +98,10 @@ const RAY_DRIFT = [0.008, 0.003]; // 筋の模様が横へ流れる速さ [細�
 // name: 読む人のための名前（コードでは使わない）, low: 下の縁の色, mid: 中ほどの色, high: 上の方の色（リニア）,
 // lowEnd: low から mid に変わり終わる高さ, highStart: high に変わり始める高さ（どちらも下端 0 → 上端 1）, bright: 明るさの倍率
 const AURORA_PRESETS = [
-  { name: '緑', chance: 0.8, low: [1, 1, 0.3], mid: [0.1, 1, 0.45], high: [0.1, 1, 0.45], lowEnd: 0.33, highStart: 1, bright: 1 },
-  { name: '赤（下が緑）', chance: 0.1, low: [1, 0.9, 0.2], mid: [0.1, 1, 0.45], high: [3, 0.08, 0.1], lowEnd: 0.25, highStart: 0.2, bright: 1 },
-  { name: '赤（下が黄）', chance: 0.1, low: [1, 0.9, 0.15], mid: [1, 0.72, 0.08], high: [3, 0.08, 0.1], lowEnd: 0.25, highStart: 0.2, bright: 1 },
+  { name: 'Green', chance: 0.5, low: [0.45, 1, 0.1], mid: [0.2, 1, 0.15], high: [0.2, 1, 0.15], lowEnd: 0.33, highStart: 1, bright: 1 },
+  { name: 'Green with Purple Top', chance: 0.2, low: [0.2, 1, 0.15], mid: [0.2, 1, 0.15], high: [2, 0.02, 0.9], lowEnd: 0.25, highStart: 0.3, bright: 1 },
+  { name: 'Green with Pink Edge', chance: 0.2, low: [2.2, 0.05, 0.9], mid: [0.2, 1, 0.15], high: [0.2, 1, 0.15], lowEnd: 0.1, highStart: 1, bright: 1 },
+  { name: 'All Red', chance: 0.1, low: [2.2, 0.18, 0.05], mid: [2, 0.03, 0.08], high: [1.8, 0.03, 0.45], lowEnd: 0.25, highStart: 0.3, bright: 0.7 },
 ];
 const COLOR_BLEND = 0.25;         // mid から high へ移り変わる幅（下端 0 → 上端 1）
 
