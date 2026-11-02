@@ -1138,9 +1138,6 @@ function updateEvent(dt) {
   }
 }
 
-// その景色の出来事を、待たずにすぐ起こす（デバッグ用）
-const triggerEvent = startEvent;
-
 // ---- カメラ ----
 function updateCamera() {
   const yaw = SWAY_ANGLE * Math.sin(time * TAU / SWAY_PERIOD);
@@ -1199,7 +1196,7 @@ setupControls({
   },
   // 作品だけのキー操作
   keys: {
-    KeyC: triggerEvent,             // デバッグ用の隠しコマンド（HUDには出さない）
+    KeyC: startEvent,               // 隠しコマンド（HUDには出さない）
   },
   onResize() {
     camera.aspect = innerWidth / innerHeight;

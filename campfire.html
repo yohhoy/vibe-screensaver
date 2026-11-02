@@ -885,7 +885,7 @@ function updateCamera() {
 }
 
 // ---- 強度 ----
-// 炎の大きさは、粒を大きくせずに背の高さと舌の数で出し、明るさの密度は保つ
+// 炎の大きさは、主に背の高さと舌の数で出し（粒の大きさはわずかに変えるだけ）、明るさの密度は保つ
 function setFire(value) {
   fire = clamp(value, MIN_FIRE, MAX_FIRE);
   const f = fireScale;
