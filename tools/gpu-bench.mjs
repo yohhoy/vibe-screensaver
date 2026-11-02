@@ -40,6 +40,7 @@ const PAGES = [
   { page: 'jellyfish' },
   { page: 'aurora' },
   { page: 'waterfall', scenes: 'SCENES', select: 'setScene(i)' },
+  { page: 'lavalamp' },
 ];
 
 // ---- ページに差し込む処理 ----
