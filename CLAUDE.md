@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-ブラウザで動くスクリーンセーバ風アニメーション集。概要・操作は [README.md](README.md)、実装の方針・構成は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は `docs/<作品名>.md` を参照。
+ブラウザで動くスクリーンセーバ風アニメーション集。概要・操作は [README.md](README.md)、実装の方針・構成は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は `docs/specs/<作品名>.md` を参照。
 
 @DEVELOPMENT.md
 

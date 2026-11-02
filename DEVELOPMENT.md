@@ -1,6 +1,6 @@
 # DEVELOPMENT.md — 実装者向けメモ
 
-作品の概要・操作は [README.md](README.md)、作品ごとの仕様は `docs/<作品名>.md` を参照。
+作品の概要・操作は [README.md](README.md)、作品ごとの仕様は `docs/specs/<作品名>.md` を参照。
 
 ## 方針
 
@@ -20,7 +20,10 @@
 | common.js | 全作品で共通の入力・UI と小さな関数（下の「共通の仕組み」） |
 | common.css | 全作品で共通の CSS（画面全体、暗転 `#fade`、操作ガイド `#hud`、強度のゲージ `#intensity`） |
 | index.html | 作品一覧 |
-| docs/ | 作品ごとの仕様、README 用のサムネイル（`docs/images/`）、動画の書き出し手順、GPU 負荷の基準値 |
+| docs/specs/ | 作品ごとの仕様 |
+| docs/images/ | README 用のサムネイル |
+| docs/video.md | 動画の書き出し手順 |
+| docs/performance.md | GPU 負荷の基準値 |
 | tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。
@@ -71,7 +74,7 @@ setupControls({
 });
 ```
 
-- **シーン切替**: 暗転して次の場面へ移る操作。何が変わるかは作品ごとの仕様（`docs/<作品名>.md`）に書く。暗転は `fadeAndRun(change)` で、暗転している間に `change()` を呼ぶ。暗転中かは `isFading()` で分かる。
+- **シーン切替**: 暗転して次の場面へ移る操作。何が変わるかは作品ごとの仕様（`docs/specs/<作品名>.md`）に書く。暗転は `fadeAndRun(change)` で、暗転している間に `change()` を呼ぶ。暗転中かは `isFading()` で分かる。
 - **強度**: 作品ごとの強さ（速度・雨の強さ・火の強さ・泡の筋の数・オーロラの帯の数・水量）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
 - キー操作は Cmd / Ctrl / Alt を押しながらの操作には反応させず、ブラウザに任せる（Cmd+F など）。
 - スワイプは指での操作だけを受け付ける（マウスのドラッグや 2 本目の指には反応しない）。十分に動き、縦横の一方の動きがもう一方の 2 倍以上あるときだけスワイプとみなす。
@@ -96,7 +99,7 @@ setupControls({
 - [index.html](index.html) の作品一覧にリンクを追加・更新する。
 - README.md の作品ごとの節（1 行の概要・操作）を更新する。
 - 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
-- `docs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作り、下の「作品ごとの仕様」に追加する。
+- `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作り、下の「作品ごとの仕様」に追加する。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
 - 見た目を変えないリファクタリングは、`Math.random` を固定の乱数に差し替え、決まったコマ数だけ進めた画像を変更前後で比べる。
   - three.js は UUID を作るのに `Math.random` を使う。テクスチャや材質を作る順番を変えると乱数の列がずれ、コードが正しくても画像が変わる。比べるときは、変更前のコードも作る順番を揃える。
@@ -107,22 +110,22 @@ setupControls({
 
 ## 作品ごとの仕様
 
-作品ごとの仕様は `docs/` に分けてある。作品を触るときは、そのファイルを読んでから作業する。調整用の定数の意味は、各 HTML の「設定」節のコメントを見る。
+作品ごとの仕様は `docs/specs/` に分けてある。作品を触るときは、そのファイルを読んでから作業する。調整用の定数の意味は、各 HTML の「設定」節のコメントを見る。
 
 | 作品 | 仕様 |
 |---|---|
-| pipes.html — 3D パイプ | [docs/pipes.md](docs/pipes.md) |
-| tube.html — チューブトンネル | [docs/tube.md](docs/tube.md)（隠し要素のマスコットを含む） |
-| drone.html — ナイトドローン | [docs/drone.md](docs/drone.md)（コースの定義を含む） |
-| ripple.html — 雨の水面 | [docs/ripple.md](docs/ripple.md)（景色の定義を含む） |
-| campfire.html — 焚き火 | [docs/campfire.md](docs/campfire.md) |
-| jellyfish.html — クラゲ水槽 | [docs/jellyfish.md](docs/jellyfish.md) |
-| aurora.html — オーロラ | [docs/aurora.md](docs/aurora.md)（隠し要素のサンタクロースを含む） |
-| waterfall.html — 滝 | [docs/waterfall.md](docs/waterfall.md)（景色の定義を含む） |
+| pipes.html — 3D パイプ | [docs/specs/pipes.md](docs/specs/pipes.md) |
+| tube.html — チューブトンネル | [docs/specs/tube.md](docs/specs/tube.md)（隠し要素のマスコットを含む） |
+| drone.html — ナイトドローン | [docs/specs/drone.md](docs/specs/drone.md)（コースの定義を含む） |
+| ripple.html — 雨の水面 | [docs/specs/ripple.md](docs/specs/ripple.md)（景色の定義を含む） |
+| campfire.html — 焚き火 | [docs/specs/campfire.md](docs/specs/campfire.md) |
+| jellyfish.html — クラゲ水槽 | [docs/specs/jellyfish.md](docs/specs/jellyfish.md) |
+| aurora.html — オーロラ | [docs/specs/aurora.md](docs/specs/aurora.md)（隠し要素のサンタクロースを含む） |
+| waterfall.html — 滝 | [docs/specs/waterfall.md](docs/specs/waterfall.md)（景色の定義を含む） |
 
 ### 仕様の書き方
 
-`docs/<作品名>.md` は、`# <作品名>.html — 名前` の下に 1〜2 文の概要を置き、次の順番の `##` 節に分ける。（任意）の節は、その作品で要るときだけ置く。
+`docs/specs/<作品名>.md` は、`# <作品名>.html — 名前` の下に 1〜2 文の概要を置き、次の順番の `##` 節に分ける。（任意）の節は、その作品で要るときだけ置く。
 
 | 節 | 内容 |
 |---|---|
