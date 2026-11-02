@@ -1,5 +1,5 @@
 // 全作品で共通の入力・UI と小さな関数。
-// 暗転、全画面、カーソルと操作ガイドを隠す処理、画面を消さない処理、キー操作とスワイプ、強度のゲージ、乱数など。
+// 暗転、全画面、一覧へ戻る操作、カーソルと操作ガイドを隠す処理、画面を消さない処理、キー操作とスワイプ、強度のゲージ、乱数など。
 //
 // file:// で直接開いても動くよう、ES モジュールではなく通常のスクリプトとして読み込み、
 // 使うものは window.Common に置く。各作品は
@@ -11,6 +11,7 @@
   const IDLE_MS = 3000;             // カーソルと操作ガイドを隠すまでの時間
   const SWIPE_MIN_PX = 60;          // スワイプとみなす移動量（CSS ピクセル）
   const INTENSITY_SHOW_MS = 1500;   // 強度を変えたとき、ゲージを出しておく時間
+  const INDEX_URL = 'index.html';   // 作品一覧
 
   // スマホなどタッチ操作の端末か。解像度の倍率の上限などと、画面を消さない処理を切り替える
   const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
@@ -58,6 +59,11 @@
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen?.();
+  }
+
+  // 作品一覧へ戻る。全画面のときの Esc はブラウザが全画面を抜けるのに使うので、ここでは戻らない
+  function backToIndex() {
+    if (!document.fullscreenElement) location.href = INDEX_URL;
   }
 
   // ---- 操作が無ければカーソルと操作ガイドを隠す ----
@@ -110,9 +116,26 @@
     intensityEl = document.body.appendChild(Object.assign(document.createElement('div'), { id: 'intensity' }));
     intensityEl.appendChild(Object.assign(document.createElement('div'), { className: 'fill' }));
 
+    // 操作ガイドの先頭に、作品一覧へ戻るリンクを置く
+    const backLink = Object.assign(document.createElement('a'), {
+      id: 'back', href: INDEX_URL, innerHTML: '← 一覧<span class="pc-only">（Esc）</span>',
+    });
+    document.getElementById('hud').prepend(backLink);
+
+    // 隠れている間に画面を押したときは、操作ガイドを出すだけにする。見えていないリンクでは移動しない
+    let pressedWhileIdle = false;
+    addEventListener('pointerdown', () => {
+      pressedWhileIdle = document.body.classList.contains('idle');
+      wake();
+    });
+    backLink.addEventListener('click', (e) => {
+      if (pressedWhileIdle) e.preventDefault();
+    });
+
     const keyActions = {
       Space: changeScene,
       KeyF: toggleFullscreen,
+      Escape: backToIndex,
       ArrowUp: () => adjustIntensity(intensity, 1),
       ArrowDown: () => adjustIntensity(intensity, -1),
       ...keys,

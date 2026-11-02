@@ -1,4 +1,4 @@
-/* 全作品で共通の見た目（画面全体・暗転・操作ガイド・強度のゲージ） */
+/* 全作品で共通の見た目（画面全体・暗転・操作ガイド・一覧へ戻るリンク・強度のゲージ） */
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 /* スマホでダブルタップ・ピンチで拡大したり、長押しで文字を選んだりしない（PC はそのまま） */
 @media (pointer: coarse) {
@@ -25,6 +25,23 @@ body.idle { cursor: none; }
   transition: opacity 0.6s ease;
 }
 body.idle #hud { opacity: 0; }
+
+/* 操作ガイドの文言のうち、PC だけ・タッチ操作の端末だけに出すもの */
+.touch-only { display: none; }
+@media (pointer: coarse) {
+  .pc-only { display: none; }
+  .touch-only { display: inline; }
+}
+
+/* 作品一覧へ戻るリンク。common.js が操作ガイドの先頭に作る */
+#back { display: block; width: fit-content; color: inherit; }
+@media (hover: hover) {
+  #back:hover { color: #fff; }
+}
+/* 指で押しやすいよう、タッチ操作の端末では押せる範囲を広げる */
+@media (pointer: coarse) {
+  #back { display: flex; align-items: center; min-width: 88px; min-height: 44px; font-size: 14px; }
+}
 
 /* 強度のゲージ。common.js が作り、変えたときだけ右端に少しの間だけ薄く出す */
 #intensity {

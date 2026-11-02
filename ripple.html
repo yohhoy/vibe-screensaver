@@ -16,7 +16,8 @@
 <body>
 <div id="hud">
   Scene: <span id="scene-name"></span><br>
-  Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: 雨の強さ
+  <span class="pc-only">Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: 雨の強さ</span>
+  <span class="touch-only">左右スワイプ: 次の景色 / 上下スワイプ: 雨の強さ</span>
 </div>
 <script type="module">
 import * as THREE from 'three';
