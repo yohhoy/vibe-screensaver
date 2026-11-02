@@ -114,7 +114,10 @@ const RECESS = 7;                 // 滝の裏で崖がえぐれている深さ
 const TALUS_HEIGHT = 11;          // 崖の足もとの崩れた斜面の高さ
 const TALUS_REACH = 20;           // 崩れた斜面が手前へ張り出す長さ
 const BLOCK_SIZE = [5, 3.2];      // 岩の塊の幅と高さ（縦の割れ目と地層で区切られる）
+const BLOCK_SHIFT = [2.6, [0.4, 1.7]];   // 岩の塊を前後にずらす幅（列ごと、段ごとの [ずれの弱い所, 強い所]）
 const ROCK_COLORS = [[0.2, 0.19, 0.18], [0.42, 0.4, 0.37]];   // 岩の色（暗い / 明るい）
+const ROCK_WARM = [1.16, 1, 0.82];   // 暖色の岩に掛ける色
+const STRATA_TONE = [0.8, 1.15];  // 地層の帯の明るさの倍率（暗い帯 / 明るい帯）
 const MOSS_COLOR = [0.2, 0.3, 0.1];
 const GRASS_COLOR = [0.14, 0.23, 0.09];
 const ROCK_TILE = 16;             // 岩の模様のテクスチャ 1 枚が受け持つ広さ
@@ -183,7 +186,8 @@ const MSAA_OFF_PIXEL_RATIO = 1.25;   // 解像度の倍率がこれ以上なら 
 //   zenith / horizon: 天頂 / 低い空の色、fog: 遠くを霞ませる色と濃さ [r, g, b, 濃さ]
 //   cloud: 雲の色と濃さ [r, g, b, 濃さ]、stars: 星空を出すか
 //   ambient: 空の光 { sky, ground, intensity }、light: 太陽・月の光 { color, intensity, dir }
-//   disc: 空に見える月 { dir, color, size } または null。無ければ何も描かない
+//   disc: 空に見える月 { dir, color, size, glow } または null。無ければ何も描かない。glow はまわりの光の色（線形の値）
+//   foliage: 木の色に掛ける色
 //   lit / shade / glass: 滝の白い所 / 影の所 / 滝口のなめらかな水の色
 //   mist: 霧の色と不透明度 [r, g, b, a]、spray: しぶきの色
 //   deep / foam: 滝壺の水そのものの色 / 泡の色
@@ -195,19 +199,19 @@ const SCENES = [
     cloud: [1, 1, 1, 0.75], stars: false,
     ambient: { sky: [0.75, 0.85, 1], ground: [0.32, 0.35, 0.26], intensity: 1.5 },
     light: { color: [1, 0.96, 0.88], intensity: 2.6, dir: [-0.22, 0.5, 0.8] },
-    disc: null,
+    disc: null, foliage: [1, 1, 1],
     lit: [0.98, 0.99, 1], shade: [0.42, 0.54, 0.58], glass: [0.52, 0.58, 0.6],
-    mist: [0.95, 0.97, 1, 0.055], spray: [1, 1, 1],
+    mist: [0.92, 0.94, 0.97, 0.046], spray: [1, 1, 1],
     deep: [0.03, 0.17, 0.16], foam: [0.96, 0.98, 1],
     rainbow: 0.09, bloom: { strength: 0, threshold: 1 }, exposure: 1,
   },
   {
     name: 'Sunset',
-    zenith: [0.2, 0.2, 0.42], horizon: [0.98, 0.6, 0.38], fog: [0.72, 0.5, 0.44, 0.0045],
+    zenith: [0.2, 0.2, 0.42], horizon: [0.98, 0.6, 0.38], fog: [0.58, 0.43, 0.52, 0.0045],
     cloud: [1, 0.62, 0.5, 0.85], stars: false,
-    ambient: { sky: [0.5, 0.48, 0.72], ground: [0.16, 0.14, 0.18], intensity: 1.2 },
-    light: { color: [1, 0.68, 0.44], intensity: 2.4, dir: [0.8, 0.22, 0.55] },
-    disc: null,
+    ambient: { sky: [0.36, 0.36, 0.66], ground: [0.14, 0.13, 0.22], intensity: 1 },
+    light: { color: [1, 0.7, 0.36], intensity: 4.6, dir: [0.8, 0.22, 0.55] },
+    disc: null, foliage: [1, 1, 1],
     lit: [1, 0.84, 0.74], shade: [0.54, 0.42, 0.44], glass: [0.42, 0.33, 0.36],
     mist: [1, 0.78, 0.68, 0.06], spray: [1, 0.9, 0.8],
     deep: [0.06, 0.06, 0.12], foam: [1, 0.86, 0.78],
@@ -217,9 +221,9 @@ const SCENES = [
     name: 'Midnight',
     zenith: [0.012, 0.024, 0.07], horizon: [0.05, 0.08, 0.16], fog: [0.04, 0.06, 0.12, 0.0052],
     cloud: [0.14, 0.18, 0.28, 0.5], stars: true,
-    ambient: { sky: [0.3, 0.38, 0.62], ground: [0.05, 0.06, 0.1], intensity: 1.5 },
-    light: { color: [0.6, 0.72, 1], intensity: 2.4, dir: [-0.4, 0.6, 0.7] },
-    disc: { dir: [-0.1, 0.49, -0.866], color: [1.8, 1.7, 1.4], size: 0.016 },
+    ambient: { sky: [0.44, 0.54, 0.84], ground: [0.2, 0.25, 0.4], intensity: 2.6 },
+    light: { color: [0.6, 0.72, 1], intensity: 2.4, dir: [-0.05, 0.55, 0.85] },
+    disc: { dir: [-0.1, 0.49, -0.866], color: [1.8, 1.7, 1.4], size: 0.016, glow: [0.03, 0.045, 0.085] }, foliage: [0.82, 0.68, 1],
     lit: [0.64, 0.74, 0.92], shade: [0.16, 0.21, 0.33], glass: [0.06, 0.11, 0.17],
     mist: [0.5, 0.6, 0.82, 0.055], spray: [0.8, 0.88, 1],
     deep: [0.008, 0.016, 0.035], foam: [0.62, 0.74, 0.92],
@@ -286,7 +290,9 @@ function wallZ(x, y) {
   // 縦の割れ目と地層で区切られた岩の塊。列ごと・段ごとに前後にずらす
   const col = Math.floor((x + 9 * fbm(y * 0.04, 2.5)) / BLOCK_SIZE[0]);
   const row = Math.floor((y + 5 * fbm(x * 0.03, 8.5)) / BLOCK_SIZE[1]);
-  z += rough * (3.4 * (hash2(col, 5) - 0.5) + 3 * (hash2(col, row) - 0.5));
+  // 段のずれは所々だけ強くする。どこも同じだと、段の影が崖の端から端まで黒い線で続く
+  const rowShift = mix(BLOCK_SHIFT[1][0], BLOCK_SHIFT[1][1], smoothstep(fbm(x * 0.05 + 14, y * 0.07), 0.4, 0.65));
+  z += rough * (BLOCK_SHIFT[0] * (hash2(col, 5) - 0.5) + rowShift * (hash2(col, row) - 0.5));
   z += rough * 2.2 * (fbm(x * 0.35, y * 0.35) - 0.5);                 // 細かな凹凸
   z -= RECESS * fall * smoothstep(below, 0.5, 9);                     // 滝の裏はえぐれている
   const talus = clamp(1 - y / TALUS_HEIGHT, 0, 1);                    // 足もとの崩れた斜面（滝の近くには無い）
@@ -315,6 +321,7 @@ const SkyShader = {
     uCloud: { value: new THREE.Vector4(0, 0, 0, 0) },       // 雲の色と濃さ
     uMoonDir: { value: new THREE.Vector3(0, 1, 0) },
     uMoonColor: { value: new THREE.Color(0, 0, 0) },
+    uMoonGlow: { value: new THREE.Color(0, 0, 0) },
     uMoonCos: { value: 1 },                                 // 月の半径の cos
     uNoise: { value: null },
     uCloudPhase: { value: 0 },                              // 雲が流れる位相（0..1。JS で求める）
@@ -326,7 +333,7 @@ const SkyShader = {
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }`,
   fragmentShader: /* glsl */`
-    uniform vec3 uZenith, uHorizon, uBelow, uMoonDir, uMoonColor;
+    uniform vec3 uZenith, uHorizon, uBelow, uMoonDir, uMoonColor, uMoonGlow;
     uniform vec4 uCloud;
     uniform float uMoonCos, uCloudPhase;
     uniform sampler2D uNoise;
@@ -340,7 +347,7 @@ const SkyShader = {
       col = mix(col, uCloud.rgb, uCloud.a * smoothstep(0.54, 0.72, n));
       // 月
       float m = dot(d, uMoonDir);
-      col += uMoonColor * (smoothstep(uMoonCos, uMoonCos + 0.00004, m) + 0.05 * pow(max(m, 0.0), 300.0));
+      col += uMoonColor * smoothstep(uMoonCos, uMoonCos + 0.00004, m) + uMoonGlow * pow(max(m, 0.0), 300.0);
       // 崖より低い空は映り込みの描画先にしか出ない。そこでは水面の下に入った光線が岩の裏を抜けて空に届く。
       // 波で読む位置がずれたときに、岸の下で空の色を拾わないように塗りつぶす
       gl_FragColor = vec4(d.y < 0.18 ? uBelow : col, 1.0);
@@ -884,17 +891,19 @@ function updateSky() {
     const wet = Math.exp(-((x / (FALL_MAX_HALF + 4)) ** 4)) * (1 - smoothstep(y, FALL_HEIGHT - 1, FALL_HEIGHT + 2));
     const up = smoothstep(normals.getY(k), 0.2, 0.6);
     const low = 1 - smoothstep(y, 0, 16);
-    const mossAmount = clamp(up + 0.25 + 0.5 * low, 0, 1) * smoothstep(fbm(x * 0.19, y * 0.21 + 11), 0.42, 0.56);
-    const stain = 1 - 0.5 * smoothstep(fbm(x * 0.55, y * 0.025 + 2), 0.48, 0.62);   // 岩肌を伝う水の縦のしみ
+    const mossAmount = clamp(up + 0.35 + 0.5 * low, 0, 1) * smoothstep(fbm(x * 0.19, y * 0.21 + 11), 0.42, 0.56);
+    const stain = 1 - 0.5 * smoothstep(fbm(x * 0.55, y * 0.025 + 2), 0.45, 0.6);   // 岩肌を伝う水の縦のしみ
+    const strata = mix(STRATA_TONE[0], STRATA_TONE[1], smoothstep(fbm(x * 0.012 + 30, y * 0.16), 0.35, 0.65));   // 地層は影ではなく色の帯で見せる
+    const warm = smoothstep(fbm(x * 0.03 + 40, y * 0.04 + 9), 0.42, 0.62);   // 広い範囲で岩の色みを変える
     for (let c = 0; c < 3; c++) {
-      let v = mix(rockA[c], rockB[c], shade) * stain;
+      let v = mix(rockA[c], rockB[c], shade) * stain * strata * mix(1, ROCK_WARM[c], warm);
       v = isWall[k] ? mix(v, moss[c] * mix(0.7, 1.15, shade), mossAmount * (1 - 0.6 * wet)) : grass[c] * mix(0.75, 1.2, shade);
       colors[k * 3 + c] = v * mix(1, 0.55, wet) * mix(0.25, 1, smoothstep(y, 0, 2.5));   // 水際は濡れて暗い
     }
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   scene.add(new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({
-    vertexColors: true, map: rockTexture,
+    vertexColors: true, map: rockTexture, flatShading: true,
     side: THREE.DoubleSide,   // 映り込みは水面の下から見上げて描く。面の裏が抜けると、水面に空が映ってしまう
   })));
 }
@@ -1073,6 +1082,7 @@ function coniferGeometry(tiers) {
 const coniferMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
 // 葉の板は表（外向き）だけ描く。裏も描くと、法線が反転して真っ黒な塊に見える
 const leafMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, map: leafTexture, alphaTest: LEAF_ALPHA_TEST });
+const foliageMaterials = [coniferMaterial, leafMaterial];   // 景色の foliage を掛ける材質
 
 // 崖の上の木。滝口の真上は川なので、少し奥まで空ける。奥ほど背を高くして稜線を作る
 function rimTree() {
@@ -1146,7 +1156,11 @@ function plantRimTrees() {
       addFacingCard(crowns, x, y + height - halfH, z, halfW, halfH, height * 0.05, tint(0.25), tint(0.65), 2, 2);
     }
   }
-  const cardMaterial = (map) => new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: LEAF_ALPHA_TEST });
+  const cardMaterial = (map) => {
+    const material = new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: LEAF_ALPHA_TEST });
+    foliageMaterials.push(material);
+    return material;
+  };
   for (const mesh of [
     new THREE.Mesh(crowns.geometry(), cardMaterial(crownTexture)),
     new THREE.Mesh(conifers.geometry(), cardMaterial(coniferCardTexture)),
@@ -1552,9 +1566,11 @@ function setScene(index) {
   if (s.disc) {
     skyUniforms.uMoonDir.value.fromArray(s.disc.dir).normalize();
     skyUniforms.uMoonColor.value.fromArray(s.disc.color);
+    skyUniforms.uMoonGlow.value.fromArray(s.disc.glow);
     skyUniforms.uMoonCos.value = Math.cos(s.disc.size);
   } else {
     skyUniforms.uMoonColor.value.setRGB(0, 0, 0);
+    skyUniforms.uMoonGlow.value.setRGB(0, 0, 0);
   }
   const fog = srgb(s.fog);
   scene.fog.color.copy(fog);
@@ -1565,6 +1581,8 @@ function setScene(index) {
   keyLight.color.copy(srgb(s.light.color));
   keyLight.intensity = s.light.intensity;
   keyLight.position.fromArray(s.light.dir);
+  const foliage = srgb(s.foliage);
+  for (const material of foliageMaterials) material.color.copy(foliage);
   streamUniforms.uLit.value.copy(srgb(s.lit));
   streamUniforms.uShade.value.copy(srgb(s.shade));
   streamUniforms.uGlass.value.copy(srgb(s.glass));
