@@ -41,6 +41,7 @@ const PAGES = [
   { page: 'aurora' },
   { page: 'waterfall', scenes: 'SCENES', select: 'setScene(i)' },
   { page: 'lavalamp' },
+  { page: 'penguins', scenes: 'SCENES', select: 'setScene(i)' },
 ];
 
 // ---- ページに差し込む処理 ----

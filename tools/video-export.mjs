@@ -33,8 +33,9 @@ const SCENES = {
   drone: { names: 'COURSES', select: 'loadCourse(i)' },
   ripple: { names: 'SCENES', select: 'setScene(i)' },
   waterfall: { names: 'SCENES', select: 'setScene(i)' },
+  penguins: { names: 'SCENES', select: 'setScene(i)' },
 };
-const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp'];
+const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins'];
 
 const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプション]
 

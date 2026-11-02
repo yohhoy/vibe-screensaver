@@ -108,6 +108,21 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 新しい配色 / 強度: 温度
 
+## [ペンギンの行進](https://yohhoy.github.io/vibe-screensaver/penguins.html)
+
+[<img src="docs/images/penguins.jpg" width="480" alt="ペンギンの行進">](https://yohhoy.github.io/vibe-screensaver/penguins.html)
+
+南極の雪原を、ペンギンの群れが行進します。ときどき誰かが腹ばいで滑り出し、列を追い越していきます。
+
+シーン切替: 次の景色 / 強度: ペンギンの数
+
+<details>
+<summary>隠し要素（ネタバレ注意）</summary>
+
+ときどき綿毛のヒナが列に加わります。**C** キーですぐに呼び出せます。
+
+</details>
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

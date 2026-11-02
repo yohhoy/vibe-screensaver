@@ -1,0 +1,2156 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Penguin March</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  Scene: <span id="scene-name"></span><br>
+  <span class="pc-only">Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: ペンギンの数</span>
+  <span class="touch-only">左右スワイプ: 次の景色 / 上下スワイプ: ペンギンの数</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
+const { smoothstep, lerp, degToRad } = THREE.MathUtils;
+
+// ---- 設定 ----
+// 座標: 列が通る線が z = 0、画面の中央が x = 0。カメラは +z の側から -z の向きに見る。長さの単位はメートルのつもり
+
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1.5 };   // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+const MAX_FPS = 60;               // 描く回数の上限（1 秒あたり）。120Hz などの画面向け
+
+// カメラ（望遠で遠くから水平に撮り、向きだけをわずかに振る）
+const CAM_FOV = 8;                // 画面の短い辺の方向の画角（度）
+const BIRD_HEIGHT = 1.07;         // ペンギンの標準の背丈
+const BIRD_ON_SCREEN = 0.085;     // ペンギンの背丈が画面の短い辺に占める割合
+const FEET_ON_SCREEN = 0.28;      // 足もとの高さ（画面の下からの割合）
+const CAM_ABOVE_FEET = 0.75;      // カメラの高さ（足もとの標準の高さから。胸の高さ）
+const CAM_SWAY_YAW = 0.002;       // 左右に振る幅（ラジアン）
+const CAM_SWAY_PITCH = 0.0008;    // 上下に振る幅（ラジアン）
+const CAM_SWAY_PERIOD = [120, 83];   // 振る周期 (左右, 上下)（秒）
+
+// 地形
+const HILL_HEIGHT = 0.7;          // 歩く線の起伏の高さ
+const HILL_WAVELENGTH = [[18, 34], [7, 12]];   // 起伏の 2 段の波長の範囲
+const HILL_MIX = 0.3;             // 短い波の割合（0..1）
+const FAR_RIDGE_HEIGHT = 2.2;     // 遠くの雪原のうねりの高さ（距離 300 あたり）
+const GROUND_ROWS_STEP = [2, 1.04];     // 雪面の行の間隔（列のまわりの間隔, それより奥で行くごとの倍率）
+const GROUND_COLS = 240;          // 雪面の列の数
+const GROUND_FAR = 1800;          // 雪面の奥の端までの距離（z）
+
+// 遠景（空と氷山を 1 枚の canvas に描く）
+const BG_SIZE = [1800, 900];      // canvas の大きさ（px）
+const BG_HALF_WIDTH = 16;         // canvas が覆う左右の範囲（度。超横長の画面でも切れない幅）
+const BG_RANGE = [-0.5, 15.5];    // canvas が覆う上下の範囲（度。地平線が 0）
+const BG_DISTANCE = 2400;         // 遠景を置く距離
+const BG_BLUR_LEVELS = 2;         // 遠景のぼかしの強さ（半分に縮める回数）
+const BG_GAIN = 1.1;              // 遠景の明るさの倍率（canvas の色は 1 までなので、トーンカーブの前に持ち上げる）
+const BERG_HEIGHT = 0.55;         // 氷山と山並みの高さの倍率
+const BERG_FACE_LIGHT = 0.42;     // 氷の壁の明るさ（0: 影の色、1: 光の色）
+const BERG_RELIEF = 1.6;          // 壁の溝の陰影の強さ
+const BERG_CAP = 0.45;            // 頂の雪の明るさ（0: 壁と同じ、1: 光の色）
+const SKY_MOTTLE = 0.05;          // 空のむらの強さ（明るさの幅）。単調なグラデーションは絵に見える
+
+// 写真らしさ（最後に全画面へ掛ける処理）
+const SCENE_SAMPLES = 4;          // シーンの描画先の MSAA の倍率
+const LENS_SOFTNESS = 1;          // レンズのやわらかさ（ぼかす画素数）
+const VIGNETTE = 0.26;            // 周辺減光の強さ（画面の角で 1 - これ の明るさ）
+const GRAIN = 0.04;               // 粒状感の強さ（sRGB の値の幅）
+
+// 行進
+const BASE_COUNT = 6;
+const MIN_COUNT = 3;
+const MAX_COUNT = 30;
+const COUNT_STEP = 3;             // ↑↓ 1 回あたりに増減する羽数
+const MAX_BIRDS = MAX_COUNT * 3;  // 同時に扱う羽数の上限（強度の上限に、画面の外・超横長の画面・隠し要素のぶんの余裕を足す）
+const GROUP_SHARE = [0.25, 0.5];  // 群れの大きさの範囲（強度の羽数に対する割合）
+const WARMUP_TIME = 32;           // シーン切替の後に先へ進めておく時間（秒。列が画面の半分まで進む）
+const REF_VIEW_WIDTH = 22.4;      // 羽数から入ってくるペースを決めるときの、画面の幅（16:9 の画面の、列の線の上での幅）
+const STEP_LENGTH = [0.23, 0.29]; // 1 歩の長さの範囲。個体ごとに選ぶ
+const WALK_SWAY = [0.8, 1.2];     // 歩くときの揺れの大きさの範囲（倍率）。個体ごとに選ぶ
+const WALK_BOB = 0.03;            // 一歩ごとに沈んで伸びる幅
+const WALK_SURGE = 0.012;         // 一歩ごとに重心が前後する幅
+const WALK_ROCK = 0.03;           // 一歩ごとに体が前後に揺れる角度（ラジアン）
+const WALK_ROLL = 0.1;            // 体が左右に傾く角度（ラジアン）
+const WALK_SHIFT = 0.025;         // 重心が着いている足の側へ寄る幅
+const WALK_WING_SWING = 0.07;     // 歩くときに翼が前後に揺れる角度（ラジアン）
+const WALK_LEAN = [0.03, 0.08];   // 歩くときの前傾の範囲（ラジアン）。個体ごとに選ぶ
+const BIRD_GAP = [1.1, 1.6];      // 前のペンギンとの間隔の範囲（列の中の間隔）
+const FOLLOW_RANGE = 3;           // 前との間隔がこの倍数以内なら追いつこうとする
+const TROT_FACTOR = 1.45;         // 追いつくときの速さの倍率
+const BIRDS_PER_FILE = 12;        // 列 1 本あたりの羽数のめやす。多いと列を増やす
+const FILE_SPACING = 1.2;         // 列どうしの奥行きの間隔
+const FILE_WIDTH = 0.5;           // この奥行きの差までを同じ列とみなす
+const FILE_BACK_SHIFT = 0.3;      // 列が 2 本以上のとき、全体を奥へずらす量
+const FILE_DEPTH_JITTER = 0.2;    // 列の中の奥行きのばらつき
+const BIRD_SIZE_JITTER = 0.05;    // 背丈のばらつき（±）
+const ENTRY_MARGIN = 1.5;         // 画面の外のどれだけ先から入ってくるか
+const EXIT_MARGIN = 2.5;          // 画面の外のどれだけ先で消すか
+const STOP_INTERVAL = [45, 20, 90];   // 先頭が立ち止まる間隔（平均, 最小, 最大）（秒）
+const STOP_TIME = [3, 6];         // 立ち止まっている時間の範囲（秒）
+const PATH_AMPLITUDE = [1.5, 3];  // 列の進路のうねりの幅の範囲（奥行き。群れごとに選ぶ）
+const PATH_WAVELENGTH = [28, 55]; // 列の進路のうねりの波長の範囲（群れごとに選ぶ）
+const WANDER_AMPLITUDE = 0.25;    // 個体ごとに進路からずれる幅（奥行き。列の幅 FILE_WIDTH より小さくする）
+const MAX_HEADING = 0.7;          // 進む向きの傾きの上限（ラジアン）
+const PACE_WAVE = 0.1;            // 先頭を歩くときの速さのむら（±の割合）
+const GAP_WAVE = 0.22;            // 前との間隔のむら（±の割合）
+const PACE_WAVE_PERIOD = [15, 40];    // 速さと間隔のむらの周期の範囲（秒。個体ごとに選ぶ）
+const LANE_SPEED = 0.8;           // 列へ戻るときの横の速さ
+
+// 腹滑り
+const SLIDE_INTERVAL = [15, 5, 40];   // 滑り出す間隔（平均, 最小, 最大）（秒。BASE_COUNT 羽のとき。羽数に反比例）
+const SLIDE_RUN_TIME = 0.8;       // 滑り出す前の助走の時間（秒）
+const SLIDE_RUN_FACTOR = 1.5;     // 助走の速さ（歩く速さに対する倍率）
+const SLIDE_RUN_LEAN = 0.32;      // 助走の終わりの前傾（ラジアン）
+const SLIDE_FALL_TIME = 0.45;     // 倒れて腹がつくまでの時間（秒）
+const SLIDE_RISE_TIME = 1.1;      // 起き上がる時間（秒）
+const SLIDE_RISE_PUSH = 0.42;     // 起き上がりのうち、胸を押し上げるまでの割合。残りで立ち上がる
+const SLIDE_KICK_TIME = [1.5, 5.5];   // 足で蹴って進む時間の範囲（秒）。そのあとは止まるまで滑る
+const SLIDE_MAX_COAST = 4;        // 蹴り終えてから滑り続ける時間の上限（秒）
+const SLIDE_BURST = [2, 4];       // 続けて蹴る回数の範囲
+const SLIDE_GLIDE_TIME = [0.7, 1.5];   // 蹴るのをやめて滑る時間の範囲（秒）
+const SLIDE_SPEED = 1.68;         // 滑る速さの目安（景色によらず同じ）
+const SLIDE_MAX_SPEED = SLIDE_SPEED * 1.15;
+const KICK_IMPULSE = 0.36;        // 1 回蹴るごとに増える速さ（m/s）
+const SLIDE_DRAG = 0.5;           // 雪との摩擦による減速（m/s²）
+const SLIDE_GRAVITY = 2.4;        // 坂による加速（m/s²。傾き 1 あたり）
+const LAND_BOUNCE = 0.035;        // 腹がついたときに弾む高さ
+const LANDED_LONG_AGO = 100;      // 腹がついてからの時間の、歩いている間の値（秒。弾みが消えている十分に長い時間）
+const SLIDE_LANE = 4.0;           // 追い越すときに列より手前へ寄る幅（列の手前の端から）
+const SLIDE_DOWNHILL_BIAS = 40;   // 下り坂にいるペンギンを選びやすくする強さ（傾き 1 あたり）
+const FOLLOW_SLIDE_CHANCE = 0.4;  // 後ろのペンギンがつられる確率（1 羽ごと）
+const FOLLOW_SLIDE_MAX = 2;       // つられる羽数の上限
+const FOLLOW_SLIDE_DELAY = [0.5, 1.5];   // つられるまでの時間の範囲（秒）
+const BELLY_SNOW_RATE = 9;        // 腹が雪をかいて散らす粒の数（進んだ 1 あたり）
+const KICK_RATE = 2.2;            // 足で蹴る回数（1 秒あたり）
+
+// 足跡と滑り跡（視線が雪面をかすめるので、奥行きの方向の幅を誇張する）
+const MAX_DECALS = 3000;
+const WALK_TRAIL = { size: [0.8, 3], spacing: 0.5 };    // 歩いた跡の 1 枚の大きさ (進む向き, 奥行き) と、置く間隔
+const SLIDE_TRAIL = { size: [0.5, 6], spacing: 0.3 };   // 滑り跡の 1 枚の大きさと、置く間隔
+
+// 雪の粒
+const MAX_FLAKES = 1500;
+const MAX_SPRAY = 400;
+const SPRAY_PER_KICK = 9;         // 1 回蹴るごとの雪煙の粒の数
+const FLAKE_RADIUS = 0.02;        // 粒の半径（ピントが合っているとき）
+const BOKEH = 0.4;                // ぼけの強さ（ぼけの半径 / 画面の短い辺 = これ × |1/距離 - 1/ピントの距離|）
+const FLAKE_DISTANCE = [8, 300];  // カメラから粒までの距離の範囲
+const FLAKE_SHUTTER = 0.018;      // 速く流れる粒を横に伸ばす時間（秒）
+
+// 地吹雪（雪面の近くを流れる薄い膜）
+const SHEET_DEPTHS = [-7, 11];    // 膜を置く奥行き（列の奥と手前）
+const SHEET_SPEEDS = [0.012, 0.02];   // 風 1 あたりの流れる速さ（テクスチャの繰り返し / 秒）
+
+// 隠し要素（ヒナ）
+const CHICK_INTERVAL = [180, 60, 600];   // ヒナが現れる間隔（平均, 最小, 最大）（秒）
+const CHICK_SIZE = 0.7;           // 大きさ（大人に対する倍率）
+
+// ペンギンの形。長さは背丈 BIRD_HEIGHT のときの体の座標で、足もとが原点
+const BODY_PIVOT = 0.48;          // 体を倒すときの中心の高さ
+const FOOT_SPREAD = 0.085;        // 足の左右の間隔
+const FOOT_OFFSET = -0.05;        // 足の前後の位置。足先だけが腹の下から出るように後ろへ寄せる
+
+// 断面の表は [y, cx, rx, rz]（y: 軸の位置、cx: 断面の中心の x、rx・rz: 断面の半径）
+const ADULT_SHAPE = {
+  body: [
+    [0.012, -0.01, 0.03, 0.03],
+    [0.035, -0.01, 0.125, 0.115],
+    [0.13, 0.005, 0.2, 0.18],
+    [0.3, 0.022, 0.232, 0.205],
+    [0.45, 0.022, 0.232, 0.205],
+    [0.6, 0.012, 0.2, 0.178],
+    [0.72, 0.006, 0.158, 0.14],
+    [0.83, 0.006, 0.122, 0.108],
+    [0.91, 0.012, 0.094, 0.082],
+    [0.98, 0.018, 0.05, 0.045],
+  ],
+  tail: [
+    [0, 0, 0.05, 0.075],
+    [0.07, 0, 0.033, 0.055],
+    [0.12, 0, 0.003, 0.01],
+  ],
+  tailX: -0.17,
+  head: [0.085, 0.105, 0.08],     // 頭の半径 (y, x, z)。小さく平たくして、首となめらかにつなぐ
+  bill: [                         // くちばし。細く、先がわずかに下を向く
+    [0, 0, 0.03, 0.022],
+    [0.06, 0.003, 0.02, 0.015],
+    [0.13, 0.012, 0.012, 0.009],
+    [0.185, 0.026, 0.002, 0.002],
+  ],
+  billSmooth: 12,                 // くちばしの断面の細かさ
+  billAt: [0.085, -0.012],        // くちばしの根もとの位置 (x, y)
+  bellyRadius: 0.215,             // 腹ばいのときの回転の中心の高さ（腹が雪に少し沈む高さ。浮いて見えないように）
+  neck: [0.02, 0.985, 0],
+  shoulder: [-0.012, 0.75, 0.118],
+  wingLength: 1,                  // 翼の長さの倍率
+  wingOpen: 0,                    // 翼を体から離す角度の追加（ラジアン）
+};
+// ヒナは大人より丸っこい。この形で作ってから、全体を CHICK_SIZE 倍で描く
+const CHICK_SHAPE = {
+  body: [
+    [0.012, -0.01, 0.04, 0.04],
+    [0.035, -0.01, 0.175, 0.165],
+    [0.13, 0.005, 0.275, 0.255],
+    [0.3, 0.02, 0.315, 0.29],
+    [0.45, 0.02, 0.305, 0.285],
+    [0.6, 0.012, 0.255, 0.235],
+    [0.72, 0.006, 0.19, 0.175],
+    [0.82, 0.004, 0.135, 0.125],
+    [0.9, 0.006, 0.09, 0.085],
+    [0.95, 0.01, 0.045, 0.04],
+  ],
+  tail: [
+    [0, 0, 0.05, 0.075],
+    [0.04, 0, 0.03, 0.05],
+    [0.07, 0, 0.003, 0.01],
+  ],
+  tailX: -0.24,
+  head: [0.108, 0.122, 0.108],
+  bill: [
+    [0, 0, 0.026, 0.02],
+    [0.05, 0.003, 0.016, 0.012],
+    [0.1, 0.012, 0.002, 0.002],
+  ],
+  billSmooth: 8,
+  billAt: [0.105, -0.012],
+  bellyRadius: 0.285,
+  neck: [0.012, 0.93, 0],
+  shoulder: [-0.012, 0.74, 0.16],
+  wingLength: 0.68,
+  wingOpen: 0.14,                 // 太い胴に翼が埋まらないように離す
+};
+
+// 景色。色は sRGB の文字列。光は [R, G, B]（線形の明るさ。1 を超えてよく、最後にトーンカーブで収める）
+// sunAzimuth・sunElevation: 太陽の方位（度。+ が右）・高度（度）。sunVisible が真なら遠景に写し、列の奥から差す
+// 遠景の形と描き方は全シーンで共通で、色だけが違う（bergLit・bergShade・haze）
+// flakeNear: 雪の粒のうち、カメラのすぐ近くに置く割合
+// walkSpeed: 歩く速さ。吹雪の中では遅い
+// headwind: 真なら、風はいつもペンギンの進む向きの逆から吹く。無ければ風向きはランダム
+const SCENES = [
+  {
+    name: 'Blue Sky',
+    walkSpeed: 0.5, exposure: 1,
+    sky: [[0, '#d0deec'], [0.15, '#b4cce9'], [0.5, '#7da7df'], [1.5, '#5a89d1'], [3.5, '#4872be'], [5.5, '#4164ae'], [15, '#2f4e92']],
+    clouds: 0, cloudColor: '#ffffff',
+    sunVisible: false, sunAzimuth: 30, sunElevation: 52,
+    bergLit: '#dfe5eb', bergShade: '#5d7ea8', haze: '#cddbe9',
+    snow: '#e9ecef', snowLight: [0.36, 0.44, 0.62], sunLight: [0.92, 0.86, 0.76],
+    skyLight: [0.32, 0.4, 0.56], groundLight: [0.36, 0.39, 0.45], rimLight: [0.03, 0.04, 0.05],
+    sheen: [0, 0, 0], hazeDistance: 320, sunGlow: [0, 0, 0],
+    trail: '#8ea3bd', trailAlpha: 0.26, trailLife: 60,
+    shadow: '#465f82', shadowAlpha: 0.7, shadowLength: 4,
+    wind: 0.8, fall: 0.15, flakes: 0, flakeAlpha: 1, flakeColor: '#ffffff', flakeNear: 0,
+    sheet: 0, sheetColor: '#eef3f6', fog: 0,
+  },
+  {
+    name: 'Midnight Sun',
+    walkSpeed: 0.5, exposure: 1,
+    sky: [[0, '#f6c88f'], [0.7, '#eeaf85'], [2, '#c98f8e'], [5, '#8a86a2'], [15, '#4d6088']],
+    clouds: 0.5, cloudColor: '#f1c9aa',
+    sunVisible: true, sunAzimuth: 3, sunElevation: 1.25,
+    bergLit: '#ad8b88', bergShade: '#5a5a78', haze: '#e6b48f',
+    snow: '#efe6e0', snowLight: [0.33, 0.29, 0.38], sunLight: [1.5, 0.92, 0.5],
+    skyLight: [0.09, 0.085, 0.13], groundLight: [0.14, 0.11, 0.14], rimLight: [0.6, 0.38, 0.2],
+    sheen: [1.9, 1, 0.42], hazeDistance: 420, sunGlow: [0.2, 0.13, 0.07],
+    trail: '#6a6079', trailAlpha: 0.3, trailLife: 60,
+    shadow: '#332f50', shadowAlpha: 0.8, shadowLength: 30,
+    wind: 0.5, fall: 0.12, flakes: 400, flakeAlpha: 0.6, flakeColor: '#ffe6c8', flakeNear: 0,
+    sheet: 0, sheetColor: '#f0d3bd', fog: 0,
+  },
+  {
+    name: 'Blizzard',
+    walkSpeed: 0.42, exposure: 0.8,
+    sky: [[0, '#b7bfc5'], [5, '#aab3ba'], [15, '#98a3ac']],
+    clouds: 0, cloudColor: '#ffffff',
+    sunVisible: false, sunAzimuth: 0, sunElevation: 70,
+    bergLit: '#b9c1c7', bergShade: '#afb8bf', haze: '#b7bfc5',
+    snow: '#e4e8eb', snowLight: [0.62, 0.66, 0.72], sunLight: [0, 0, 0],
+    skyLight: [0.5, 0.54, 0.6], groundLight: [0.28, 0.31, 0.35], rimLight: [0.03, 0.03, 0.04],
+    sheen: [0, 0, 0], hazeDistance: 130, sunGlow: [0, 0, 0],
+    trail: '#8f9ca6', trailAlpha: 0.3, trailLife: 9,
+    shadow: '#818f9b', shadowAlpha: 0.3, shadowLength: 2,
+    wind: 8, headwind: true, fall: 0.5, flakes: 1300, flakeAlpha: 1, flakeColor: '#ffffff', flakeNear: 0.12,
+    sheet: 0.3, sheetColor: '#dfe4e8', fog: 0.14,
+  },
+];
+
+// ---- ユーティリティ ----
+// 周期 periodX・periodY で繰り返す値ノイズ（0..1）。テクスチャの継ぎ目を出さないために周期を持たせる
+const NOISE_TABLE = Array.from({ length: 4096 }, () => Math.random());
+function valueNoise(x, y, periodX, periodY = periodX) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const at = (i, j) => NOISE_TABLE[(((i % periodX + periodX) % periodX) + ((j % periodY + periodY) % periodY) * 257) & 4095];
+  const a = at(ix, iy), b = at(ix + 1, iy), c = at(ix, iy + 1), d = at(ix + 1, iy + 1);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+// カトマル・ロムで数列をなめらかにつなぐ（t: 0..points.length-1）
+function catmull(points, t) {
+  const i = clamp(Math.floor(t), 0, points.length - 2);
+  const f = t - i;
+  const p0 = points[Math.max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(i + 2, points.length - 1)];
+  return 0.5 * (2 * p1 + (p2 - p0) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (3 * p1 - p0 - 3 * p2 + p3) * f * f * f);
+}
+
+// '#rrggbb' を sRGB の [R, G, B]（0..1）にする。遠景を塗るのに使う
+const srgb = (css) => [1, 3, 5].map((i) => parseInt(css.slice(i, i + 2), 16) / 255);
+
+// 値 a を目標へ、1 秒あたり rate の割合で寄せる
+const ease = (a, target, rate, dt) => a + (target - a) * Math.min(1, dt * rate);
+
+// 楕円の模様の濃さ。(du, dv) は楕円の中心からの距離（楕円の半径で割った値）。inner より内側が 1 で、ふちで 0 になる
+const blob = (du, dv, inner) => 1 - smoothstep(du * du + dv * dv, inner, 1);
+
+// 行列 m の右から回転・移動を掛ける（部品を親の座標で置いていくのに使う）。mTmp・vScale は計算用の使い回し
+const mTmp = new THREE.Matrix4();
+const vScale = new THREE.Vector3();
+const rotX = (m, a) => m.multiply(mTmp.makeRotationX(a));
+const rotY = (m, a) => m.multiply(mTmp.makeRotationY(a));
+const rotZ = (m, a) => m.multiply(mTmp.makeRotationZ(a));
+const move = (m, x, y, z) => m.multiply(mTmp.makeTranslation(x, y, z));
+
+// 太陽の方位・高度（度）から、太陽へ向かう単位ベクトル
+function sunDirection(s) {
+  const az = degToRad(s.sunAzimuth), el = degToRad(s.sunElevation);
+  // Midnight Sun の太陽は列の奥（-z）、ほかはカメラの側から当てる
+  const zSign = s.sunVisible ? -1 : 1;
+  return new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), zSign * Math.cos(az) * Math.cos(el));
+}
+
+// ---- シェーダー ----
+const GROUND_VERT = `
+varying vec3 vPos;
+varying vec3 vNormal;
+void main() {
+  vPos = position;
+  vNormal = normal;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const GROUND_FRAG = `
+uniform sampler2D uNoise;
+uniform vec3 uSnow, uAmbient, uSun, uSunDir, uHaze, uSheen;
+uniform float uHazeDistance, uSunTan;
+uniform vec2 uBumpOffset;
+varying vec3 vPos;
+varying vec3 vNormal;
+void main() {
+  vec3 N = normalize(vNormal);
+  float dist = length(cameraPosition - vPos);
+  // ピントの合う列から離れるほど、細かい模様を落としてぼかす
+  float blur = clamp((abs(vPos.z) - 18.0) * 0.06, 0.0, 5.0);
+  vec2 uv = vPos.xz * vec2(0.22, 0.03);
+  vec3 t = texture2D(uNoise, uv, blur).rgb;
+  // 風紋の陰影。太陽の側が高ければ、ここは太陽を向いた面なので明るい。低い太陽ほど筋がくっきり出る
+  float toSun = texture2D(uNoise, uv + uBumpOffset, blur).r - t.r;
+  toSun *= 1.0 - smoothstep(18.0, 55.0, abs(vPos.z));   // 手前はぼけるので、陰影も消す
+  // 大きな起伏の濃淡。低い所は太陽の光が減るので、環境光の色（青）が残る
+  float swell = smoothstep(0.34, 0.66, texture2D(uNoise, vPos.xz * vec2(0.022, 0.0045), 2.0).r);
+  vec3 light = uAmbient * (0.86 + 0.14 * t.r + 0.1 * swell) + uSun * (0.62 + 0.38 * swell) * max(dot(N, uSunDir) + toSun * 2.2, 0.0);
+  vec3 col = uSnow * light * (1.0 + (t.r - 0.5) * 0.2 + (t.g - 0.5) * 0.05);
+  // 太陽の真下の雪面の照り返し
+  float a = (vPos.x - cameraPosition.x) / (cameraPosition.z - vPos.z) - uSunTan;
+  col += uSheen * exp(-a * a * 900.0) * smoothstep(40.0, 200.0, dist);
+  col = mix(col, uHaze, 1.0 - exp(-dist / uHazeDistance));
+  gl_FragColor = vec4(col, 1.0);
+  #include <colorspace_fragment>
+}`;
+
+const BIRD_VERT = `
+attribute float aKind;
+attribute float aGround;
+varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vView;
+varying float vHeight;
+void main() {
+  // アトラスの上半分がヒナの色
+  vUv = uv + vec2(0.0, aKind * 0.5);
+  vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
+  vNormal = mat3(modelMatrix) * mat3(instanceMatrix) * normal;
+  vView = cameraPosition - world.xyz;
+  vHeight = world.y - aGround;
+  gl_Position = projectionMatrix * viewMatrix * world;
+}`;
+
+const BIRD_FRAG = `
+uniform sampler2D uAtlas;
+uniform vec3 uSunDir, uSun, uSky, uGround, uRim, uFogColor;
+uniform float uFog;
+varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vView;
+varying float vHeight;
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(vView);
+  vec3 albedo = texture2D(uAtlas, vUv).rgb;
+  vec3 hemi = mix(uGround, uSky, 0.5 + 0.5 * N.y);
+  vec3 col = albedo * (hemi + uSun * max(dot(N, uSunDir), 0.0));
+  // 雪面に近い所は光が回らず暗い。これが無いと白い腹が雪に溶けて、黒い背だけが浮いて見える
+  col *= mix(0.32, 1.0, smoothstep(0.0, 0.24, vHeight));
+  // ふちの光と、黒い羽のつや
+  float edge = 1.0 - max(dot(N, V), 0.0);
+  col += uRim * edge * edge * edge * edge * (0.25 + 0.75 * max(N.y, 0.0));
+  col += uSky * 0.06 * edge * edge * (0.5 + 0.5 * N.y);
+  col = mix(col, uFogColor, uFog);
+  gl_FragColor = vec4(col, 1.0);
+  #include <colorspace_fragment>
+}`;
+
+const DECAL_VERT = `
+attribute float iAlpha;
+varying vec2 vUv;
+varying float vAlpha;
+void main() {
+  vUv = uv * 2.0 - 1.0;
+  vAlpha = iAlpha;
+  gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
+}`;
+
+const DECAL_FRAG = `
+uniform vec3 uColor;
+uniform float uRound;
+varying vec2 vUv;
+varying float vAlpha;
+void main() {
+  // uRound が 1 なら丸く、0 なら進む向きに切れ目のない帯にする
+  float d = length(vUv * vec2(uRound, 1.0));
+  gl_FragColor = vec4(uColor, vAlpha * smoothstep(1.0, 0.25, d));
+  #include <colorspace_fragment>
+}`;
+
+const FLAKE_VERT = `
+attribute vec3 iPos;
+attribute vec2 iSize;
+attribute float iAlpha;
+varying vec2 vUv;
+varying float vAlpha;
+void main() {
+  vUv = position.xy * 2.0;
+  vAlpha = iAlpha;
+  vec4 view = viewMatrix * vec4(iPos, 1.0);
+  view.xy += position.xy * 2.0 * iSize;
+  gl_Position = projectionMatrix * view;
+}`;
+
+const FLAKE_FRAG = `
+uniform vec3 uColor;
+varying vec2 vUv;
+varying float vAlpha;
+void main() {
+  gl_FragColor = vec4(uColor, vAlpha * smoothstep(1.0, 0.5, length(vUv)));
+  #include <colorspace_fragment>
+}`;
+
+const SHEET_VERT = `
+varying vec3 vPos;
+void main() {
+  vPos = (modelMatrix * vec4(position, 1.0)).xyz;
+  gl_Position = projectionMatrix * viewMatrix * vec4(vPos, 1.0);
+}`;
+
+const SHEET_FRAG = `
+uniform sampler2D uNoise;
+uniform vec3 uColor;
+uniform float uOpacity, uScroll;
+varying vec3 vPos;
+void main() {
+  // 粗いミップマップを使い、筋をやわらかくする（細かいと、ペンギンに縞が乗って見える）
+  float n = texture2D(uNoise, vPos.xy * vec2(0.006, 0.05) + vec2(uScroll, 0.0), 4.0).r;
+  float a = smoothstep(0.3, 0.75, n) * smoothstep(7.0, 0.2, vPos.y);
+  gl_FragColor = vec4(uColor, uOpacity * a);
+  #include <colorspace_fragment>
+}`;
+
+// 最後に全画面へ掛ける処理。レンズのやわらかさ、周辺減光、トーンカーブ、粒状感
+const POST_VERT = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}`;
+
+const POST_FRAG = `
+uniform sampler2D uScene;
+uniform vec2 uTexel;
+uniform float uVignette, uGrain, uSeed;
+varying vec2 vUv;
+void main() {
+  vec3 col = texture2D(uScene, vUv).rgb * 0.5;
+  col += texture2D(uScene, vUv + uTexel).rgb * 0.125;
+  col += texture2D(uScene, vUv - uTexel).rgb * 0.125;
+  col += texture2D(uScene, vUv + vec2(uTexel.x, -uTexel.y)).rgb * 0.125;
+  col += texture2D(uScene, vUv - vec2(uTexel.x, -uTexel.y)).rgb * 0.125;
+  vec2 c = vUv - 0.5;
+  col *= 1.0 - uVignette * dot(c, c) * 2.0;
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+  // 粒状感はトーンカーブのあとに足す。暗い階調の段差も隠れる
+  float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + uSeed) * 43758.5453);
+  gl_FragColor.rgb += (n - 0.5) * uGrain;
+}`;
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const CAM_DISTANCE = BIRD_HEIGHT / (BIRD_ON_SCREEN * 2 * Math.tan(degToRad(CAM_FOV / 2)));
+const FEET_LEVEL = HILL_HEIGHT / 2;   // 足もとの標準の高さ
+const CAM_Y = FEET_LEVEL + CAM_ABOVE_FEET;
+const camera = new THREE.PerspectiveCamera(CAM_FOV, 1, 4, BG_DISTANCE * 2);
+camera.position.set(0, CAM_Y, CAM_DISTANCE);
+camera.rotation.order = 'YXZ';
+
+let halfWidth = 5;   // 列の線の上で、画面の中央から端までの幅
+let cameraTilt = 0;  // 地平線を決まった高さに置くための、カメラの傾き（ラジアン）
+
+// シーンは半精度の描画先に描き、最後の処理で画面へ移す。MSAA を掛けるのはこの描画先だけ
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: SCENE_SAMPLES });
+const postMaterial = new THREE.ShaderMaterial({
+  vertexShader: POST_VERT,
+  fragmentShader: POST_FRAG,
+  depthTest: false,
+  depthWrite: false,
+  uniforms: {
+    uScene: { value: sceneTarget.texture },
+    uTexel: { value: new THREE.Vector2() },
+    uVignette: { value: VIGNETTE },
+    uGrain: { value: GRAIN },
+    uSeed: { value: 0 },
+  },
+});
+const postScene = new THREE.Scene();
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
+postQuad.frustumCulled = false;
+postScene.add(postQuad);
+const postCamera = new THREE.Camera();
+
+function updateTargetSize() {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  sceneTarget.setSize(size.x, size.y);
+  postMaterial.uniforms.uTexel.value.set(LENS_SOFTNESS / size.x, LENS_SOFTNESS / size.y);
+}
+
+function fitCamera() {
+  const aspect = innerWidth / innerHeight;
+  // 画角は短い辺の方向で決める。縦長の画面では縦の画角が広がる
+  const tanShort = Math.tan(degToRad(CAM_FOV / 2));
+  const tanV = aspect >= 1 ? tanShort : tanShort / aspect;
+  camera.aspect = aspect;
+  camera.fov = 2 * THREE.MathUtils.radToDeg(Math.atan(tanV));
+  camera.updateProjectionMatrix();
+  const viewHeight = 2 * CAM_DISTANCE * tanV;
+  halfWidth = viewHeight * aspect / 2;
+  // 足もとが画面の下から FEET_ON_SCREEN の高さに来るよう、カメラをわずかに上へ傾ける（三脚で水平に据えたのと見分けがつかない角度）
+  const horizon = FEET_ON_SCREEN + CAM_ABOVE_FEET / viewHeight;
+  cameraTilt = Math.atan((0.5 - horizon) * 2 * tanV);
+}
+
+// ---- 状態 ----
+let sceneIndex = 0;       // いまの景色
+let current = SCENES[0];  // いまの景色の定義
+let dir = 1;              // 進む向き（1: 左から右、-1: 右から左）
+let windSign = 1;         // 風の向き
+let targetCount = BASE_COUNT;   // 強度（画面にいるペンギンの数）
+let walkSpeed = SCENES[0].walkSpeed;   // いまの景色の歩く速さ
+let clock = 0;            // シーンの経過時間（秒。足跡が薄れる時間と、つられて滑り出す時刻を測る）
+
+// ---- テクスチャ ----
+// 雪面と吹雪の模様（R: 風の筋、G: 細かい粒）。繰り返して貼る
+function makeNoiseTexture() {
+  const size = 512;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0, i = 0; y < size; y++) {
+    for (let x = 0; x < size; x++, i += 4) {
+      const u = x / size, v = y / size;
+      // 風紋（サスツルギ）。風に沿って斜めに伸びる、頂のとがった細長い起伏
+      const crest = 1 - Math.abs(2 * valueNoise(u * 12 + v * 24, v * 64, 12, 64) - 1);
+      const streak = 0.5 * crest + 0.3 * valueNoise(u * 24 + v * 24, v * 32, 24, 32) + 0.2 * valueNoise(u * 4, v * 8, 4, 8);
+      data[i] = streak * 255;
+      data[i + 1] = Math.random() * 255;
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();   // 雪面をかすめて見るので、横の細かさを保つ
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+const noiseTex = makeNoiseTexture();
+
+// ペンギンの模様のアトラス。下半分が大人、上半分がヒナ。部品ごとに置き場所（rect: 下半分の中の x, y, 幅, 高さ。0..1）を決める
+const ATLAS_SIZE = 1024;
+const ATLAS = {
+  body: [0, 0, 0.5, 1],
+  head: [0.5, 0, 0.5, 0.5],
+  bill: [0.5, 0.5, 0.2, 0.5],
+  flipper: [0.7, 0.5, 0.15, 0.5],
+  foot: [0.85, 0.5, 0.15, 0.5],
+};
+
+// 模様の色は sRGB の [R, G, B]（0..1）。u: 周の向き（0.5 が腹や顔の正面）、v: 下から上
+const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const BLACK = [0.05, 0.05, 0.06];
+const SLATE = [0.23, 0.235, 0.26];       // 背と翼。青みの少ない濃い灰色
+const WHITE = [0.95, 0.93, 0.87];      // 腹。温かみのある白
+const ORANGE = [0.95, 0.6, 0.14];      // 耳の模様の濃い所
+const GOLD = [0.98, 0.78, 0.3];        // 耳の模様の淡い所
+const CHEST_YELLOW = [0.97, 0.82, 0.46];   // 胸
+const DOWN = [0.4, 0.41, 0.43];        // ヒナの綿毛
+const DOWN_LIGHT = [0.56, 0.57, 0.59];
+const CHICK_FACE = [0.92, 0.92, 0.92];
+const BILL_BLACK = [0.04, 0.04, 0.045];
+const BILL_ORANGE = [0.82, 0.48, 0.28];
+const FOOT_COLOR = [0.1, 0.1, 0.11];
+
+const frontAngle = (u) => Math.abs(u - 0.5) * 360;   // 正面からの角度（度）
+
+function paintAdultBody(u, v) {
+  const a = frontAngle(u);
+  // 白い腹と黒い背の境目の角度。首のほうほど前へ寄る
+  const edge = lerp(lerp(120, 96, smoothstep(v, 0, 0.45)), 58, smoothstep(v, 0.62, 0.92));
+  const noise = valueNoise(u * 90, v * 90, 90);
+  // 背は首に近いほど黒い
+  const back = mix3(SLATE, BLACK, smoothstep(v, 0.55, 0.85) * 0.9);
+  // 首から翼の前へ続く、境目に沿う黒い帯
+  const band = 1 - smoothstep(a, edge + 2, edge + 16);
+  const dark = mix3(back, BLACK, band);
+  // 胸は首の下が黄色く、中ほどで白へなめらかに変わる
+  const belly = mix3(WHITE, CHEST_YELLOW, smoothstep(v, 0.48, 0.78));
+  const col = mix3(belly, dark, smoothstep(a, edge - 1.5, edge + 1.5));
+  // 羽のわずかなむらと、足もとの影
+  const shade = (0.97 + 0.06 * noise) * (0.72 + 0.28 * smoothstep(v, 0, 0.22));
+  // 喉は黒い。耳の黄色い模様が首の横へ流れ、下へ行くほど淡くなる
+  const patch = blob((a - 120) / 42, (v - 0.94) / 0.2, 0.35);
+  const patchColor = mix3(GOLD, ORANGE, smoothstep(v, 0.74, 0.86));
+  return mix3(mix3(col, BLACK, smoothstep(v, 0.8, 0.87)), patchColor, patch).map((c) => c * shade);
+}
+
+function paintChickBody(u, v) {
+  const a = frontAngle(u);
+  const noise = valueNoise(u * 28, v * 28, 28) * 0.6 + valueNoise(u * 70, v * 70, 70) * 0.4;
+  const col = mix3(DOWN_LIGHT, DOWN, smoothstep(a, 50, 110));
+  // 綿毛のむらを強めに入れる
+  return col.map((c) => c * (0.78 + 0.42 * noise));
+}
+
+function paintAdultHead(u, v) {
+  const a = frontAngle(u);
+  const noise = 0.97 + 0.06 * valueNoise(u * 40, v * 40, 40);
+  // 耳のあたりの黄色い模様。頭の後ろの下から首へつながる
+  const patch = blob((a - 128) / 50, (v - 0.04) / 0.44, 0.4);
+  return mix3(BLACK, ORANGE, patch).map((c) => c * noise);
+}
+
+function paintChickHead(u, v) {
+  const a = frontAngle(u);
+  const noise = 0.85 + 0.25 * valueNoise(u * 40, v * 40, 40);
+  // 黒い頭に白い顔
+  let col = mix3(BLACK, CHICK_FACE, blob((a - 62) / 62, (v - 0.42) / 0.26, 0.75));
+  // 喉は綿毛の色につなぐ
+  col = mix3(col, DOWN_LIGHT, 1 - smoothstep(v, 0.02, 0.18));
+  col = mix3(col, BLACK, blob((a - 52) / 8, (v - 0.56) / 0.05, 0.5));
+  return col.map((c) => c * noise);
+}
+
+// くちばしは黒く、根もと寄りの下側に橙色の筋を入れる
+function paintAdultBill(u, v) {
+  const a = frontAngle(u);
+  const orange = (1 - smoothstep(a, 62, 82)) * (1 - smoothstep(v, 0.55, 0.85));
+  return mix3(BILL_BLACK, BILL_ORANGE, orange);
+}
+const paintChickBill = () => BILL_BLACK;
+
+function paintAdultFlipper(u, v) {
+  const a = frontAngle(u);
+  // 前のふちと先に細い白を入れる
+  const front = 1 - smoothstep(a, 8, 26);
+  // 背と同じ色で、付け根は肩になじむよう暗くする
+  return mix3(mix3(SLATE, BLACK, 0.15 + 0.6 * smoothstep(v, 0.6, 1)), WHITE, front * 0.2);
+}
+const paintChickFlipper = (u, v) => mix3(DOWN, DOWN_LIGHT, valueNoise(u * 20, v * 20, 20)).map((c) => c * 0.85);
+
+const paintFoot = () => FOOT_COLOR;
+
+// 部品ごとの塗り方。1 つ目がアトラスの下半分（大人）、2 つ目が上半分（ヒナ）
+const ATLAS_PAINTERS = [
+  { body: paintAdultBody, head: paintAdultHead, bill: paintAdultBill, flipper: paintAdultFlipper, foot: paintFoot },
+  { body: paintChickBody, head: paintChickHead, bill: paintChickBill, flipper: paintChickFlipper, foot: paintFoot },
+];
+
+function makeAtlas() {
+  const data = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4);
+  const half = ATLAS_SIZE / 2;
+  const paint = (rect, yOffset, fn) => {
+    const x0 = Math.round(rect[0] * ATLAS_SIZE), y0 = Math.round(rect[1] * half) + yOffset;
+    const w = Math.round(rect[2] * ATLAS_SIZE), h = Math.round(rect[3] * half);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const c = fn((x + 0.5) / w, (y + 0.5) / h);
+        const i = ((y0 + y) * ATLAS_SIZE + x0 + x) * 4;
+        data[i] = clamp(c[0], 0, 1) * 255;
+        data[i + 1] = clamp(c[1], 0, 1) * 255;
+        data[i + 2] = clamp(c[2], 0, 1) * 255;
+        data[i + 3] = 255;
+      }
+    }
+  };
+  ATLAS_PAINTERS.forEach((painters, row) => {
+    for (const part of Object.keys(painters)) paint(ATLAS[part], row * half, painters[part]);
+  });
+  const tex = new THREE.DataTexture(data, ATLAS_SIZE, ATLAS_SIZE, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+const atlasTex = makeAtlas();
+
+// ---- 地形 ----
+let hills = [];         // 歩く線の起伏の波 [{ k, phase, amp }]
+let farPhases = [0, 0]; // 遠くのうねりの位相
+
+function chooseTerrain() {
+  hills = [
+    { k: TAU / randIn(HILL_WAVELENGTH[0]), phase: rand(0, TAU), amp: 1 - HILL_MIX },
+    { k: TAU / randIn(HILL_WAVELENGTH[1]), phase: rand(0, TAU), amp: HILL_MIX },
+  ];
+  farPhases = [rand(0, TAU), rand(0, TAU)];
+}
+
+// 歩く線の高さ（0..HILL_HEIGHT）
+function hillLine(x) {
+  let v = 0;
+  for (const h of hills) v += h.amp * Math.sin(h.k * x + h.phase);
+  return HILL_HEIGHT * (0.5 + 0.5 * v);
+}
+// 歩く線の傾き（dy/dx）
+function hillSlope(x) {
+  let v = 0;
+  for (const h of hills) v += h.amp * h.k * Math.cos(h.k * x + h.phase);
+  return HILL_HEIGHT * 0.5 * v;
+}
+
+// 進む向きの位置 p での、進む向きの傾き（下りが負）
+const slopeAhead = (p) => hillSlope(dir * p) * dir;
+
+// 雪面の高さ。起伏は列のまわりだけに置き、手前は平らにして足もとを隠さない
+function groundHeight(x, z) {
+  const near = smoothstep(z, 30, 60);          // 列より手前へ行くと 1
+  const back = 1 - smoothstep(z, -70, -30);    // 列より奥へ行くと 1
+  let y = hillLine(x) * (1 - near) * (1 - back);
+  if (z < -70) {
+    // 遠くの雪原のなだらかなうねり（緩やかな稜線が重なって奥行きを出す）
+    const t = smoothstep(-z, 70, 240);
+    const r1 = 0.5 + 0.5 * Math.sin(z / 70 + farPhases[0]);
+    const r2 = 0.5 + 0.5 * Math.sin(x / 60 + z / 130 + farPhases[1]);
+    y += t * r1 * r2 * FAR_RIDGE_HEIGHT * (1 - z / 300) / 2;
+  }
+  return y;
+}
+
+// ---- 雪面 ----
+const groundMaterial = new THREE.ShaderMaterial({
+  vertexShader: GROUND_VERT,
+  fragmentShader: GROUND_FRAG,
+  uniforms: {
+    uNoise: { value: noiseTex },
+    uSnow: { value: new THREE.Color() },
+    uAmbient: { value: new THREE.Vector3() },
+    uSun: { value: new THREE.Vector3() },
+    uSunDir: { value: new THREE.Vector3() },
+    uHaze: { value: new THREE.Color() },
+    uSheen: { value: new THREE.Vector3() },
+    uHazeDistance: { value: 1000 },
+    uSunTan: { value: 0 },
+    uBumpOffset: { value: new THREE.Vector2() },
+  },
+});
+
+function makeGroundGeometry() {
+  // 行は列のまわりでは等間隔、それより奥は奥へ行くほど粗くする。列は奥へ行くほど広げて画角を覆う
+  const rows = [];
+  let step = GROUND_ROWS_STEP[0];
+  for (let z = CAM_DISTANCE - 12; z > -GROUND_FAR; z -= step) {
+    rows.push(z);
+    if (z < -70) step *= GROUND_ROWS_STEP[1];
+  }
+  rows.push(-GROUND_FAR);
+  const count = rows.length * (GROUND_COLS + 1);
+  const positions = new Float32Array(count * 3);
+  const index = new Uint32Array((rows.length - 1) * GROUND_COLS * 6);
+  let vi = 0, ii = 0;
+  const tanMax = Math.tan(degToRad(BG_HALF_WIDTH));
+  rows.forEach((z, r) => {
+    const reach = Math.max(30, tanMax * (CAM_DISTANCE - z));
+    for (let c = 0; c <= GROUND_COLS; c++, vi++) {
+      positions[vi * 3] = (c / GROUND_COLS * 2 - 1) * reach;
+      positions[vi * 3 + 2] = z;
+      if (r > 0 && c > 0) {
+        const a = vi - GROUND_COLS - 2, b = vi - GROUND_COLS - 1, d = vi - 1, e = vi;
+        index[ii++] = a; index[ii++] = b; index[ii++] = d;
+        index[ii++] = b; index[ii++] = e; index[ii++] = d;
+      }
+    }
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+  geo.setIndex(new THREE.BufferAttribute(index, 1));
+  return geo;
+}
+const groundGeometry = makeGroundGeometry();
+const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+ground.frustumCulled = false;
+ground.renderOrder = 1;
+scene.add(ground);
+
+// 地形に合わせて雪面の高さと法線を作り直す。陰影が見えるよう、法線の傾きは少し誇張する
+function shapeGround() {
+  const pos = groundGeometry.attributes.position;
+  const nor = groundGeometry.attributes.normal;
+  const e = 0.05, slopeGain = 1.6;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    const y = groundHeight(x, z);
+    pos.setY(i, y);
+    const dx = (groundHeight(x + e, z) - y) / e * slopeGain;
+    const dz = (groundHeight(x, z + e) - y) / e * slopeGain;
+    const l = Math.hypot(dx, 1, dz);
+    nor.setXYZ(i, -dx / l, 1 / l, -dz / l);
+  }
+  pos.needsUpdate = true;
+  nor.needsUpdate = true;
+}
+
+// ---- 遠景 ----
+// 空・太陽・雲・氷山・棚氷・山を 1 枚の canvas に画素ごとに描いて板に貼る。カメラは向きしか変えないので、板でも見分けがつかない
+const bgCanvas = Object.assign(document.createElement('canvas'), { width: BG_SIZE[0], height: BG_SIZE[1] });
+const bgCtx = bgCanvas.getContext('2d');
+const bgImage = bgCtx.createImageData(BG_SIZE[0], BG_SIZE[1]);
+const bgTexture = new THREE.CanvasTexture(bgCanvas);
+bgTexture.colorSpace = THREE.SRGBColorSpace;
+bgTexture.minFilter = THREE.LinearFilter;
+bgTexture.generateMipmaps = false;
+const backdropDistance = CAM_DISTANCE + BG_DISTANCE;
+const backdrop = (() => {
+  const w = 2 * backdropDistance * Math.tan(degToRad(BG_HALF_WIDTH));
+  const y0 = backdropDistance * Math.tan(degToRad(BG_RANGE[0])), y1 = backdropDistance * Math.tan(degToRad(BG_RANGE[1]));
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, y1 - y0),
+    new THREE.MeshBasicMaterial({ map: bgTexture, depthWrite: false }),
+  );
+  mesh.material.color.setScalar(BG_GAIN);
+  mesh.position.set(0, CAM_Y + (y0 + y1) / 2, -BG_DISTANCE);
+  mesh.renderOrder = 0;
+  scene.add(mesh);
+  return mesh;
+})();
+
+// 繰り返しのノイズの表。遠景は画素が多いので、毎回ノイズを計算せず、この表を引く
+const TILE_SIZE = 512;
+const tileData = (() => {
+  const data = new Float32Array(TILE_SIZE * TILE_SIZE);
+  const octaves = [[8, 0.42], [16, 0.26], [32, 0.16], [64, 0.1], [128, 0.06]];
+  for (let y = 0, i = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++, i++) {
+      let v = 0;
+      for (const [cells, weight] of octaves) v += weight * valueNoise(x / TILE_SIZE * cells, y / TILE_SIZE * cells, cells);
+      data[i] = v;
+    }
+  }
+  return data;
+})();
+function tile(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const mask = TILE_SIZE - 1;
+  const x0 = ix & mask, x1 = (ix + 1) & mask, y0 = (iy & mask) * TILE_SIZE, y1 = ((iy + 1) & mask) * TILE_SIZE;
+  const a = tileData[y0 + x0], b = tileData[y0 + x1], c = tileData[y1 + x0], d = tileData[y1 + x1];
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+
+// canvas の列を方位（度）に、行を高度（度）に直す
+const bgAzimuth = (col) => ((col + 0.5) / BG_SIZE[0] * 2 - 1) * BG_HALF_WIDTH;
+const bgElevation = (row) => BG_RANGE[1] - (row + 0.5) / BG_SIZE[1] * (BG_RANGE[1] - BG_RANGE[0]);
+
+// 氷山を 1 つ、稜線の高さの列へ足す。テーブル型（上が平らで壁が切り立つ）か、崩れて尖った形
+function addBerg(heights, x, width, height, seed) {
+  const tabular = Math.random() < 0.8;
+  const edge = tabular ? rand(0.03, 0.08) : 0.02;
+  const peak = rand(0.3, 0.7);
+  const tiltAmount = rand(-0.1, 0.1);
+  for (let col = 0; col < heights.length; col++) {
+    const t = (bgAzimuth(col) - x) / width + 0.5;
+    if (t < -0.1 || t > 1.1) continue;
+    const rough = tile(col * 1.1 + seed, seed * 3);
+    const u = t + (rough - 0.5) * 0.1;
+    let h;
+    if (tabular) {
+      h = smoothstep(u, 0, edge) * (1 - smoothstep(u, 1 - edge, 1));
+      h *= (1 + tiltAmount * (t - 0.5)) * (0.9 + 0.2 * tile(col * 0.5 + seed, seed));
+    } else if (u <= 0 || u >= 1) {
+      h = 0;
+    } else {
+      const toPeak = u < peak ? u / peak : (1 - u) / (1 - peak);
+      h = toPeak * (0.45 + 1.1 * tile(col * 1.4 + seed, seed * 5));
+    }
+    heights[col] = Math.max(heights[col], h * height);
+  }
+}
+
+// 遠景の層を作る（手前から奥の順）。haze: 空気で霞む割合
+function makeBackdropLayers(s) {
+  const W = BG_SIZE[0];
+  const layer = (haze) => ({ heights: new Float32Array(W), haze, offset: rand(0, 512) });
+  // 太陽にかからないよう、太陽の近くには高い氷山を置かない
+  const blocked = (x, w) => Math.abs(x - s.sunAzimuth) < w / 2 + 1.2;
+  const scatter = (target, count, widths, heights) => {
+    for (let i = 0; i < count; i++) {
+      const w = randIn(widths);
+      const x = i < 2 ? rand(-6, 6) : rand(-BG_HALF_WIDTH, BG_HALF_WIDTH);
+      if (!blocked(x, w)) addBerg(target.heights, x, w, randIn(heights) * BERG_HEIGHT, rand(0, 512));
+    }
+  };
+
+  // いちばん奥の山並み
+  const mountains = layer(0.55);
+  const seedM = rand(0, 512);
+  const peakM = rand(1.6, 2.6) * BERG_HEIGHT;
+  // 棚氷。全幅にわたる平らな低い壁
+  const shelf = layer(0.38);
+  const seedS = rand(0, 512);
+  const heightS = rand(0.7, 1.2) * BERG_HEIGHT;
+  for (let col = 0; col < W; col++) {
+    const n = tile(col * 0.45 + seedM, seedM);
+    const ridge = 1 - Math.abs(2 * tile(col * 0.9 + seedM, seedM * 2) - 1);
+    mountains.heights[col] = peakM * (0.25 + 0.75 * n) * (0.35 + 0.65 * ridge);
+    shelf.heights[col] = heightS * (0.88 + 0.22 * tile(col * 0.18 + seedS, seedS));
+  }
+  const bergs = layer(0.18);
+  scatter(bergs, 7, [2.4, 6], [1.7, 3.4]);
+  const lowBergs = layer(0.08);
+  scatter(lowBergs, 6, [1.2, 3.2], [0.5, 1.2]);
+  return [lowBergs, bergs, shelf, mountains];
+}
+
+// 色 color を割合 t だけ混ぜる。遠景の 1 画素の色 pixel を書き換える（画素ごとに配列を作らない）
+const pixel = [0, 0, 0];
+function mixPixel(color, t) {
+  for (let k = 0; k < 3; k++) pixel[k] = lerp(pixel[k], color[k], t);
+}
+
+// 氷の壁と山の 1 画素
+function shadeIce(p, layer, col, el) {
+  const h = layer.heights[col];
+  const depth = h - el;
+  const o = layer.offset;
+  // 縦に流れる溝と、横の地層。隣の列との差で陰影を付ける
+  const groove = tile(col * 3 + o, el * 40 + o);
+  const relief = (groove - tile((col - 1.5) * 3 + o, el * 40 + o)) * BERG_RELIEF;
+  const strata = tile(col * 0.4 + o, el * 260 + o) - 0.5;
+  const facet = tile(col * 0.35 + o, el * 7 + o) - 0.5;   // 崩れた大きな面の向きの違い
+  let v = clamp(BERG_FACE_LIGHT + relief + (groove - 0.5) * 0.35 + strata * 0.25 + facet * 1.6, 0, 1);
+  // 頂に積もった雪。深さと量は場所によって変わる
+  const capDepth = 0.05 + 0.5 * tile(col * 0.8 + o, o) ** 2 * (0.4 + h * 0.35);
+  const cap = 1 - smoothstep(depth, 0, capDepth);
+  v = lerp(v, 1, cap * BERG_CAP);
+  for (let k = 0; k < 3; k++) pixel[k] = lerp(p.shade[k], p.lit[k], v);
+  // 空気で霞む。地平線に近いほど厚い
+  mixPixel(p.haze, layer.haze + (1 - layer.haze) * Math.exp(-Math.max(el, 0) * 1.7) * 0.7);
+}
+
+// 雲と太陽（空の色の上に重ねる）
+function shadeSkyDetail(p, s, col, row, el, cloudFade) {
+  if (cloudFade > 0) {
+    // 薄い高層の雲。望遠なので横に長く伸びて見える
+    mixPixel(p.cloud, smoothstep(tile(col * 0.3 + p.cloudOffset[0], row * 4.5 + p.cloudOffset[1]), 0.54, 0.8) * cloudFade);
+  }
+  if (s.sunVisible) {
+    // 太陽（見かけの大きさは実物と同じ 0.5° ほど。望遠なので大きく写る）とまわりの光
+    const d = Math.hypot(bgAzimuth(col) - s.sunAzimuth, el - s.sunElevation);
+    mixPixel(p.sun, Math.min(Math.exp(-d * 1.1) * 0.55 + (1 - smoothstep(d, 0.2, 0.27)), 1));
+  }
+}
+
+// 高度 el の空の色（行ごとに 1 回求める）
+function skyColor(stops, el) {
+  let k = 0;
+  while (k < stops.length - 2 && el > stops[k + 1][0]) k++;
+  const t = clamp((el - stops[k][0]) / (stops[k + 1][0] - stops[k][0]), 0, 1);
+  return [0, 1, 2].map((c) => lerp(stops[k][1][c], stops[k + 1][1][c], t));
+}
+
+function paintBackdrop(s) {
+  const [W, H] = BG_SIZE;
+  const px = bgImage.data;
+  const layers = makeBackdropLayers(s);
+  const stops = s.sky.map(([deg, css]) => [deg, srgb(css)]);
+  const palette = {
+    lit: srgb(s.bergLit), shade: srgb(s.bergShade), haze: srgb(s.haze),
+    cloud: srgb(s.cloudColor), sun: srgb('#fff0d0'),
+    cloudOffset: [rand(0, 512), rand(0, 512)],
+    skyOffset: [rand(0, 512), rand(0, 512)],
+  };
+
+  for (let row = 0, i = 0; row < H; row++) {
+    const el = bgElevation(row);
+    const sky = skyColor(stops, el);
+    const cloudFade = smoothstep(el, 0.5, 2.5) * s.clouds;
+    for (let col = 0; col < W; col++, i += 4) {
+      const layer = layers.find((l) => el < l.heights[col]);
+      if (layer) {
+        shadeIce(palette, layer, col, el);
+      } else {
+        const mottle = 1 + (tile(col * 0.12 + palette.skyOffset[0], row * 0.35 + palette.skyOffset[1]) - 0.5) * SKY_MOTTLE;
+        pixel[0] = sky[0] * mottle; pixel[1] = sky[1] * mottle; pixel[2] = sky[2] * mottle;
+        shadeSkyDetail(palette, s, col, row, el, cloudFade);
+      }
+      const color = el < 0 ? palette.haze : pixel;
+      px[i] = Math.min(color[0], 1) * 255;
+      px[i + 1] = Math.min(color[1], 1) * 255;
+      px[i + 2] = Math.min(color[2], 1) * 255;
+      px[i + 3] = 255;
+    }
+  }
+  bgCtx.putImageData(bgImage, 0, 0);
+  blurCanvas(bgCanvas, bgCtx, BG_BLUR_LEVELS);
+  bgTexture.needsUpdate = true;
+}
+
+// ピントが外れているので全体をぼかす。何段階かに分けて縮めて戻すと、四角い段差が出ない
+function blurCanvas(canvas, ctx, levels) {
+  const layers = [];
+  for (let i = 1; i <= levels; i++) {
+    const c = Object.assign(document.createElement('canvas'), { width: Math.ceil(canvas.width / 2 ** i), height: Math.ceil(canvas.height / 2 ** i) });
+    layers.push({ c, g: c.getContext('2d') });
+  }
+  layers.forEach(({ c, g }, i) => g.drawImage(i ? layers[i - 1].c : canvas, 0, 0, c.width, c.height));
+  for (let i = layers.length - 1; i > 0; i--) {
+    const { c, g } = layers[i - 1];
+    g.drawImage(layers[i].c, 0, 0, c.width, c.height);
+  }
+  ctx.drawImage(layers[0].c, 0, 0, canvas.width, canvas.height);
+}
+
+// 太陽のまわりのにじみ。ペンギンにも少しかぶさる（逆光でレンズに入る光）
+const sunGlow = (() => {
+  const size = 256;
+  const c = Object.assign(document.createElement('canvas'), { width: size, height: size });
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, '#fff');
+  grad.addColorStop(0.1, '#999');
+  grad.addColorStop(0.35, '#2c2c2c');
+  grad.addColorStop(1, '#000');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, size, size);
+  const spread = backdropDistance * Math.tan(degToRad(9));
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(spread * 2, spread * 2),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(c),
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  mesh.renderOrder = 8;
+  scene.add(mesh);
+  return mesh;
+})();
+
+// ---- 足跡と滑り跡 ----
+const decalGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+const makeDecalMaterial = (round) => new THREE.ShaderMaterial({
+  vertexShader: DECAL_VERT,
+  fragmentShader: DECAL_FRAG,
+  uniforms: { uColor: { value: new THREE.Color() }, uRound: { value: round } },
+  transparent: true,
+  depthWrite: false,
+  // 視線が雪面をかすめるので、高さを足すと足もとからずれて見える。奥行きの値だけを手前へずらす
+  polygonOffset: true,
+  polygonOffsetFactor: -2,
+  polygonOffsetUnits: -4,
+});
+
+function makeDecalMesh(capacity, material, renderOrder) {
+  const geo = decalGeometry.clone();
+  const alpha = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
+  alpha.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('iAlpha', alpha);
+  const mesh = new THREE.InstancedMesh(geo, material, capacity);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  scene.add(mesh);
+  return mesh;
+}
+
+const decalMesh = makeDecalMesh(MAX_DECALS, makeDecalMaterial(0), 2);
+const decalBirth = new Float32Array(MAX_DECALS).fill(-1e9);
+let decalNext = 0;
+
+// 雪面に貼る板を 1 枚置く。進む向きの傾きに合わせる
+const mDecal = new THREE.Matrix4();
+function placeDecal(mesh, slot, x, z, sizeX, sizeZ) {
+  mDecal.makeTranslation(x, groundHeight(x, z), z);
+  rotZ(mDecal, Math.atan(hillSlope(x)));
+  mDecal.scale(vScale.set(sizeX, 1, sizeZ));
+  mesh.setMatrixAt(slot, mDecal);
+}
+
+function stampDecal(x, z, sizeX, sizeZ) {
+  placeDecal(decalMesh, decalNext, x, z, sizeX, sizeZ);
+  decalBirth[decalNext] = clock;
+  decalNext = (decalNext + 1) % MAX_DECALS;
+  decalMesh.instanceMatrix.needsUpdate = true;
+}
+
+// 進んだぶんだけ跡を置く
+function leaveTrail(b, trail) {
+  while (b.p >= b.trailAt) {
+    stampDecal(dir * b.trailAt, b.z, trail.size[0], trail.size[1]);
+    b.trailAt += trail.spacing;
+  }
+}
+
+function updateDecals() {
+  const alpha = decalMesh.geometry.attributes.iAlpha;
+  const life = current.trailLife, strength = current.trailAlpha;
+  for (let i = 0; i < MAX_DECALS; i++) {
+    const age = (clock - decalBirth[i]) / life;
+    alpha.array[i] = age < 1 ? strength * (1 - age * age) : 0;
+  }
+  alpha.needsUpdate = true;
+}
+
+function clearDecals() {
+  decalBirth.fill(-1e9);
+  decalNext = 0;
+}
+
+// ---- 影 ----
+const shadowMesh = makeDecalMesh(MAX_BIRDS, makeDecalMaterial(1), 3);
+
+// ---- ペンギンの形 ----
+// 断面の表 rings を重ねて形を作る。rect はアトラスの置き場所
+function loft(rings, rect, { smooth, segments }) {
+  const ys = rings.map((r) => r[0]), cxs = rings.map((r) => r[1]), rxs = rings.map((r) => r[2]), rzs = rings.map((r) => r[3]);
+  const rowCount = smooth + 1;
+  const pad = 0.004;   // 継ぎ目ににじまないよう、置き場所の少し内側に貼る
+  const positions = [], uvs = [], index = [];
+  for (let j = 0; j < rowCount; j++) {
+    const t = j / smooth * (rings.length - 1);
+    const y = catmull(ys, t), cx = catmull(cxs, t), rx = Math.max(catmull(rxs, t), 0), rz = Math.max(catmull(rzs, t), 0);
+    for (let i = 0; i <= segments; i++) {
+      const u = i / segments;
+      const th = (u - 0.5) * TAU;   // u = 0.5 が +x の向き（腹・顔の正面）
+      positions.push(cx + rx * Math.cos(th), y, rz * Math.sin(th));
+      uvs.push(
+        rect[0] + (pad + u * (1 - 2 * pad)) * rect[2],
+        (rect[1] + (pad + j / smooth * (1 - 2 * pad)) * rect[3]) * 0.5,
+      );
+    }
+  }
+  const w = segments + 1;
+  for (let j = 0; j < smooth; j++) {
+    for (let i = 0; i < segments; i++) {
+      const a = j * w + i, b = a + w, c = a + 1, d = b + 1;
+      index.push(a, b, c, c, b, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(index);
+  geo.computeVertexNormals();
+  // 継ぎ目の両側の法線を揃える
+  const nor = geo.attributes.normal;
+  for (let j = 0; j < rowCount; j++) {
+    const a = j * w, b = a + segments;
+    const nx = nor.getX(a) + nor.getX(b), ny = nor.getY(a) + nor.getY(b), nz = nor.getZ(a) + nor.getZ(b);
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nor.setXYZ(a, nx / l, ny / l, nz / l);
+    nor.setXYZ(b, nx / l, ny / l, nz / l);
+  }
+  return geo;
+}
+
+function makeBodyGeometry(shape) {
+  const body = loft(shape.body, ATLAS.body, { smooth: 42, segments: 32 });
+  const tail = loft(shape.tail, ATLAS.flipper, { smooth: 8, segments: 10 });
+  tail.rotateZ(degToRad(128));
+  tail.translate(shape.tailX, 0.11, 0);
+  return mergeGeometries([body, tail]);
+}
+
+function makeHeadGeometry(shape) {
+  const [ry, rx, rz] = shape.head;
+  const rings = [];
+  for (let i = 0; i <= 10; i++) {
+    const a = (i / 10 - 0.5) * Math.PI;
+    const r = Math.max(Math.cos(a), 0.01);
+    rings.push([Math.sin(a) * ry, 0, r * rx, r * rz]);
+  }
+  const head = loft(rings, ATLAS.head, { smooth: 22, segments: 26 });
+  const bill = loft(shape.bill, ATLAS.bill, { smooth: shape.billSmooth, segments: 12 });
+  bill.rotateZ(-Math.PI / 2);
+  bill.translate(shape.billAt[0], shape.billAt[1], 0);
+  return mergeGeometries([head, bill]);
+}
+
+function makeFlipperGeometry() {
+  return loft([
+    [-0.47, 0.012, 0.012, 0.005],
+    [-0.39, 0.012, 0.046, 0.009],
+    [-0.23, 0.006, 0.07, 0.012],
+    [-0.09, -0.004, 0.07, 0.014],
+    [-0.01, -0.006, 0.05, 0.013],
+    [0.035, -0.006, 0.006, 0.003],
+  ], ATLAS.flipper, { smooth: 18, segments: 12 });
+}
+
+function makeFootGeometry() {
+  const foot = loft([
+    [-0.05, 0, 0.012, 0.018],
+    [-0.01, 0, 0.022, 0.032],
+    [0.08, 0.002, 0.02, 0.052],
+    [0.15, 0.006, 0.012, 0.062],
+    [0.175, 0.008, 0.004, 0.05],
+  ], ATLAS.foot, { smooth: 12, segments: 10 });
+  foot.rotateZ(-Math.PI / 2);
+  foot.translate(FOOT_OFFSET, 0.022, 0);
+  return foot;
+}
+
+const birdMaterial = new THREE.ShaderMaterial({
+  vertexShader: BIRD_VERT,
+  fragmentShader: BIRD_FRAG,
+  uniforms: {
+    uAtlas: { value: atlasTex },
+    uSunDir: { value: new THREE.Vector3() },
+    uSun: { value: new THREE.Vector3() },
+    uSky: { value: new THREE.Vector3() },
+    uGround: { value: new THREE.Vector3() },
+    uRim: { value: new THREE.Vector3() },
+    uFogColor: { value: new THREE.Color() },
+    uFog: { value: 0 },
+  },
+});
+
+function makeBirdPart(geometry, capacity) {
+  for (const name of ['aKind', 'aGround']) {
+    geometry.setAttribute(name, new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1).setUsage(THREE.DynamicDrawUsage));
+  }
+  const mesh = new THREE.InstancedMesh(geometry, birdMaterial, capacity);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  mesh.count = 0;
+  scene.add(mesh);
+  return mesh;
+}
+
+const bodyMesh = makeBirdPart(makeBodyGeometry(ADULT_SHAPE), MAX_BIRDS);
+const headMesh = makeBirdPart(makeHeadGeometry(ADULT_SHAPE), MAX_BIRDS);
+const flipperMesh = makeBirdPart(makeFlipperGeometry(), MAX_BIRDS * 2);
+const footMesh = makeBirdPart(makeFootGeometry(), MAX_BIRDS * 2);
+// ヒナは一度に 1 羽だけで、胴と頭の形が違う
+const chickBodyMesh = makeBirdPart(makeBodyGeometry(CHICK_SHAPE), 1);
+const chickHeadMesh = makeBirdPart(makeHeadGeometry(CHICK_SHAPE), 1);
+const BIRD_PARTS = [bodyMesh, headMesh, flipperMesh, footMesh, chickBodyMesh, chickHeadMesh];
+
+// ---- 行進 ----
+let birds = [];
+let spawnWait = 0;    // 次の群れが入ってくるまでの時間
+let nextGroup = 0;    // 群れの番号
+let slideWait = 0;    // 次に誰かが滑り出すまでの時間
+let stopWait = 0;     // 次に先頭が立ち止まるまでの時間
+let chickWait = 0;    // 次にヒナが現れるまでの時間
+let chickActive = false;
+const spray = [];     // 雪煙の粒
+
+// 群れごとの進路のうねりを選ぶ。列の本数によらず、同じ群れは同じ形の道をたどる
+const groupPaths = new Map();
+function groupPath(group) {
+  if (!groupPaths.has(group)) {
+    groupPaths.set(group, { amplitude: randIn(PATH_AMPLITUDE), k: TAU / randIn(PATH_WAVELENGTH), phase: rand(0, TAU) });
+  }
+  return groupPaths.get(group);
+}
+
+// いまの位置で歩く奥行き。位置だけで決まるので、後ろのペンギンは前と同じ道を通る
+function pathDepth(b) {
+  const { amplitude, k, phase } = b.path;
+  return b.z0 + amplitude * Math.sin(k * b.p + phase) + WANDER_AMPLITUDE * Math.sin(b.wanderK * b.p + b.wanderPhase);
+}
+
+// 奥行きを target へ寄せ、動いた向きに体を向ける
+function steer(b, target, rate, dt) {
+  const before = b.z;
+  b.z += clamp(target - b.z, -rate * dt, rate * dt);
+  if (b.v > 0.05 && dt > 0) {
+    const to = clamp(Math.atan2((b.z - before) / dt, b.v), -MAX_HEADING, MAX_HEADING);
+    b.heading = ease(b.heading, to, 2.5, dt);
+  }
+}
+
+function addBird(p, z0, group, kind = 0) {
+  const bird = {
+    p,                // 進む向きの位置（画面の中央が 0、進む先が +）
+    z: z0,            // いまの奥行き
+    z0,               // 列の奥行き
+    v: walkSpeed,
+    path: groupPath(group),   // 群れの進路のうねり。同じ群れは同じ道をたどる
+    wanderPhase: rand(0, TAU),
+    wanderK: TAU / rand(10, 22),   // 進路からのずれの波数（1 あたりのラジアン）
+    heading: 0,               // 進む向きの傾き（ラジアン。+ は奥行きの + の側へ）
+    pace: rand(0.96, 1.04),   // 先頭になったときの歩く速さの倍率
+    paceWave: rand(0, TAU),   // 速さと間隔のむらの位相（0..2π）
+    paceRate: TAU / randIn(PACE_WAVE_PERIOD),
+    gap: randIn(BIRD_GAP),
+    phase: rand(0, TAU),      // 歩く動きの位相（0..2π）
+    walk: 1,                  // 歩く動きの大きさ（0: 止まっている）
+    state: 'walk',            // walk / stop / run（助走）/ fall / slide / rise
+    t: 0,                     // いまの状態の経過時間
+    stateTime: 0,             // いまの状態の長さ
+    prone: 0,                 // 腹ばいの度合い（0..1）
+    size: 1 + rand(-BIRD_SIZE_JITTER, BIRD_SIZE_JITTER),
+    group,
+    kind,                     // 0: 大人、1: ヒナ
+    twist: rand(0.1, 0.18),   // 歩くときに体をひねる大きさ（ラジアン）
+    stepLength: randIn(STEP_LENGTH),
+    sway: randIn(WALK_SWAY),
+    leanBase: randIn(WALK_LEAN),
+    lean: 0,                  // いまの前傾（ラジアン）
+    wingOpen: rand(-0.06, 0.08),   // 翼の開き方の個体差（ラジアン）
+    kick: rand(0, TAU),       // 蹴る動きの位相
+    kicking: false,
+    paddle: 0,                // 蹴って漕ぐ動きの大きさ（0..1。蹴り始めと終わりをなめらかにつなぐ）
+    burst: 0,                 // あと何回続けて蹴るか
+    bellySnow: 0,             // 腹が散らす粒の端数
+    glide: 0,                 // 蹴らずに滑る残り時間
+    landed: LANDED_LONG_AGO,  // 腹がついてからの時間
+    push: 0,                  // 起き上がるときに翼で押す度合い（0..1）
+    lane: 0,                  // 滑るときの奥行き
+    slideAt: null,            // つられて滑り出す時刻（clock）
+    trailAt: p,               // 次に跡を置く位置
+    x: 0,
+    ground: 0,
+  };
+  bird.z = pathDepth(bird);
+  birds.push(bird);
+  return bird;
+}
+
+function setState(b, state, time) {
+  b.state = state;
+  b.t = 0;
+  b.stateTime = time;
+}
+
+// 羽数に応じた列の本数と、列の奥行き
+const fileCount = () => Math.ceil(targetCount / BIRDS_PER_FILE);
+const fileDepth = (i, files) => (i - (files - 1) / 2) * FILE_SPACING - (files > 1 ? FILE_BACK_SHIFT : 0);
+
+// 同じ列で、すぐ前を歩いているペンギンとの間隔。滑っているペンギンは数えない
+function gapAhead(b) {
+  let best = Infinity;
+  for (const o of birds) {
+    if (o === b || o.state === 'run' || o.state === 'fall' || o.state === 'slide') continue;
+    // 列は道がうねるので、いまの奥行きではなく、どの列に属するかで比べる（別の列と交わっても止まらない）
+    if (Math.abs(o.z0 - b.z0) > FILE_WIDTH) continue;
+    const d = o.p - b.p;
+    if (d > 0 && d < best) best = d;
+  }
+  return best;
+}
+
+// 前が離れていて、追いつこうとしていないペンギン（列の先頭）か
+const isLeading = (b) => gapAhead(b) > b.gap * FOLLOW_RANGE;
+
+const entryPosition = () => -(halfWidth + ENTRY_MARGIN);
+
+// 列の最後尾より後ろの位置（奥行き z の列）。画面の外から入る位置より前にはしない
+function tailPosition(z) {
+  let tail = Infinity;
+  for (const o of birds) {
+    if (Math.abs(o.z0 - z) <= FILE_WIDTH && o.p < tail) tail = o.p;
+  }
+  return Math.min(entryPosition(), tail - BIRD_GAP[1]);
+}
+
+// 群れを 1 つ入れる。群れの大きさと次の群れまでの時間は羽数から決める
+function spawnGroup() {
+  const n = Math.round(targetCount * randIn(GROUP_SHARE));
+  const files = fileCount();
+  const group = nextGroup++;
+  const offset = randInt(files);
+  const tails = [];
+  for (let i = 0; i < n && birds.length < MAX_BIRDS - 2; i++) {   // 隠し要素のぶんの枠を残す
+    const f = (i + offset) % files;
+    const z0 = fileDepth(f, files) + rand(-FILE_DEPTH_JITTER, FILE_DEPTH_JITTER);
+    // 列どうしの出発位置をずらす。揃えると、望遠では重なって 2 羽ずつ詰まって見える
+    tails[f] ??= tailPosition(fileDepth(f, files)) - f * BIRD_GAP[1] / files - rand(0, 0.3);
+    addBird(tails[f], z0, group);
+    tails[f] -= randIn(BIRD_GAP) * rand(1, 1.15);
+  }
+  // 1 秒に入ってくる羽数 = 羽数 / 画面の幅を横切る時間
+  return n / (targetCount / (REF_VIEW_WIDTH / walkSpeed)) * rand(0.7, 1.3);
+}
+
+// 先頭を立ち止まらせる。同じ群れの、列ごとの先頭も一緒に止まる
+function stopLeader() {
+  const onScreen = birds.filter((b) => b.state === 'walk' && Math.abs(b.p) < halfWidth * 0.8 && isLeading(b));
+  if (!onScreen.length) return;
+  const leader = pick(onScreen);
+  const time = randIn(STOP_TIME);
+  for (const b of birds) {
+    if (b.group !== leader.group || b.state !== 'walk' || !isLeading(b)) continue;
+    setState(b, 'stop', time + rand(0, 0.5));
+  }
+}
+
+function startChick() {
+  if (chickActive || birds.length >= MAX_BIRDS) return;
+  const z0 = fileDepth(0, fileCount());
+  const chick = addBird(tailPosition(z0), z0, nextGroup++, 1);
+  chick.size *= CHICK_SIZE;
+  chick.stepLength *= CHICK_SIZE;   // 体に合わせて歩幅も狭くする。同じ速さで進むので、足の運びは速くなる
+  chickActive = true;
+}
+
+// ---- 腹滑り ----
+function laneDepth() {
+  // 列の手前の端からさらに手前へ寄る
+  const files = fileCount();
+  return fileDepth(files - 1, files) + SLIDE_LANE + rand(-0.15, 0.15);
+}
+
+function startSlide(b) {
+  setState(b, 'run', SLIDE_RUN_TIME);
+  b.lane = laneDepth();
+  b.slideAt = null;
+  b.trailAt = b.p;
+}
+
+// 滑り出すペンギンを選ぶ。下り坂にいるほど選ばれやすい
+function chooseSlider() {
+  let total = 0;
+  const weights = birds.map((b) => {
+    if (b.state !== 'walk' || b.v < walkSpeed * 0.5 || Math.abs(b.p) > halfWidth * 0.95) return 0;
+    const w = 1 + SLIDE_DOWNHILL_BIAS * Math.max(0, -slopeAhead(b.p));
+    total += w;
+    return w;
+  });
+  if (!total) return;
+  let r = Math.random() * total;
+  const index = weights.findIndex((w) => (r -= w) <= 0);
+  const b = birds[index < 0 ? birds.length - 1 : index];
+  startSlide(b);
+  // 後ろのペンギンがつられることがある
+  const behind = birds
+    .filter((o) => o !== b && o.state === 'walk' && Math.abs(o.z0 - b.z0) <= FILE_WIDTH && o.p < b.p && b.p - o.p < o.gap * 4)
+    .sort((x, y) => y.p - x.p)
+    .slice(0, FOLLOW_SLIDE_MAX);
+  for (const o of behind) {
+    if (Math.random() < FOLLOW_SLIDE_CHANCE) o.slideAt = clock + randIn(FOLLOW_SLIDE_DELAY);
+  }
+}
+
+// 腹のまわりから低く散る雪
+function emitBellySnow(b) {
+  if (spray.length >= MAX_SPRAY) return;
+  spray.push({
+    x: b.x + dir * rand(-0.35, 0.45) * b.size,
+    y: b.ground + 0.02,
+    z: b.z + randSign() * rand(0.1, 0.25),
+    vx: dir * b.v * rand(0.3, 0.8),
+    vy: rand(0.1, 0.55),
+    vz: rand(-0.2, 0.2),
+    age: 0,
+    life: rand(0.2, 0.45),
+    r: rand(0.014, 0.028),
+  });
+}
+
+// 雪煙を出す。offset: 体の中心からの位置（進む向きが +）
+function emitSpray(b, offset, count) {
+  const side = Math.random() < 0.5 ? 1 : -1;
+  for (let i = 0; i < count && spray.length < MAX_SPRAY; i++) {
+    spray.push({
+      x: b.x + dir * offset * b.size,
+      y: b.ground + 0.03,
+      z: b.z + side * 0.08 * rand(0, 1),
+      vx: dir * (b.v * 0.4 - rand(0.4, 1.7)),
+      vy: rand(0.6, 1.8),
+      vz: rand(-0.3, 0.3),
+      age: 0,
+      life: rand(0.35, 0.75),
+      r: rand(0.018, 0.04),
+    });
+  }
+}
+
+// ---- ペンギンの動き ----
+// 足が雪面を滑らないよう、位相を進んだ距離に合わせる。半周で 1 歩
+function advanceSteps(b, dt) {
+  b.phase += Math.PI * b.v / b.stepLength * dt;
+  if (b.phase >= TAU) b.phase -= TAU;
+}
+
+function updateWalker(b, dt) {
+  const gap = gapAhead(b);
+  // 速さと間隔は、個体ごとにゆっくり揺れる。少し遅れたり、追いついたりする
+  b.paceWave = (b.paceWave + b.paceRate * dt) % TAU;
+  const wave = Math.sin(b.paceWave);
+  const wantGap = b.gap * (1 + GAP_WAVE * wave);
+  let target;
+  if (b.state === 'stop') {
+    target = 0;
+  } else if (gap < wantGap) {
+    // 詰まったら止まる
+    target = walkSpeed * clamp((gap / wantGap - 0.85) / 0.15, 0, 1);
+    // 止まっている間は少し空くまで動かず、前から順に歩き出すようにする
+    if (b.v < 0.02) target = 0;
+  } else if (b.v < 0.02 && gap < wantGap * 1.08) {
+    target = 0;
+  } else if (gap < b.gap * FOLLOW_RANGE) {
+    target = walkSpeed * lerp(1, TROT_FACTOR, clamp((gap - wantGap) / wantGap, 0, 1));
+  } else {
+    target = walkSpeed * b.pace * (1 + PACE_WAVE * wave);
+  }
+  b.v = ease(b.v, target, 4, dt);
+  b.walk = ease(b.walk, clamp(b.v / walkSpeed, 0, 1.2), 5, dt);
+  b.lean = ease(b.lean, b.leanBase * clamp(b.walk, 0, 1), 4, dt);
+  advanceSteps(b, dt);
+  // 列の道へ戻り、道に沿って進む
+  steer(b, pathDepth(b), LANE_SPEED, dt);
+  b.p += b.v * Math.cos(b.heading) * dt;
+  leaveTrail(b, WALK_TRAIL);
+
+  if (b.slideAt !== null && clock >= b.slideAt) {
+    if (b.state === 'walk' && b.v > walkSpeed * 0.5) startSlide(b);
+    else b.slideAt = null;
+  }
+}
+
+const randBurst = () => SLIDE_BURST[0] + randInt(SLIDE_BURST[1] - SLIDE_BURST[0] + 1);
+
+// 助走。前のめりになりながら少し速く歩く
+function updateRun(b, dt) {
+  b.v = ease(b.v, walkSpeed * SLIDE_RUN_FACTOR, 4, dt);
+  b.lean = lerp(b.leanBase, SLIDE_RUN_LEAN, smoothstep(b.t, 0, b.stateTime));
+  advanceSteps(b, dt);
+  b.walk = ease(b.walk, 1.2, 5, dt);
+  if (b.t >= b.stateTime) setState(b, 'fall', SLIDE_FALL_TIME);
+}
+
+// 倒れ込み。重さに任せて倒れるので、だんだん速くなる
+function updateFall(b, dt) {
+  const f = clamp(b.t / b.stateTime, 0, 1);
+  b.prone = f * f;
+  b.v = ease(b.v, SLIDE_SPEED * 0.7, 3, dt);
+  b.walk = ease(b.walk, 0, 6, dt);
+  if (b.t >= b.stateTime) {
+    setState(b, 'slide', randIn(SLIDE_KICK_TIME));
+    b.landed = 0;
+    b.burst = randBurst();
+    b.glide = 0;
+    emitSpray(b, 0.2, SPRAY_PER_KICK * 2);
+  }
+}
+
+// 滑走。何回か続けて蹴り、翼を畳んで滑り、遅くなったらまた蹴る。蹴る時間が過ぎたら、遅くなるまで滑る
+function updateSliding(b, dt) {
+  const slope = slopeAhead(b.p);
+  b.prone = 1;
+  b.landed += dt;
+  b.bellySnow += b.v * BELLY_SNOW_RATE * dt;
+  for (; b.bellySnow >= 1; b.bellySnow--) emitBellySnow(b);
+  if (b.burst > 0) {
+    const before = Math.floor(b.kick / Math.PI);
+    b.kick += Math.PI * KICK_RATE * dt;   // 半周で 1 回蹴る
+    if (Math.floor(b.kick / Math.PI) !== before) {
+      b.v += KICK_IMPULSE;
+      emitSpray(b, -0.55, SPRAY_PER_KICK);
+      if (--b.burst === 0) b.glide = randIn(SLIDE_GLIDE_TIME);
+    }
+    if (b.kick >= TAU) b.kick -= TAU;
+  } else if (b.t < b.stateTime) {
+    b.glide -= dt;
+    if (b.glide <= 0) b.burst = randBurst();
+  }
+  b.kicking = b.burst > 0;
+  b.v = clamp(b.v - (SLIDE_DRAG + slope * SLIDE_GRAVITY) * dt, walkSpeed * 0.9, SLIDE_MAX_SPEED);
+  const finished = b.t >= b.stateTime && b.burst === 0;
+  if (finished && (b.v <= walkSpeed * 1.25 || b.t >= b.stateTime + SLIDE_MAX_COAST)) setState(b, 'rise', SLIDE_RISE_TIME);
+}
+
+// 起き上がり。翼で胸を押し上げて、尾と足で支えながら立つ
+function updateRise(b, dt) {
+  const f = clamp(b.t / b.stateTime, 0, 1);
+  b.prone = f < SLIDE_RISE_PUSH
+    ? lerp(1, 0.6, smoothstep(f, 0, SLIDE_RISE_PUSH))
+    : lerp(0.6, 0, smoothstep(f, SLIDE_RISE_PUSH, 1));
+  b.push = Math.sin(Math.PI * clamp(f / 0.65, 0, 1));
+  b.v = ease(b.v, walkSpeed * 0.45, 2.5, dt);
+  if (b.t >= b.stateTime) {
+    setState(b, 'walk', 0);
+    b.prone = 0;
+    b.push = 0;
+    b.walk = 0.3;
+    b.landed = LANDED_LONG_AGO;
+  }
+}
+
+const SLIDER_UPDATES = { run: updateRun, fall: updateFall, slide: updateSliding, rise: updateRise };
+
+function updateSlider(b, dt) {
+  SLIDER_UPDATES[b.state](b, dt);
+  b.paddle = ease(b.paddle, b.kicking ? 1 : 0, 7, dt);
+  if (b.state !== 'walk') {
+    // 手前の線へ寄る。起き上がるときはそのまま進み、歩き出してから列へ戻る
+    if (b.state === 'rise') {
+      b.heading = ease(b.heading, 0, 1.5, dt);
+    } else {
+      steer(b, b.lane, b.state === 'run' ? 0.5 : 1, dt);
+    }
+    // 滑り跡を残す（腹が雪についてから）
+    if (b.prone > 0.8) leaveTrail(b, SLIDE_TRAIL);
+    else b.trailAt = b.p;
+  }
+  b.p += b.v * Math.cos(b.heading) * dt;
+}
+
+function updateBirds(dt) {
+  for (const b of birds) {
+    b.t += dt;
+    if (b.state === 'walk' || b.state === 'stop') {
+      updateWalker(b, dt);
+      if (b.state === 'stop' && b.t >= b.stateTime) setState(b, 'walk', 0);
+    } else {
+      updateSlider(b, dt);
+    }
+    b.x = dir * b.p;
+    b.ground = hillLine(b.x);
+  }
+  // 画面の外へ抜けたら消す
+  const limit = halfWidth + EXIT_MARGIN;
+  for (let i = birds.length - 1; i >= 0; i--) {
+    if (birds[i].p > limit) {
+      if (birds[i].kind === 1) chickActive = false;
+      birds.splice(i, 1);
+    }
+  }
+}
+
+function updateEvents(dt) {
+  spawnWait -= dt;
+  if (spawnWait <= 0) spawnWait = spawnGroup();
+  const perBird = BASE_COUNT / targetCount;   // 滑り出す回数が羽数に比例するよう、間隔を羽数に反比例させる
+  slideWait -= dt;
+  if (slideWait <= 0) {
+    chooseSlider();
+    slideWait = randomInterval(SLIDE_INTERVAL) * perBird;
+  }
+  stopWait -= dt;
+  if (stopWait <= 0) {
+    stopLeader();
+    stopWait = randomInterval(STOP_INTERVAL);
+  }
+  chickWait -= dt;
+  if (chickWait <= 0) {
+    startChick();
+    chickWait = randomInterval(CHICK_INTERVAL);
+  }
+}
+
+// ---- ペンギンの姿勢 ----
+const mRoot = new THREE.Matrix4();
+const mBody = new THREE.Matrix4();
+const mPart = new THREE.Matrix4();
+const mHidden = new THREE.Matrix4().makeScale(0, 0, 0);   // 描かない部品の行列
+
+// 左右の部品。翼と足は 1 羽に 2 つの枠を使い、左右で動きを半周ずらす
+const SIDES = [-1, 1];
+const pairSlot = (i, side) => i * 2 + (side + 1) / 2;
+const kickPhase = (b, side) => b.kick + (side > 0 ? 0 : Math.PI);
+
+// 足の位置を求める。side: 左右。戻り値は体の根もとの座標
+function placeFoot(b, side) {
+  const w = b.prone;
+  const cycle = (side > 0 ? b.phase : (b.phase + Math.PI) % TAU) / TAU;
+  const A = b.stepLength / 2 / b.size;
+  let fx, lift;
+  if (cycle < 0.5) {
+    fx = A * (1 - 4 * cycle);    // 着いている足は、体に対して後ろへ動く（雪面の上では止まっている）
+    lift = 0;
+  } else {
+    const s = (cycle - 0.5) * 2;
+    fx = A * (2 * s * s * (3 - 2 * s) - 1);
+    lift = Math.sin(Math.PI * s) * 0.05 * clamp(b.walk, 0, 1);
+  }
+  // 歩くときは雪面の起伏に沿わせる
+  const footX = b.x + dir * fx * b.size;
+  const fy = (hillLine(footX) - b.ground) / b.size + lift;
+  // 腹ばいのときは体の後ろに伸ばして、交互に雪を蹴る
+  const kick = Math.sin(kickPhase(b, side));
+  const sx = -BODY_PIVOT + 0.08 + kick * 0.06 * b.paddle;
+  const sy = 0.07 + lerp(0.02, Math.max(0, -kick) * 0.05, b.paddle);
+  return {
+    x: lerp(fx, sx, w),
+    y: lerp(fy, sy, w),
+    z: side * lerp(FOOT_SPREAD, FOOT_SPREAD * 1.1, w),
+    pitch: lerp(lift * 3, -2.7 + kick * 0.35 * b.paddle, w),
+  };
+}
+
+// 部品 1 つぶんの雪面の高さと種類を書く
+function setPartAttributes(mesh, slot, b) {
+  mesh.geometry.attributes.aGround.array[slot] = b.ground;
+  mesh.geometry.attributes.aKind.array[slot] = b.kind;
+}
+
+// 胴と頭を書く。ヒナは形が違うので、大人の側の枠は描かないようにして、ヒナ専用の枠へ書く
+function setBodyPart(mesh, chickMesh, slot, b, matrix) {
+  const chick = b.kind === 1;
+  mesh.setMatrixAt(slot, chick ? mHidden : matrix);
+  setPartAttributes(mesh, slot, b);
+  if (chick) {
+    chickMesh.setMatrixAt(0, matrix);
+    setPartAttributes(chickMesh, 0, b);
+  }
+}
+
+// 体。一歩ごとに、足を着いた瞬間に沈み、足の真上に乗ると伸びる（真横からは左右の傾きより、この上下と前後の揺れが見える）
+function poseBody(b, i, shape, motion) {
+  const w = b.prone;
+  const swing = Math.sin(b.phase);
+  const rock = -Math.cos(b.phase * 2) * WALK_ROCK * motion;   // 足を着いた瞬間に前へ、足の真上に乗ると後ろへ
+  const roll = swing * WALK_ROLL * motion;
+  const bob = -Math.cos(b.phase * 2) * 0.5 * WALK_BOB * motion;
+  const slope = slopeAhead(b.p);
+  // 腹がついた直後だけ小さく弾む
+  const settle = Math.exp(-b.landed * 8);
+  const bounce = settle * LAND_BOUNCE * Math.abs(Math.cos(b.landed * 12));
+  const pitch = lerp(-b.lean + rock, -Math.PI / 2 * 0.96 + Math.atan(slope) + settle * 0.05 * Math.sin(b.landed * 12), w);
+  // 腹ばいになるときは体の中ほどを中心に前へ倒す
+  mBody.copy(mRoot);
+  move(mBody, Math.sin(b.phase * 2) * WALK_SURGE * motion, lerp(BODY_PIVOT + bob, shape.bellyRadius + bounce, w), swing * WALK_SHIFT * motion);
+  rotZ(mBody, pitch);
+  rotX(mBody, roll);
+  rotY(mBody, swing * b.twist * motion);
+  move(mBody, 0, -BODY_PIVOT, 0);
+  setBodyPart(bodyMesh, chickBodyMesh, i, b, mBody);
+}
+
+// 頭。前傾のぶんだけ起こして水平に保つ。腹ばいのときは持ち上げて前を見る
+function poseHead(b, i, shape) {
+  const w = b.prone;
+  mPart.copy(mBody);
+  move(mPart, shape.neck[0], shape.neck[1], shape.neck[2]);
+  rotZ(mPart, b.lean * 0.7 * (1 - w) + w * (Math.PI / 2 * 0.95 + Math.sin(b.kick * 2) * 0.03 * b.paddle));
+  setBodyPart(headMesh, chickHeadMesh, i, b, mPart);
+}
+
+// 翼。歩くときは体から少し離して遅れて揺らす。腹ばいで蹴るときは広げて漕ぎ、滑るときは畳む。起き上がるときは雪を押す
+function poseWings(b, i, shape, amt, motion) {
+  const w = b.prone;
+  for (const side of SIDES) {
+    const lag = Math.sin(b.phase - 0.8) * side;
+    const stroke = Math.sin(kickPhase(b, side));
+    const proneOpen = lerp(lerp(0.34, 0.62, b.paddle), 0.8, b.push);
+    const proneFore = lerp(lerp(0.12, 0.45 + 0.5 * stroke, b.paddle), 0.95, b.push);
+    const open = lerp(0.36 + b.wingOpen + 0.12 * amt, proneOpen, w) + shape.wingOpen;
+    const fore = lerp(WALK_WING_SWING * lag * motion, proneFore, w);
+    mPart.copy(mBody);
+    move(mPart, shape.shoulder[0], shape.shoulder[1], side * shape.shoulder[2]);
+    rotZ(mPart, fore);
+    rotX(mPart, -side * open);
+    mPart.scale(vScale.set(1, shape.wingLength, 1));
+    flipperMesh.setMatrixAt(pairSlot(i, side), mPart);
+    setPartAttributes(flipperMesh, pairSlot(i, side), b);
+  }
+}
+
+// 足。雪面に置く（根もとの座標で求める。傾いた体とは別に動かす）
+function poseFeet(b, i) {
+  for (const side of SIDES) {
+    const foot = placeFoot(b, side);
+    mPart.copy(mRoot);
+    move(mPart, foot.x, foot.y, foot.z);
+    rotZ(mPart, foot.pitch);
+    footMesh.setMatrixAt(pairSlot(i, side), mPart);
+    setPartAttributes(footMesh, pairSlot(i, side), b);
+  }
+}
+
+// 影。ぼかした楕円を太陽の反対側へ伸ばすだけ。腹がついているときは体の真下へ寄せて、濃くする（接地の影）
+function poseShadow(b, i) {
+  const s = current;
+  const w = b.prone;
+  const toSun = groundMaterial.uniforms.uSunDir.value;
+  const lenZ = lerp(s.shadowLength * 0.6 + 7, 11, w);
+  const lenX = lerp(0.62, 1.3, w) + Math.abs(toSun.x) * s.shadowLength * 0.5 * (1 - w);
+  const reach = s.shadowLength * 0.28 * (1 - w);
+  const cx = b.x + dir * w * 0.1 - toSun.x * reach;
+  const cz = b.z - Math.sign(toSun.z) * reach;
+  placeDecal(shadowMesh, i, cx, cz, lenX * b.size, lenZ * b.size);
+  shadowMesh.geometry.attributes.iAlpha.array[i] = lerp(s.shadowAlpha, Math.max(s.shadowAlpha, 0.9), w);
+}
+
+function writeBirds() {
+  const n = birds.length;
+  for (let i = 0; i < n; i++) {
+    const b = birds[i];
+    const shape = b.kind === 1 ? CHICK_SHAPE : ADULT_SHAPE;
+    const amt = clamp(b.walk, 0, 1.2);
+    const motion = amt * b.sway * (1 - b.prone);
+
+    // 根もと（足もと）。進む向きに合わせて回す
+    mRoot.makeTranslation(b.x, b.ground, b.z);
+    rotY(mRoot, (dir > 0 ? 0 : Math.PI) - dir * b.heading);
+    mRoot.scale(vScale.setScalar(b.size));
+
+    poseBody(b, i, shape, motion);
+    poseHead(b, i, shape);
+    poseWings(b, i, shape, amt, motion);
+    poseFeet(b, i);
+    poseShadow(b, i);
+  }
+  shadowMesh.count = n;
+  shadowMesh.instanceMatrix.needsUpdate = true;
+  shadowMesh.geometry.attributes.iAlpha.needsUpdate = true;
+
+  bodyMesh.count = headMesh.count = n;
+  flipperMesh.count = footMesh.count = n * 2;
+  chickBodyMesh.count = chickHeadMesh.count = chickActive ? 1 : 0;
+  for (const mesh of BIRD_PARTS) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.geometry.attributes.aKind.needsUpdate = true;
+    mesh.geometry.attributes.aGround.needsUpdate = true;
+  }
+}
+
+// ---- 雪の粒 ----
+// 粒はカメラからの距離で大きさを決める。ピントから外れるほど大きく薄く広がる（カメラのぼけ）
+const flakeGeometry = new THREE.InstancedBufferGeometry();
+flakeGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]), 3));
+flakeGeometry.setIndex([0, 1, 2, 0, 2, 3]);
+const flakePos = new THREE.InstancedBufferAttribute(new Float32Array((MAX_FLAKES + MAX_SPRAY) * 3), 3);
+const flakeSize = new THREE.InstancedBufferAttribute(new Float32Array((MAX_FLAKES + MAX_SPRAY) * 2), 2);
+const flakeAlpha = new THREE.InstancedBufferAttribute(new Float32Array(MAX_FLAKES + MAX_SPRAY), 1);
+for (const a of [flakePos, flakeSize, flakeAlpha]) a.setUsage(THREE.DynamicDrawUsage);
+flakeGeometry.setAttribute('iPos', flakePos);
+flakeGeometry.setAttribute('iSize', flakeSize);
+flakeGeometry.setAttribute('iAlpha', flakeAlpha);
+const flakeMesh = new THREE.Mesh(flakeGeometry, new THREE.ShaderMaterial({
+  vertexShader: FLAKE_VERT,
+  fragmentShader: FLAKE_FRAG,
+  uniforms: { uColor: { value: new THREE.Color() } },
+  transparent: true,
+  depthWrite: false,
+}));
+flakeMesh.frustumCulled = false;
+flakeMesh.renderOrder = 6;
+scene.add(flakeMesh);
+
+let flakes = [];
+
+// 粒の距離を選ぶ。手前と奥に散らし、列の前後にも置く
+function randomFlakeDistance() {
+  const r = Math.random();
+  if (r < current.flakeNear) return rand(FLAKE_DISTANCE[0], 30);
+  if (r < 0.65) return rand(40, 140);
+  return rand(140, FLAKE_DISTANCE[1]);
+}
+
+function viewReach(d) {
+  const tanY = Math.tan(degToRad(camera.fov / 2));
+  return { x: d * tanY * camera.aspect * 1.08, y: d * tanY * 1.1 };
+}
+
+function placeFlake(f, anywhere) {
+  const reach = viewReach(f.d);
+  const tilt = Math.tan(cameraTilt) * f.d;
+  f.yMin = CAM_Y + tilt - reach.y;
+  f.yMax = CAM_Y + tilt + reach.y;
+  f.xMax = reach.x;
+  if (anywhere) f.x = rand(-reach.x, reach.x);
+  f.y = rand(f.yMin, f.yMax);
+}
+
+function makeFlake() {
+  const d = randomFlakeDistance();
+  const shortSide = 2 * d * Math.tan(degToRad(CAM_FOV / 2));
+  const coc = BOKEH * Math.abs(1 / d - 1 / CAM_DISTANCE) * shortSide;
+  const r = Math.max(FLAKE_RADIUS, coc);
+  const f = {
+    d,
+    z: CAM_DISTANCE - d,
+    r,
+    alpha: Math.max(0.03, Math.min(1, FLAKE_RADIUS / r)) * rand(0.6, 1) * lerp(0.2, 1, smoothstep(d, 15, 45)),   // カメラのすぐ近くの粒は、ぼけてほとんど見えない
+    speed: rand(0.8, 1.2),
+    wobble: rand(0, TAU),
+    wobbleRate: rand(0.6, 1.6),
+    x: 0, y: 0, xMax: 1, yMin: 0, yMax: 1,
+  };
+  placeFlake(f, true);
+  return f;
+}
+
+function resetFlakes() {
+  flakes = Array.from({ length: current.flakes }, makeFlake);
+  spray.length = 0;
+}
+
+function writeFlake(n, x, y, z, sizeX, sizeY, alpha) {
+  flakePos.setXYZ(n, x, y, z);
+  flakeSize.setXY(n, sizeX, sizeY);
+  flakeAlpha.setX(n, alpha);
+}
+
+function updateFlakes(dt) {
+  const s = current;
+  const wind = s.wind * windSign;
+  let n = 0;
+  for (const f of flakes) {
+    f.wobble += f.wobbleRate * dt;
+    if (f.wobble > TAU) f.wobble -= TAU;
+    const vx = wind * f.speed;
+    f.x += (vx + Math.sin(f.wobble) * 0.08) * dt;
+    f.y += (-s.fall * f.speed + Math.cos(f.wobble) * 0.05) * dt;
+    if (Math.abs(f.x) > f.xMax) {
+      f.x -= Math.sign(f.x) * 2 * f.xMax;
+      placeFlake(f, false);
+    }
+    if (f.y < f.yMin) f.y = f.yMax;
+    if (f.y > f.yMax) f.y = f.yMin;
+    const stretch = Math.abs(vx) * FLAKE_SHUTTER;
+    writeFlake(n++, f.x, f.y, f.z, f.r + stretch, f.r, f.alpha * s.flakeAlpha * Math.pow(f.r / (f.r + stretch), 0.7));
+  }
+  // 雪煙
+  for (let i = spray.length - 1; i >= 0; i--) {
+    const p = spray[i];
+    p.age += dt;
+    if (p.age >= p.life) { spray.splice(i, 1); continue; }
+    p.vy -= 3.2 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    writeFlake(n++, p.x, p.y, p.z, p.r, p.r, 0.9 * (1 - p.age / p.life));
+  }
+  flakeGeometry.instanceCount = n;
+  flakePos.needsUpdate = flakeSize.needsUpdate = flakeAlpha.needsUpdate = true;
+}
+
+// ---- 地吹雪 ----
+// 雪面の近くを流れる薄い膜。列の手前と奥に 1 枚ずつ置く
+function makeSheet(z, renderOrder) {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(90, 40),
+    new THREE.ShaderMaterial({
+      vertexShader: SHEET_VERT,
+      fragmentShader: SHEET_FRAG,
+      uniforms: {
+        uNoise: { value: noiseTex },
+        uColor: { value: new THREE.Color() },
+        uOpacity: { value: 0 },
+        uScroll: { value: 0 },
+      },
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  mesh.position.set(0, 15, z);
+  mesh.renderOrder = renderOrder;
+  scene.add(mesh);
+  return mesh;
+}
+const sheets = [makeSheet(SHEET_DEPTHS[0], 4), makeSheet(SHEET_DEPTHS[1], 7)];
+
+function updateSheets(dt) {
+  sheets.forEach((sheet, i) => {
+    const u = sheet.material.uniforms.uScroll;
+    u.value = (u.value - current.wind * windSign * SHEET_SPEEDS[i] * dt + 1) % 1;
+  });
+}
+
+// ---- カメラ ----
+const swayPhase = [rand(0, TAU), rand(0, TAU)];
+function updateCamera(dt) {
+  // 三脚に据えたカメラをわずかに振る。位置は動かさない
+  swayPhase.forEach((p, i) => { swayPhase[i] = (p + TAU / CAM_SWAY_PERIOD[i] * dt) % TAU; });
+  camera.rotation.y = Math.sin(swayPhase[0]) * CAM_SWAY_YAW;
+  camera.rotation.x = cameraTilt + Math.sin(swayPhase[1]) * CAM_SWAY_PITCH;
+}
+
+// ---- シーン切替 ----
+function applySceneColors(s) {
+  const sun = sunDirection(s);
+  const haze = new THREE.Color(s.haze).multiplyScalar(BG_GAIN);
+  const g = groundMaterial.uniforms;
+  g.uSnow.value.set(s.snow);
+  g.uAmbient.value.set(...s.snowLight);
+  g.uSun.value.set(...s.sunLight);
+  g.uSunDir.value.copy(sun);
+  g.uHaze.value.copy(haze);
+  g.uSheen.value.set(...s.sheen);
+  g.uHazeDistance.value = s.hazeDistance;
+  g.uSunTan.value = Math.tan(degToRad(s.sunAzimuth));
+  // 風紋の陰影を求めるときに模様をずらす量（太陽の水平の向きへ。テクスチャの座標）
+  const toSunLength = Math.hypot(sun.x, sun.z) || 1;
+  g.uBumpOffset.value.set(sun.x / toSunLength * 0.012, sun.z / toSunLength * 0.008);
+
+  const b = birdMaterial.uniforms;
+  b.uSunDir.value.copy(sun);
+  b.uSun.value.set(...s.sunLight);
+  b.uSky.value.set(...s.skyLight);
+  b.uGround.value.set(...s.groundLight);
+  b.uRim.value.set(...s.rimLight);
+  b.uFogColor.value.copy(haze);
+  b.uFog.value = s.fog;
+
+  decalMesh.material.uniforms.uColor.value.set(s.trail);
+  shadowMesh.material.uniforms.uColor.value.set(s.shadow);
+  flakeMesh.material.uniforms.uColor.value.set(s.flakeColor);
+  for (const sheet of sheets) {
+    sheet.visible = s.sheet > 0;
+    sheet.material.uniforms.uOpacity.value = s.sheet;
+    sheet.material.uniforms.uColor.value.set(s.sheetColor);
+  }
+  renderer.setClearColor(new THREE.Color(s.sky[s.sky.length - 1][1]).multiplyScalar(BG_GAIN));
+  renderer.toneMappingExposure = s.exposure;
+  sunGlow.visible = s.sunVisible;
+  if (s.sunVisible) {
+    sunGlow.material.color.setRGB(...s.sunGlow);
+    sunGlow.position.set(
+      backdropDistance * Math.tan(degToRad(s.sunAzimuth)),
+      CAM_Y + backdropDistance * Math.tan(degToRad(s.sunElevation)),
+      -BG_DISTANCE,
+    );
+  }
+}
+
+function setScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  current = SCENES[sceneIndex];
+  walkSpeed = current.walkSpeed;
+  dir = randSign();
+  windSign = current.headwind ? -dir : randSign();
+  chooseTerrain();
+  shapeGround();
+  paintBackdrop(current);
+  applySceneColors(current);
+  clearDecals();
+  clock = 0;
+  birds = [];
+  groupPaths.clear();
+  chickActive = false;
+  spawnWait = 0;
+  slideWait = randomInterval(SLIDE_INTERVAL);
+  stopWait = randomInterval(STOP_INTERVAL);
+  chickWait = randomInterval(CHICK_INTERVAL);
+  resetFlakes();
+  document.getElementById('scene-name').textContent = current.name;
+  // 誰もいない画面から始まらないよう、列が画面の半分まで進むまで先へ進めておく
+  for (let i = 0; i < WARMUP_TIME * 30; i++) simulate(1 / 30);
+  spray.length = 0;   // 先へ進めている間に出た雪煙は残さない
+}
+
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+
+// ---- 強度 ----
+function setCount(value) {
+  targetCount = clamp(value, MIN_COUNT, MAX_COUNT);
+}
+
+// ---- メインループ ----
+function simulate(dt) {
+  clock += dt;
+  updateEvents(dt);
+  updateBirds(dt);
+}
+
+function step(dt) {
+  simulate(dt);
+  updateDecals();
+  writeBirds();
+  updateFlakes(dt);
+  updateSheets(dt);
+  updateCamera(dt);
+  postMaterial.uniforms.uSeed.value = rand(0, 100);
+}
+
+let last = performance.now();
+let renderedAt = -Infinity;
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  // 描くのは 1 秒に MAX_FPS 回まで（少し手前で通すと、ちょうど MAX_FPS の画面で間引かれない）
+  if (now - renderedAt < 1000 / MAX_FPS - 2) return;
+  renderedAt = now;
+  last = now;
+  step(dt);
+  renderer.setRenderTarget(sceneTarget);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCamera);
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  changeScene: nextScene,
+  intensity: {
+    up: () => setCount(targetCount + COUNT_STEP),
+    down: () => setCount(targetCount - COUNT_STEP),
+    level: () => (targetCount - MIN_COUNT) / (MAX_COUNT - MIN_COUNT),   // ゲージの位置（0..1）
+  },
+  keys: { KeyC: startChick },   // 隠し要素のヒナを呼び出す（操作ガイドには表示しない）
+  onResize() {
+    fitCamera();
+    renderer.setSize(innerWidth, innerHeight);
+    updateTargetSize();
+    resetFlakes();
+  },
+});
+
+// ---- 開始 ----
+fitCamera();
+updateTargetSize();
+setScene(randInt(SCENES.length));
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

@@ -25,7 +25,7 @@ const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプショ
 上の段に --base の版、下の段に作業ツリーの版を並べる。
   --base 版       比べる版。git のコミットか、作品の HTML のパス（既定 HEAD）
   --case "名前:式" 列を 1 つ足す。収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
-  --scenes 0,1,2  場面の番号（drone・ripple・waterfall のみ）
+  --scenes 0,1,2  場面の番号（drone・ripple・waterfall・penguins のみ）
   --seconds S     1 場面の長さ（秒。既定 4）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --seed N        乱数の種（既定 1）
