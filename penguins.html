@@ -2113,13 +2113,13 @@ function step(dt) {
 }
 
 let last = performance.now();
-let renderedAt = -Infinity;
+let nextDraw = 0;   // 次に描いてよい時刻
 function tick(now) {
+  // MAX_FPS より速くは描かない。描いてよい時刻は一定の間隔で進め、画面の更新の間隔の揺れで 1 回飛ばさないよう少し余裕を持たせる
+  if (now < nextDraw - 2) return;
+  nextDraw = Math.max(nextDraw + 1000 / MAX_FPS, now);
   // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
-  // 描くのは 1 秒に MAX_FPS 回まで（少し手前で通すと、ちょうど MAX_FPS の画面で間引かれない）
-  if (now - renderedAt < 1000 / MAX_FPS - 2) return;
-  renderedAt = now;
   last = now;
   step(dt);
   renderer.setRenderTarget(sceneTarget);
