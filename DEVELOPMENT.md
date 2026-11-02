@@ -26,6 +26,7 @@
 | docs/performance.md | GPU 負荷の基準値 |
 | tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
+| tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。
 
@@ -104,8 +105,9 @@ setupControls({
 - README.md の作品ごとの節（1 行の概要・操作）を更新する。
 - 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作り、下の「作品ごとの仕様」に追加する。
+- 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
-- 見た目を変えないリファクタリングは、`Math.random` を固定の乱数に差し替え、決まったコマ数だけ進めた画像を変更前後で比べる。
+- 見た目を変えないリファクタリングは、`Math.random` を固定の乱数に差し替え、決まったコマ数だけ進めた画像を変更前後で比べる。`node tools/video-compare.mjs` で「全コマ一致」になるかを見ればよい。
   - three.js は UUID を作るのに `Math.random` を使う。テクスチャや材質を作る順番を変えると乱数の列がずれ、コードが正しくても画像が変わる。比べるときは、変更前のコードも作る順番を揃える。
   - `setAnimationLoop` を止めて 1 回だけ描くと、撮影した画像が空白になることがある。同じコマを描き続けて撮る。
   - 空白の画像どうしでも差は 0 になる。差だけでなく、画像に中身があることも確かめる。
