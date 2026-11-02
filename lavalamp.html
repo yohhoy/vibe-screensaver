@@ -27,13 +27,11 @@ const { TAU, clamp, rand, randIn, randInt, randSign, pick, IS_TOUCH, fadeAndRun,
 // ---- 設定 ----
 // 色はすべて画面に出る値 (0..1)。長さの基準はテーブルの上面（y = 0）
 
-// カメラ（正面から見て、ごくわずかに左右へ揺れる）
+// カメラ（正面から見る）
 const CAM_FOV = 30;
 const LAMP_SCREEN_HEIGHT = 0.85;  // ランプの中心の面で、ランプの高さが画面の高さに占める割合（手前に張り出す裾まで含めると 9 割ほど）
 const LAMP_SCREEN_WIDTH = 0.7;    // 縦長の画面で、瓶と台座の幅が画面の幅に占める割合の上限
 const CAM_RISE = 1.2;             // ランプの中心から見たカメラの高さ
-const CAM_SWAY = 0.7;             // 左右の揺れ幅
-const CAM_SWAY_PERIOD = 90;       // 左右に揺れる周期（秒）
 const CAM_TARGET_DROP = 0.1;      // 見る点をランプの中心から下げる量
 
 // ランプの形（古典的な溶岩ランプの比率）。曲線を避け、ほぼ直線でつなぐ
@@ -543,8 +541,6 @@ const addBlending = {
 
 // ---- 状態 ----
 let heat = BASE_HEAT;           // 温度（倍率）
-let camDistance = 0;            // カメラの距離（画面の大きさで決まる）
-let swayPhase = 0;              // カメラの左右の揺れの位相 (0..TAU)
 const wavePhase = new THREE.Vector2();   // 溜まりの表面のうねりの位相 (0..TAU)
 let flickerPhase = 0;           // 部屋の光の揺らぎの位相 (0..TAU)
 let totalWax = 0;               // 蝋の総量
@@ -811,7 +807,7 @@ function addBooks(x, z) {
     const book = pose(x, y, z, rand(-BOOK_YAW, BOOK_YAW) + (spineFront ? 0 : Math.PI));
     const colorIndex = colorOrder[i];
     const color = BOOK_COLORS[colorIndex];
-    // 表紙は背表紙の手前で止める。重なると同じ面が 2 枚になり、カメラが動くとちらつく
+    // 表紙は背表紙の手前で止める。重なると同じ面が 2 枚になり、描画が乱れる
     addBox(book, w, cover, d - spine, 0, cover / 2, -spine / 2, color, cloth);
     addBox(book, w, cover, d - spine, 0, h - cover / 2, -spine / 2, color, cloth);
     // 背表紙の面だけは、テクスチャに本の色まで描いてある
@@ -1247,13 +1243,9 @@ function drawField() {
 // ランプ全体が画面の高さの LAMP_SCREEN_HEIGHT に収まる距離に置く。縦長の画面では幅にも合わせる
 function fitCamera() {
   const span = 2 * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
-  camDistance = Math.max(LAMP_HEIGHT / LAMP_SCREEN_HEIGHT / span, 2 * FOOT_RADIUS / LAMP_SCREEN_WIDTH / (span * camera.aspect));
-}
-
-function updateCamera(dt) {
-  swayPhase = (swayPhase + TAU / CAM_SWAY_PERIOD * dt) % TAU;
+  const distance = Math.max(LAMP_HEIGHT / LAMP_SCREEN_HEIGHT / span, 2 * FOOT_RADIUS / LAMP_SCREEN_WIDTH / (span * camera.aspect));
   const centerY = LAMP_HEIGHT / 2 - CAM_TARGET_DROP;
-  camera.position.set(Math.sin(swayPhase) * CAM_SWAY, centerY + CAM_RISE, camDistance);
+  camera.position.set(0, centerY + CAM_RISE, distance);
   camera.lookAt(0, centerY, 0);
 }
 
@@ -1279,7 +1271,6 @@ function tick(now) {
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
   updateWax(dt);
-  updateCamera(dt);
   drawField();
   renderer.render(scene, camera);
 }

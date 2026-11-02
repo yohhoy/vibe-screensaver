@@ -36,14 +36,12 @@ const WATER_LEVEL = 7.5;          // 水面の高さ
 const TANK_DEPTH = 3;             // 奥行き（前のガラスが z = +TANK_DEPTH/2、奥の壁が -TANK_DEPTH/2）
 const CURRENT_PERIOD = 220;       // 水流が水槽の中を縦に 1 周する秒数（手前から見て時計回り）
 
-// カメラ（水槽の正面。向きは変えずに、ゆっくり左右上下に漂う）
+// カメラ（水槽の正面）
 const CAM_DIST = 9;               // 水槽の奥行きの中央からの距離
 // 画面の下端・上端に映る高さ（奥行きの中央で。画角はこれで決める）。
 // 底と水面は描かないので、いちばん奥でも画面の外になるようにする
 const VIEW_BOTTOM = 0.9;
 const VIEW_TOP = 6.6;
-const CAM_DRIFT = [0.8, 0.2];     // 漂う幅 [横, 縦]
-const CAM_DRIFT_PERIOD = [97, 61];   // その周期（秒）
 
 // クラゲの形（ミズクラゲ風: 平たい傘に短い触手がびっしり、傘の上に 4 つの輪、傘の下に口腕）。
 // どのクラゲもほぼ同じ大きさ・形にする。長さ・幅は傘の半径に対する倍率
@@ -174,6 +172,7 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color().setRGB(...BACKGROUND, THREE.SRGBColorSpace);
 const camera = new THREE.PerspectiveCamera(VIEW_FOV, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, VIEW_CENTER_Y, CAM_DIST);
 
 // 線のぎざぎざを抑えるため、ブルーム用の描画先をマルチサンプルにする
 const composer = new EffectComposer(renderer,
@@ -300,8 +299,8 @@ const stoneX = (fx) => fx * (halfWidth - 0.5);
 // 画面の大きさに合わせて、水槽の横幅・水流・石の位置・奥の壁の大きさを決める
 function layout() {
   const tanHalf = Math.tan(VIEW_FOV * Math.PI / 360);
-  // 奥の壁で見える幅より、カメラが漂う分だけ広くする（左右の壁が画面に入らないように）
-  halfWidth = (CAM_DIST + TANK_DEPTH / 2) * tanHalf * camera.aspect + CAM_DRIFT[0] + 0.3;
+  // 奥の壁で見える幅より少し広くする（左右の壁が画面に入らないように）
+  halfWidth = (CAM_DIST + TANK_DEPTH / 2) * tanHalf * camera.aspect + 0.3;
   loop.a = Math.max(halfWidth - 0.8, 1);
   loop.b = WATER_LEVEL / 2 - 0.3;
   for (const st of stones) st.x = stoneX(st.fx);
@@ -700,15 +699,13 @@ const BUBBLE_OUTLINE = Array.from({ length: BUBBLE_SEGMENTS + 1 }, (_, i) => [i 
 const BUBBLE_GLINT = [[1.9, 0.6], [2.3, 0.6], [2.7, 0.6]];
 
 function drawBubbles() {
-  const e = camera.matrixWorld.elements;
-  const rx = e[0], ry = e[1], rz = e[2], ux = e[4], uy = e[5], uz = e[6];   // カメラの右・上の向き
   lines.setColor(BUBBLE_COLOR, BUBBLE_GLOW);
   for (const b of bubbles) {
     const dim = depthDim(b.z);
     for (const outline of [BUBBLE_OUTLINE, BUBBLE_GLINT]) {
       outline.forEach(([a, k], i) => {
         const c = Math.cos(a) * b.r * k, s = Math.sin(a) * b.r * k;
-        lines.polyTo(i, b.x + rx * c + ux * s, b.y + ry * c + uy * s, b.z + rz * c + uz * s, dim);
+        lines.polyTo(i, b.x + c, b.y + s, b.z, dim);
       });
     }
   }
@@ -729,16 +726,6 @@ function updateColors() {
   hueColor(hue, GONAD_COLOR, gonadColor);
   const b = BACKDROP_COLOR;
   backdrop.material.color.setHSL(hue, b.s, b.l).multiplyScalar(b.glow);
-}
-
-// ---- カメラ ----
-// 正面を向いたまま、ゆっくり左右上下に漂う
-function updateCamera() {
-  // 位相は JS で 0〜2π に収める
-  const x = CAM_DRIFT[0] * Math.sin((time / CAM_DRIFT_PERIOD[0] % 1) * TAU);
-  const y = VIEW_CENTER_Y + CAM_DRIFT[1] * Math.sin((time / CAM_DRIFT_PERIOD[1] % 1) * TAU);
-  camera.position.set(x, y, CAM_DIST);
-  camera.updateMatrixWorld();
 }
 
 // ---- シーン切替 ----
@@ -793,7 +780,6 @@ function replaceStreams() {
 // ---- メインループ ----
 function step(dt) {
   time += dt;
-  updateCamera();
   for (const j of jellies) j.update(dt);
   separateJellies(dt);
   updateBubbles(dt);

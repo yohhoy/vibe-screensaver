@@ -32,13 +32,11 @@ const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray,
 // ---- 設定 ----
 // 座標: 滝壺の水面が y = 0、滝の中心が x = 0。カメラは +z の側から -z の向きに滝を見る。長さの単位はメートルのつもり
 
-// カメラ（滝壺の手前から見上げ、ゆっくり漂う）
+// カメラ（滝壺の手前から見上げる）
 const CAM_POS = [0, 9, 88];
 const CAM_TARGET_Y = 23;          // 見る点の高さ
 const CAM_FOV = 46;
 const CAM_MIN_HFOV = 26;          // 横の画角の下限（度）。縦長の画面では縦の画角を広げて滝の幅を収める
-const CAM_SWAY = [9, 1.2, 5];     // 漂う幅 (x, y, z)
-const CAM_SWAY_PERIOD = [140, 47, 95];   // 漂う周期 (x, y, z)（秒）
 
 // 水量（倍率）
 const BASE_WATER = 1;
@@ -576,6 +574,8 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x000000, 0);
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.5, SKY_RADIUS * 1.5);
+camera.position.set(...CAM_POS);
+camera.lookAt(0, CAM_TARGET_Y, 0);
 
 // マルチサンプルにするのはシーンを描く描画先だけ。後段のブルームと合成までマルチサンプルにすると、全画面の処理がとても重くなる
 const sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -855,17 +855,17 @@ const coniferCardTexture = canvasTexture(RIM_TEXTURE_SIZE, (g, n) => {
 });
 
 // ---- 空 ----
-// カメラに付いて動く
+// カメラを中心に置く
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(SKY_RADIUS, 32, 16),
   new THREE.ShaderMaterial({ ...SkyShader, side: THREE.BackSide, depthWrite: false }));
 const skyUniforms = sky.material.uniforms;
 skyUniforms.uNoise.value = noiseTexture;
+sky.position.copy(camera.position);
 sky.renderOrder = 0.5;   // 崖や木のあとに描いて、隠れた所の計算を省く
 scene.add(sky);
 
 function updateSky() {
-  sky.position.copy(camera.position);
   skyUniforms.uCloudPhase.value = (time * CLOUD_SPEED) % 1;
 }
 
@@ -986,8 +986,8 @@ function scatter(geometry, material, count, place) {
   return mesh;
 }
 
-// カメラがどこへ漂っても画面に入らない位置か（画面の外に木や草木は置かない）
-const inView = (x, z) => Math.abs(x) < CAM_SWAY[0] + 12 + VIEW_SLOPE * (CAM_POS[2] + CAM_SWAY[2] - z);
+// 画面に入る位置か（画面の外に木や草木は置かない）
+const inView = (x, z) => Math.abs(x) < 12 + VIEW_SLOPE * (CAM_POS[2] - z);
 
 const triple = (v) => [v, v, v];
 
@@ -1098,7 +1098,7 @@ function rimTree() {
   }
 }
 
-// カメラの基準の位置に向けて立てた板を積む。遠い木を 1 枚の絵で描くのに使う。カメラの漂う幅より遠いので、向きは固定でよい。
+// カメラに向けて立てた板を積む。遠い木を 1 枚の絵で描くのに使う。
 // 中心 (x, y, z)、大きさの半分 halfW / halfH、手前へ出す量 forward、下と上の頂点の色 low / high、テクスチャの区画の数 cols × rows
 function addFacingCard(soup, x, y, z, halfW, halfH, forward, low, high, cols, rows) {
   const front = new THREE.Vector3(CAM_POS[0] - x, 0, CAM_POS[2] - z).normalize();
@@ -1716,12 +1716,6 @@ function updateRainbow() {
 }
 
 // ---- カメラ ----
-function updateCamera() {
-  const s = (i) => Math.sin(time * TAU / CAM_SWAY_PERIOD[i]) * CAM_SWAY[i];
-  camera.position.set(CAM_POS[0] + s(0), CAM_POS[1] + s(1), CAM_POS[2] + s(2));
-  camera.lookAt(camera.position.x * 0.2, CAM_TARGET_Y, 0);
-}
-
 // 縦長の画面では縦の画角を広げて、滝の幅が収まるようにする
 function fitCamera() {
   camera.aspect = innerWidth / innerHeight;
@@ -1812,7 +1806,6 @@ function step(dt) {
   updateFireflies(dt);
   updateShafts();
   updatePool();
-  updateCamera();
   updateSky();
 }
 
