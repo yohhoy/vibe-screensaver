@@ -1,19 +1,35 @@
 # 動画の書き出し
 
-SNS 投稿用などの動画は、画面を録画せずに 1 コマずつ描き出して作る。コマ落ちせず、出来事のタイミングも正確に合わせられる。
+SNS 投稿用などの動画は、`tools/video-export.mjs` で作る。画面を録画せずに 1 コマずつ描き出すので、コマ落ちせず、同じ種からは同じ映像ができる。形式は 1280×720・30fps の H.264 に固定している。
 
-投稿用の動画は 1280×720・30fps に固定する。
+```sh
+node tools/video-export.mjs waterfall --scenes 0,1,2 --seconds 5 --out out.mp4
+```
 
-1. コピーした HTML の `renderer.setAnimationLoop(tick)` を収録用の処理に置き換え、`tick(now)` を 1/FPS 秒ずつ進めて 1 コマずつ描く。
-2. 描いた画面を 2D canvas に `drawImage` で写し（フェードは `globalAlpha` と黒い下地で作る）、`toBlob` してローカルの Python サーバーへ `fetch` で送る。
-3. サーバーは受け取ったコマを ffmpeg（`-f image2pipe`）に流して H.264 にする。
+依存は Node.js（22 以降）、Google Chrome、ffmpeg（ffprobe を含む）。作品の HTML は変更しない。オプションの一覧は、引数なしで実行すると出る。
 
-## 落とし穴
+## 場面の指定
 
-- ヘッドレス Chrome の画面の大きさは `--window-size` どおりにならない（高さが奇数になることがあり、H.264 で失敗する）。収録の前に `renderer.setPixelRatio(1)`、`renderer.setSize(1280, 720)`、`camera.aspect` を固定する。
-- コマは JPEG（品質 0.95）で送る。PNG は 1 枚数 MB あり、約 500 枚で Chrome の Blob のメモリ上限に達して `fetch` が失敗する。
-- サーバーは HTTP/1.1 にして接続を使い回し、送信に失敗したら送り直す。
-- JPEG から作った動画は色の範囲がフルレンジ（`yuvj420p`）になる。最後に `-vf "scale=in_range=pc:out_range=tv,format=yuv420p"` で標準の範囲に変換する。
-- Chrome は `--user-data-dir` で普段のプロフィールと分ける。
-- 収録は数分かかるので、進み具合（景色・コマ数）をサーバーのログに出し、止まったら気づけるようにする。
-- 書き出した `*.mp4` は Git の管理外（`.gitignore`）。
+シーンの定義がある drone・ripple・waterfall は、`--scenes` に場面の番号を並べる。範囲外の番号を渡すと、エラーに場面の名前の一覧が出る。省くと、起動時に乱数で選ばれた場面だけを撮る（どの場面になるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+
+各場面の前に `--warmup` の秒数だけ進めてから収録を始める。起動直後は絵が揃っていない作品（パイプが伸びていない pipes など）では長めにする。
+
+## 出来事のタイミング
+
+`--at "秒:式"` で、動画の時刻に式を実行する。式は作品のスクリプトの中で評価するので、作品の変数と関数を使える。隠し要素もこれで呼び出す（式は各 HTML の `setupControls` の `keys` を見る）。
+
+```sh
+node tools/video-export.mjs aurora --seconds 15 --warmup 0 --at "1:startSanta()" --out santa.mp4
+```
+
+時刻は動画の中の秒で数える。`--warmup` の時間は含まない。
+
+## 確認
+
+動画の大きさ・コマ数・色の範囲は、書き出しのあとにツールが確かめる。合わなければエラーで止まり、動画は残さない。場面の中ほどが真っ暗なときは警告を出す。
+
+中身の確認は動画を開かず、まず `<出力先>.thumbs.jpg`（等間隔の 12 コマを並べた画像）を見る。`*.mp4` と `*.thumbs.jpg` は Git の管理外（`.gitignore`）。
+
+## 作品の暗転
+
+作品の暗転（`fadeAndRun`）は DOM の要素で作っていて canvas に写らない。収録中は暗転せずにすぐ切り替え、フェードはツールが `--fade` の秒数で各場面の最初と最後に入れる。canvas の外の DOM（操作ガイドなど）も動画には写らない。

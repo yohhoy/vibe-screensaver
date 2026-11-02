@@ -22,9 +22,10 @@
 | index.html | 作品一覧 |
 | docs/specs/ | 作品ごとの仕様 |
 | docs/images/ | README 用のサムネイル |
-| docs/video.md | 動画の書き出し手順 |
+| docs/video.md | 動画の書き出しツールの使い方 |
 | docs/performance.md | GPU 負荷の基準値 |
 | tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
+| tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。
 
@@ -145,4 +146,4 @@ setupControls({
   - 隠しキー: 「**C** キーですぐに呼び出せる（操作ガイドには表示しない）。」
   - 用語: 「操作ガイド」（HUD とは書かない）、`MSAA`、「起動時」、`canvas`
 
-SNS 投稿用などの動画の書き出し手順は [docs/video.md](docs/video.md) にある。
+SNS 投稿用などの動画の書き出し方は [docs/video.md](docs/video.md) にある。

@@ -11,7 +11,7 @@
 
 ## 動画の書き出し
 
-SNS 投稿用などの動画を作るときは、先に [docs/video.md](docs/video.md) を読む（1 コマずつ描き出す手順と落とし穴）。
+SNS 投稿用などの動画は `node tools/video-export.mjs` で作る。先に [docs/video.md](docs/video.md) を読む（使い方と確認のしかた）。
 
 ## Git
 
