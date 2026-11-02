@@ -100,6 +100,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 次の景色 / 強度: 水量
 
+## [溶岩ランプ](https://yohhoy.github.io/vibe-screensaver/lavalamp.html)
+
+[<img src="docs/images/lavalamp.jpg" width="480" alt="溶岩ランプ">](https://yohhoy.github.io/vibe-screensaver/lavalamp.html)
+
+暗い部屋の溶岩ランプ。色付きの蝋がゆっくり昇り降りし、ちぎれたり融合したりします。
+
+シーン切替: 新しい配色 / 強度: 温度
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

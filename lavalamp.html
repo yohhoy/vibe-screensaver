@@ -1,0 +1,1309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lava Lamp</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: リセット / F・ダブルクリック: 全画面 / ↑↓: 温度</span>
+  <span class="touch-only">左右スワイプ: リセット / 上下スワイプ: 温度</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+
+// ---- 設定 ----
+// 色はすべて画面に出る値 (0..1)。長さの基準はテーブルの上面（y = 0）
+
+// カメラ（正面から見て、ごくわずかに左右へ揺れる）
+const CAM_FOV = 30;
+const LAMP_SCREEN_HEIGHT = 0.85;  // ランプの中心の面で、ランプの高さが画面の高さに占める割合（手前に張り出す裾まで含めると 9 割ほど）
+const LAMP_SCREEN_WIDTH = 0.7;    // 縦長の画面で、瓶と台座の幅が画面の幅に占める割合の上限
+const CAM_RISE = 1.2;             // ランプの中心から見たカメラの高さ
+const CAM_SWAY = 0.7;             // 左右の揺れ幅
+const CAM_SWAY_PERIOD = 90;       // 左右に揺れる周期（秒）
+const CAM_TARGET_DROP = 0.1;      // 見る点をランプの中心から下げる量
+
+// ランプの形（古典的な溶岩ランプの比率）。曲線を避け、ほぼ直線でつなぐ
+const BASE_HEIGHT = 3.1;              // 台座の高さ（砂時計形）
+const BOTTLE_HEIGHT = 5.35;
+const CAP_HEIGHT = 0.7;
+const LAMP_HEIGHT = BASE_HEIGHT + BOTTLE_HEIGHT + CAP_HEIGHT;
+const FOOT_RADIUS = 1.55;             // 台座の裾の半径
+const WAIST_RADIUS = 0.64;            // 台座のくびれの半径
+const WAIST_Y = BASE_HEIGHT / 2;      // 台座のくびれの高さ（台座の中央）
+const BOTTLE_BOTTOM_RADIUS = 1.29;    // 瓶の下端の半径
+const BOTTLE_WIDE_RADIUS = 1.5;       // 瓶のいちばん太い所の半径（肩の直線をのばした値）
+const BOTTLE_TOP_RADIUS = 0.76;       // 瓶の上端の半径
+const BOTTLE_SHOULDER = 0.2;          // 瓶の丸みが終わり、直線になる高さ（瓶の高さに対する割合）
+const CAP_BOTTOM_RADIUS = 0.81;
+const CAP_TOP_RADIUS = 0.65;
+const LATHE_SEGMENTS = 64;            // 瓶・台座・キャップの周方向の分割数
+const BOTTLE_CURVE_STEPS = 16;        // 瓶の下端の丸みの分割数
+// 台座とキャップの金属（銀）
+const METAL_COLOR = [0.62, 0.64, 0.68];
+const METAL_SPEC = 0.5;               // 映り込みの明るさ
+
+// 配色（壁一面に並んだ溶岩ランプの写真から取った色）。
+// waxHot: 電球に近い所の蝋、wax: 上の方の蝋、liquidBright: 下の方の液体、liquidDeep: 上の方の液体
+const PALETTES = [
+  { waxHot: [1, 0.82, 0.25], wax: [1, 0.17, 0.2], liquidBright: [0.95, 0.12, 0.42], liquidDeep: [0.34, 0.1, 0.52] },    // 赤い蝋と紫の液体
+  { waxHot: [0.86, 1, 0.22], wax: [0.32, 0.76, 0.16], liquidBright: [0, 0.5, 0.56], liquidDeep: [0.03, 0.22, 0.38] },   // 緑の蝋と青緑の液体
+  { waxHot: [1, 0.96, 0.42], wax: [1, 0.84, 0.2], liquidBright: [1, 0.16, 0.24], liquidDeep: [0.84, 0.08, 0.36] },      // 黄色の蝋と赤い液体
+  { waxHot: [1, 0.86, 0.26], wax: [0.96, 0.36, 0.1], liquidBright: [0.08, 0.3, 0.62], liquidDeep: [0.04, 0.1, 0.34] },  // 橙の蝋と紺の液体
+  { waxHot: [0.8, 1, 0.3], wax: [0.26, 0.72, 0.3], liquidBright: [0.1, 0.3, 0.78], liquidDeep: [0.12, 0.1, 0.46] },     // 緑の蝋と青紫の液体
+];
+const HUE_JITTER = 0.012;             // 配色ごとの色相のばらつき（色相環 1 周が 1）
+
+// 部屋
+const WALL_Z = -6;
+const ROOM_SIZE = [200, 80];          // 壁の幅と高さ、テーブルの幅と奥行き
+const WALL_COLOR = 0.012;             // 光が届かない所の壁の明るさ
+const TABLE_COLOR = 0.008;            // 光が届かない所のテーブルの明るさ
+const GLOW_LIQUID_MIX = 0.35;         // 部屋に広がる光のうち、液体の色の割合
+const GLOW_BRIGHT = 1.05;             // 蝋がすべて溜まっているときの部屋の明るさ
+const GLOW_BLOCKED = 0.28;            // 蝋がすべて浮かんだときに暗くなる量
+const GLOW_FLICKER = 0.025;           // 部屋の明るさの揺らぎの幅
+const GLOW_FLICKER_SPEED = 0.35;      // 部屋の明るさの揺らぎの速さ（ラジアン/秒）
+const WALL_GLOW = 0.2;                // 壁に届く光の強さ
+const WALL_GLOW_Y = BASE_HEIGHT + BOTTLE_HEIGHT * 0.32;   // 壁の光の中心の高さ
+const WALL_GLOW_SIZE = [8, 7];        // 壁の光の広がり（横, 縦）
+const TABLE_GLOW = 0.16;              // テーブルに届く光の強さ
+const TABLE_STREAK = 0.2;             // テーブルの映り込みの強さ
+const HALO_GLOW = 0.22;               // 瓶のまわりのにじみの強さ
+const HALO_Y = BASE_HEIGHT + BOTTLE_HEIGHT * 0.34;        // にじみの中心の高さ
+const HALO_SIZE = [2, 3.1];           // にじみの広がり（横, 縦）
+const HALO_PLANE = [10, 16];          // にじみを描く四角の大きさ（端の光が見えなくなる範囲まで）
+const HALO_Z = 2;                     // にじみを描く四角の奥行きの位置
+
+// 小物（机の上の本と鉢植え）。色は光が十分に当たったときの地の色
+const PROP_LIGHT_Y = BASE_HEIGHT + BOTTLE_HEIGHT * 0.25;   // 小物を照らす光の高さ（瓶の中）
+const PROP_AMBIENT = 0.05;            // 光が届かない所の明るさ（地の色に対する割合）
+const PROP_LIGHT = 2.4;               // ランプの光の強さ
+const PROP_LIGHT_FALLOFF = 30;        // 光が半分に弱まる距離の 2 乗
+const PROP_LIGHT_WRAP = 0.45;         // 光の回り込み（0: 光に向いた面だけ、大きいほど裏まで明るい）
+const PROP_SHADOW = 0.6;              // 小物の足もとの影の濃さ (0..1)
+// 本の色。本ごとに重ならないように選ぶ。色の数が積める本の数の上限になる
+const BOOK_COLORS = [
+  [0.5, 0.17, 0.12], [0.16, 0.34, 0.36], [0.56, 0.42, 0.18], [0.26, 0.2, 0.4],
+  [0.62, 0.56, 0.44], [0.2, 0.36, 0.22], [0.46, 0.14, 0.24], [0.14, 0.2, 0.34],
+];
+const PAGE_COLOR = [0.78, 0.74, 0.62];
+// 本の山（起動時とリセットのたびに選び直す）
+const BOOK_COUNT = [3, 8];            // 積む冊数の範囲
+const BOOK_WIDTH = [3.1, 4.7];        // 本の幅の範囲。積む順番によらず選ぶ
+const BOOK_DEPTH_RATIO = 0.7;         // 本の奥行き（幅に対する割合）
+const BOOK_THICKNESS = [0.42, 0.72];  // 本の厚さの範囲
+const BOOK_YAW = 0.2;                 // 本の向きのばらつきの最大（ラジアン）
+const BOOK_SPINE_FRONT_CHANCE = 0.7;  // 背表紙を手前に向ける確率
+const BOOK_COVER_THICKNESS = 0.07;    // 表紙の厚さ
+const BOOK_COVER_OVERHANG = 0.06;     // ページの束より表紙がはみ出す長さ
+const BOOK_SPINE_THICKNESS = 0.1;     // 背表紙の厚さ
+const BOOK_GOLD = '#c9ab62';          // 背表紙の金の線と飾りの色
+const PROP_ATLAS_SIZE = 1024;         // 本と鉢のテクスチャの大きさ（ピクセル）
+const PAGE_PIXELS_PER_UNIT = 100;     // ページの束のテクスチャの細かさ（厚さ 1 あたりのピクセル数）
+const POT_COLOR = [0.7, 0.38, 0.25];
+const SOIL_COLOR = [0.08, 0.06, 0.05];
+const POT_HEIGHT = 2.5;
+const POT_TURN = 1.2;                 // 鉢の模様を回す最大の角度（ラジアン）。テクスチャの継ぎ目が手前に来ない範囲
+const LEAF_COUNT = 13;
+const LEAF_LENGTH = [6.8, 4.2];       // 葉の長さ（内側の葉, 外側の葉）
+const LEAF_WIDTH = [0.82, 1.02];      // 葉の幅（内側の葉, 外側の葉）
+const LEAF_CUP = 0.13;                // 葉の中央のくぼみの深さ（葉の幅に対する割合）
+const LEAF_LEAN = [0.03, 0.2];        // 葉の開く角度（内側の葉, 外側の葉。ラジアン）
+const LEAF_BEND = [0.03, 0.14];       // 葉の先の反り（内側の葉, 外側の葉。葉の長さに対する割合）
+const LEAF_TWIST = 0.35;              // 葉のねじれの最大（ラジアン）
+const LEAF_ROWS = 18;                 // 葉の長さ方向の分割数
+const LEAF_COLUMNS = 6;               // 葉の幅方向の分割数
+const LEAF_TEXTURE_SIZE = [256, 1024];   // 葉のテクスチャの大きさ（ピクセル）
+const LEAF_TEXTURE_LENGTH = 7;        // テクスチャ 1 枚が覆う葉の長さ
+const LEAF_BASE_COLOR = '#1d3c29';    // 葉の地の濃い緑
+const LEAF_BAND_COLOR = '#8aa582';    // 葉の横縞の淡い緑
+const LEAF_MARGIN_COLOR = '#c6bd5f';  // 葉のふちの黄色
+const LEAF_BAND_GAP = [26, 70];       // 葉の横縞の間隔（ピクセル）
+const LEAF_MARGIN_WIDTH = [0.07, 0.11];   // 葉のふちの幅（テクスチャの幅に対する割合）
+const LEAF_TRANSLUCENT = 0.3;         // 葉の裏から透ける光の強さ
+const LEAF_SHEEN = 0.24;              // 葉のつやの強さ
+const LEAF_GLOSS = 28;                // 葉のつやの鋭さ（大きいほど細い光になる）
+const LEAF_BASE_SHADE = 0.42;         // 根もとの陰の明るさ（葉の先に対する割合）
+
+// 蝋（瓶の高さを FIELD_HEIGHT とする座標で動かす。x は瓶の中心から、y は瓶の下端から）
+const FIELD_HEIGHT = 6.6;
+const FIELD_SCALE = FIELD_HEIGHT / BOTTLE_HEIGHT;      // ランプの長さから蝋の座標への倍率
+const FIELD_HALF_WIDTH = BOTTLE_WIDE_RADIUS * FIELD_SCALE;
+const WAX_AREA = [5.5, 8];            // 蝋の総量（断面の面積）
+const POOL_KEEP = 2;                  // 底の溜まりに残す量。これより少ないと新しい塊を出さない
+const BLOB_RADIUS = [0.35, 0.72];     // 新しい塊の半径（温度 1 のとき）
+const MAX_BLOBS = [5, 9];             // 浮かぶ塊の数の上限（温度 1 のとき）
+const RISE_SPEED = 0.37;              // 最も熱い塊が昇る速さ（1 秒あたり）
+const COOL_TIME = 100;                // 冷める時間。半径 1 の塊の時定数（秒）。小さい塊ほど早く冷めて途中で引き返す
+const VELOCITY_TIME = 1.5;            // 速さが目標に追いつく時定数（秒）
+const FEEDING_SPEED = 0.4;            // 蝋を受け取っている間の速さの倍率
+const BLOB_EDGE = 0.8;                // 壁や溜まりに触れたとみなす、塊のふちの位置（半径に対する割合）
+const WANDER_SPEED = 0.05;            // 左右にさまよう速さ
+const WANDER_RATE = [0.15, 0.3];      // 左右にさまよう周期の速さ（ラジアン/秒）
+const SPIN_RATE = [0.08, 0.2];        // 形がゆらぐ速さ（ラジアン/秒）
+const STRETCH = 0.9;                  // 動く速さに応じて縦に伸びる度合い
+const STRETCH_MAX = 0.3;              // 縦に伸びる割合の上限
+const LOBE_MAIN = 0.84;               // 塊の中心の玉の半径（塊の半径に対する割合）
+const LOBE_SIDES = [0.56, 0.52];      // 中心のまわりを回る 2 つの玉の半径（塊の半径に対する割合）
+const LOBE_OFFSET = 0.42;             // まわりの玉と中心の距離（塊の半径に対する割合）
+const BLOB_START_AREA = 0.01;         // 生まれたばかりの塊の面積
+const BLOB_SPAWN_RANGE = 0.9;         // 塊が生まれる位置の左右の範囲
+const BLOB_GONE_AREA = 0.012;         // これより小さくなった塊は片付ける
+const FEED_RATE = 0.4;                // 塊が溜まりから蝋を受け取る速さ（面積/秒）
+const ABSORB_RATE = 0.5;              // 塊が溜まりへ戻る速さ（面積/秒）
+const NECK_LENGTH = 1.3;              // 塊が溜まりから離れるとき、首を引いてちぎれるまでの距離
+const NECK_WIDTH = 0.52;              // 首の太さ（塊の半径に対する割合）
+const NECK_MIN_RADIUS = 0.2;           // 首の太さを決めるときの、塊の半径の下限
+const NECK_BEADS = 3;                 // 首を作る玉の数
+const MERGE_DISTANCE = 0.8;           // 融合を始める距離（2 つの半径の和に対する割合）
+const MERGE_RATE = 0.5;               // 融合するとき、蝋が移る速さ（面積/秒）
+const MERGE_PULL = 0.8;               // 融合するとき、小さい塊が大きい塊へ寄る速さ（1 秒あたりの割合）
+const MERGE_WAIT = 12;                // 分かれてから、また融合できるようになるまでの秒数
+const MAX_MERGED_AREA = 3;            // 融合してできる塊の面積の上限
+const SPLIT_AREA = 1.4;               // これより大きい塊は、ときどきちぎれて 2 つに分かれる
+const SPLIT_CHANCE = 0.03;            // 分かれる確率（1 秒あたり）
+const SPLIT_TEMP_GAP = 0.2;           // 分かれた塊の温度の差（0..1）
+const SPLIT_OFFSET = [0.2, 0.05];     // 分かれた塊の、親からのずれの最大（横, 縦）
+const SPLIT_PARENT_KEEP = 0.05;       // 分かれるとき、親の塊に残す最小の量
+const EMIT_BOTTOM = [4, 10];          // 底から次の塊を出すまでの秒数
+const EMIT_BOTTOM_MARGIN = 0.1;        // 底の溜まりに POOL_KEEP よりこれだけ余裕がないと、新しい塊を出さない
+const EMIT_TOP = [8, 20];             // 上の溜まりから次の塊を落とすまでの秒数
+const TOP_RELEASE_BOOST = 2.5;        // 上の溜まりが厚いほど、早く次の塊を落とす度合い（溜まり続けて太い帯にならないように）
+const TOP_POOL_MIN = 0.4;             // 上の溜まりがこれより少ないと、塊を落とさない
+const FIRST_BLOB_DELAY = 5;           // 起動・リセットから最初の塊が昇り始めるまでの秒数（温度 1 のとき）
+const POOL_WAVE_SPEED = [0.17, 0.11]; // 溜まりの表面のうねりの速さ（ラジアン/秒）
+
+// 温度（倍率）
+const BASE_HEAT = 1;
+const MIN_HEAT = 0.5;
+const MAX_HEAT = 3;
+const HEAT_STEP = 1.25;               // ↑↓ 1回あたりの倍率
+// 温度による変化。それぞれ「温度 ^ 指数」倍にする
+const HEAT_SPEED_EXP = 0.8;           // 動きの速さ（温度 3 で約 2.4 倍）
+const HEAT_RADIUS_EXP = -0.35;        // 新しい塊の半径（温度 3 で約 0.7 倍）
+const HEAT_COUNT_EXP = 0.6;           // 塊の数の上限（温度 3 で約 1.9 倍）
+
+// 描画
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1.5 };   // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+const FIELD_RESOLUTION = { pc: 512, touch: 320 };   // 蝋の濃さを描く描画先の高さ（ピクセル）
+
+// ---- ユーティリティ ----
+// 濃さの山の形 (1 - d²)² は、濃さが 0.5 になる半径が山の幅のこの割合になる
+const KERNEL_ISO = 0.54;
+const blobRadius = (area) => Math.sqrt(area / Math.PI);
+// 蝋の面積から溜まりの厚みを求める。上の溜まりは瓶が細いぶん厚くなる
+const bottomThickness = (area) => area / (2 * FIELD_HALF_WIDTH);
+const topThickness = (area) => bottomThickness(area) * BOTTLE_WIDE_RADIUS / BOTTLE_TOP_RADIUS;
+// 瓶の半径（t: 瓶の高さに対する割合）。上は直線で、下端だけ丸める
+function bottleRadius(t) {
+  const line = (x) => BOTTLE_TOP_RADIUS + (BOTTLE_WIDE_RADIUS - BOTTLE_TOP_RADIUS) * (1 - x) / (1 - BOTTLE_SHOULDER);
+  if (t >= BOTTLE_SHOULDER) return line(t);
+  const u = t / BOTTLE_SHOULDER;
+  const control = line(BOTTLE_SHOULDER / 2);
+  return (1 - u) ** 2 * BOTTLE_BOTTOM_RADIUS + 2 * u * (1 - u) * control + u ** 2 * line(BOTTLE_SHOULDER);
+}
+// シェーダーに埋め込む数値
+const glsl = (v) => v.toFixed(4);
+const glslVec3 = (v) => `vec3(${v.map(glsl).join(', ')})`;
+
+// ---- シェーダー ----
+// 画面の階調の段差を隠す、ごく小さなノイズ
+const DITHER = /* glsl */ `
+  float dither() {
+    return (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  }
+`;
+// x が center に近いほど 1 になる、映り込みの筋
+const BAND = /* glsl */ `
+  float band(float x, float center, float width) {
+    return smoothstep(width, 0.0, abs(x - center));
+  }
+`;
+
+// 蝋の濃さ（1）: 底と上の溜まり。全面を 1 枚の四角で描く
+const PoolShader = {
+  vertex: /* glsl */ `
+    varying vec2 vPos;
+    void main() {
+      vPos = position.xy;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    uniform float uBottom, uTop;
+    uniform vec2 uPhase;
+    varying vec2 vPos;
+    void main() {
+      float u = vPos.x / ${glsl(FIELD_HALF_WIDTH)};
+      float wave = sin(u * 2.6 + uPhase.x) * 0.07 + sin(u * 5.3 - uPhase.y) * 0.035;
+      float dome = 1.0 - 0.22 * u * u;   // 中央が盛り上がる
+      float bottom = uBottom * dome + wave * min(1.0, uBottom * 4.0) - vPos.y;
+      float top = uTop * dome - wave * min(1.0, uTop * 4.0) - (${glsl(FIELD_HEIGHT)} - vPos.y);
+      // 面で濃さが 0.5 になり、内側へなめらかに 1 へ近づく。折れ目があると陰影に線が出る
+      gl_FragColor = vec4(smoothstep(-0.4, 0.4, bottom) + smoothstep(-0.4, 0.4, top));
+    }
+  `,
+};
+
+// 蝋の濃さ（2）: 塊ごとのぼかした円。加算で重ねると、近づいた塊がなめらかにつながる
+const KernelShader = {
+  vertex: /* glsl */ `
+    attribute vec4 aKernel;   // xy: 中心、zw: 幅
+    varying vec2 vPos;
+    void main() {
+      vPos = position.xy;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(aKernel.xy + position.xy * aKernel.zw, 0.0, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    varying vec2 vPos;
+    void main() {
+      float k = max(0.0, 1.0 - dot(vPos, vPos));
+      gl_FragColor = vec4(k * k);
+    }
+  `,
+};
+
+// 瓶。蝋の濃さが 0.5 を超えた所を蝋として描き、濃さの変化から面の向きを求めて陰影を付ける
+const BottleShader = {
+  vertex: /* glsl */ `
+    varying vec2 vUv;
+    varying vec3 vNormal;
+    void main() {
+      // 蝋は瓶の形によらず同じ座標で描き、瓶からはみ出す所はガラスで切れて見える
+      vUv = vec2(0.5 + 0.5 * position.x / ${glsl(BOTTLE_WIDE_RADIUS)}, position.y / ${glsl(BOTTLE_HEIGHT)});
+      vNormal = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    uniform sampler2D uField;
+    uniform vec2 uTexel;
+    uniform float uSlope;
+    uniform vec3 uWaxHot, uWax, uLiquidBright, uLiquidDeep;
+    varying vec2 vUv;
+    varying vec3 vNormal;
+    ${DITHER}
+    ${BAND}
+    void main() {
+      float f = texture2D(uField, vUv).r;
+      vec2 slope = vec2(
+        texture2D(uField, vUv + vec2(uTexel.x, 0.0)).r - texture2D(uField, vUv - vec2(uTexel.x, 0.0)).r,
+        texture2D(uField, vUv + vec2(0.0, uTexel.y)).r - texture2D(uField, vUv - vec2(0.0, uTexel.y)).r
+      ) * uSlope * smoothstep(2.0, 0.5, f);   // 陰影はふちだけに付ける。内側まで付けると、重ねた円の境目が筋に見える
+      float edge = max(fwidth(f), 0.004);
+      float waxMask = smoothstep(0.5 - edge, 0.5 + edge, f);
+
+      float bulb = exp(-vUv.y * 2.4);                     // 下の電球の光
+      vec3 n = normalize(vec3(-slope * 0.3, 1.0));        // 蝋の面の向き
+      float under = max(0.0, dot(n, vec3(0.0, -0.8, 0.6)));   // 下を向いた面ほど電球に照らされる
+      // 蝋は電球の近くで黄色く光り、上の方では暗くなって、液体に溶け込むように半透明に見える
+      vec3 wax = mix(uWax, uWaxHot, smoothstep(0.35, 0.95, bulb)) * (0.62 + 0.3 * bulb + 0.3 * under);
+      vec3 liquid = mix(uLiquidDeep, uLiquidBright, smoothstep(0.08, 0.75, bulb)) * (0.82 + 0.28 * bulb);
+      liquid += uWax * 0.1 * min(f, 1.0);                 // 蝋のまわりの液体も染まる
+      vec3 color = mix(liquid, wax, waxMask * mix(0.68, 1.0, smoothstep(0.1, 0.6, bulb)));
+
+      // 瓶のふちは暗くし、細い映り込みを足す
+      color *= mix(0.42, 1.0, smoothstep(0.0, 0.6, vNormal.z));
+      float fade = 0.55 + 0.45 * vUv.y;
+      color += 0.2 * fade * band(vNormal.x, -0.62, 0.07) + 0.08 * fade * band(vNormal.x, 0.74, 0.04);
+      gl_FragColor = vec4(color + dither(), 1.0);
+    }
+  `,
+};
+
+// 台座とキャップ。暗い部屋の金属なので、瓶に近い所を照らし、縦の映り込みを足すだけにする
+const MetalShader = {
+  vertex: /* glsl */ `
+    varying vec3 vNormal;
+    varying float vSeam;
+    uniform float uSeam;
+    void main() {
+      vNormal = normalize(normalMatrix * normal);
+      vSeam = abs(position.y - uSeam);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    uniform vec3 uGlow;
+    varying vec3 vNormal;
+    varying float vSeam;
+    ${DITHER}
+    ${BAND}
+    void main() {
+      vec3 n = normalize(vNormal);
+      float near = exp(-vSeam * 1.1);   // 瓶との境目ほど明るい
+      float facing = smoothstep(0.0, 0.9, n.z);
+      vec3 metal = ${glslVec3(METAL_COLOR)};
+      vec3 color = metal * (0.13 + 0.17 * facing) + metal * uGlow * near * (0.4 + 0.6 * facing);
+      color += uGlow * 0.07 * facing;
+      color += ${glsl(METAL_SPEC)} * (0.42 * band(n.x, -0.52, 0.16) + 0.2 * band(n.x, 0.6, 0.1));
+      gl_FragColor = vec4(color + dither(), 1.0);
+    }
+  `,
+};
+
+// 部屋の壁とテーブル。ランプの光は、なめらかな山で描くだけにする
+const roomVertex = /* glsl */ `
+  varying vec3 vWorld;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xyz;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+const WallShader = {
+  vertex: roomVertex,
+  fragment: /* glsl */ `
+    uniform vec3 uGlow;
+    uniform float uLevel;
+    varying vec3 vWorld;
+    ${DITHER}
+    void main() {
+      vec2 d = (vWorld.xy - vec2(0.0, ${glsl(WALL_GLOW_Y)})) / vec2(${WALL_GLOW_SIZE.map(glsl).join(', ')});
+      vec3 color = vec3(${glsl(WALL_COLOR)}) + uGlow * uLevel * ${glsl(WALL_GLOW)} * exp(-dot(d, d));
+      gl_FragColor = vec4(color + dither(), 1.0);
+    }
+  `,
+};
+const TableShader = {
+  vertex: roomVertex,
+  fragment: /* glsl */ `
+    uniform vec3 uGlow;
+    uniform float uLevel;
+    varying vec3 vWorld;
+    ${DITHER}
+    void main() {
+      float r = length(vWorld.xz);
+      float wide = exp(-r * r / 40.0);
+      // つやのある天板に、ランプの映り込みが手前へ細長くのびる
+      float front = smoothstep(0.0, 1.0, vWorld.z);
+      float streak = front * exp(-vWorld.x * vWorld.x / 2.2) * exp(-vWorld.z / 7.0);
+      vec3 color = vec3(${glsl(TABLE_COLOR)}) + uGlow * uLevel * (${glsl(TABLE_GLOW)} * wide + ${glsl(TABLE_STREAK)} * streak);
+      color *= smoothstep(${glsl(FOOT_RADIUS)} * 0.95, ${glsl(FOOT_RADIUS)} * 1.35, r);   // 台座の接地の影
+      gl_FragColor = vec4(color + dither(), 1.0);
+    }
+  `,
+};
+// 瓶のまわりのにじみ。ブルームは使わず、加算の四角 1 枚で見せる
+const HaloShader = {
+  vertex: roomVertex,
+  fragment: /* glsl */ `
+    uniform vec3 uGlow;
+    uniform float uLevel;
+    varying vec3 vWorld;
+    ${DITHER}
+    void main() {
+      vec2 d = (vWorld.xy - vec2(0.0, ${glsl(HALO_Y)})) / vec2(${HALO_SIZE.map(glsl).join(', ')});
+      gl_FragColor = vec4(uGlow * uLevel * ${glsl(HALO_GLOW)} * exp(-dot(d, d)) + dither(), 1.0);
+    }
+  `,
+};
+
+// 小物の光。ランプの光だけで照らす。three.js のライトと影の計算は使わない
+const PROP_LIGHTING = /* glsl */ `
+  uniform vec3 uGlow;
+  uniform float uLevel;
+  const vec3 LAMP_POSITION = vec3(0.0, ${glsl(PROP_LIGHT_Y)}, 0.0);
+  // cosine: 面の向きと光の向きの内積、d2: ランプまでの距離の 2 乗
+  float lampLight(float cosine, float d2) {
+    float wrap = ${glsl(PROP_LIGHT_WRAP)};
+    return ${glsl(PROP_LIGHT)} * max(0.0, (cosine + wrap) / (1.0 + wrap)) / (1.0 + d2 / ${glsl(PROP_LIGHT_FALLOFF)});
+  }
+`;
+
+// 小物
+const PropShader = {
+  vertex: /* glsl */ `
+    attribute vec3 aColor;
+    varying vec3 vColor;
+    varying vec2 vUv;
+    varying vec3 vWorld;
+    varying vec3 vWorldNormal;
+    void main() {
+      vColor = aColor;
+      vUv = uv;
+      vWorld = position;     // 頂点はすべて机の座標で持つ
+      vWorldNormal = normal;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    uniform sampler2D uPropMap;
+    varying vec3 vColor;
+    varying vec2 vUv;
+    varying vec3 vWorld;
+    varying vec3 vWorldNormal;
+    ${PROP_LIGHTING}
+    ${DITHER}
+    void main() {
+      vec3 toLight = LAMP_POSITION - vWorld;
+      float d2 = dot(toLight, toLight);
+      float light = lampLight(dot(normalize(vWorldNormal), toLight / sqrt(d2)), d2);
+      vec3 albedo = vColor * texture2D(uPropMap, vUv).rgb;   // 本以外はテクスチャの白い所を読む
+      gl_FragColor = vec4(albedo * (${glsl(PROP_AMBIENT)} + uGlow * uLevel * light) + dither(), 1.0);
+    }
+  `,
+};
+
+// サンスベリアの葉。テクスチャの模様に、裏から透ける光・つや・根もとの陰を足す
+const LeafShader = {
+  vertex: /* glsl */ `
+    varying vec2 vUv;
+    varying vec3 vWorld;
+    varying vec3 vWorldNormal;
+    void main() {
+      vUv = uv;
+      vWorld = position;     // 頂点はすべて机の座標で持つ
+      vWorldNormal = normal;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    uniform sampler2D uLeafMap;
+    varying vec2 vUv;
+    varying vec3 vWorld;
+    varying vec3 vWorldNormal;
+    ${PROP_LIGHTING}
+    ${DITHER}
+    void main() {
+      vec3 toLight = LAMP_POSITION - vWorld;
+      float d2 = dot(toLight, toLight);
+      vec3 l = toLight / sqrt(d2);
+      vec3 n = normalize(vWorldNormal) * (gl_FrontFacing ? 1.0 : -1.0);   // 葉は表と裏の両面を描く
+      float cosine = dot(n, l);
+      float light = lampLight(cosine, d2) + ${glsl(LEAF_TRANSLUCENT)} * lampLight(-cosine, d2);
+      float base = smoothstep(${glsl(POT_HEIGHT)}, ${glsl(POT_HEIGHT + 1.8)}, vWorld.y);
+      vec3 color = texture2D(uLeafMap, vUv).rgb * (${glsl(PROP_AMBIENT)} + uGlow * uLevel * light);
+      color *= mix(${glsl(LEAF_BASE_SHADE)}, 1.0, base);
+      vec3 h = normalize(l + normalize(cameraPosition - vWorld));
+      float sheen = pow(max(0.0, dot(n, h)), ${glsl(LEAF_GLOSS)}) * ${glsl(LEAF_SHEEN)} * lampLight(1.0, d2);
+      gl_FragColor = vec4(color + uGlow * uLevel * sheen + dither(), 1.0);
+    }
+  `,
+};
+
+// 小物の足もとの影。机の上にぼかした楕円を重ねる
+const PropShadowShader = {
+  vertex: /* glsl */ `
+    varying vec2 vPos;
+    void main() {
+      vPos = uv * 2.0 - 1.0;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragment: /* glsl */ `
+    varying vec2 vPos;
+    void main() {
+      float k = max(0.0, 1.0 - dot(vPos, vPos));
+      gl_FragColor = vec4(0.0, 0.0, 0.0, ${glsl(PROP_SHADOW)} * k * k);
+    }
+  `,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.5, 200);
+
+// 蝋の濃さを描く描画先
+const fieldHeight = IS_TOUCH ? FIELD_RESOLUTION.touch : FIELD_RESOLUTION.pc;
+const fieldWidth = Math.round(fieldHeight * 2 * FIELD_HALF_WIDTH / FIELD_HEIGHT);
+const fieldTarget = new THREE.WebGLRenderTarget(fieldWidth, fieldHeight, {
+  type: THREE.HalfFloatType,   // 8 ビットだと濃さの段差が陰影の縞になる
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false,
+});
+const fieldScene = new THREE.Scene();
+const fieldCamera = new THREE.OrthographicCamera(-FIELD_HALF_WIDTH, FIELD_HALF_WIDTH, FIELD_HEIGHT, 0, -1, 1);
+const shaderMaterial = (shader, options) => new THREE.ShaderMaterial({
+  vertexShader: shader.vertex, fragmentShader: shader.fragment, ...options,
+});
+const addBlending = {
+  transparent: true, depthTest: false, depthWrite: false,
+  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+};
+
+// ---- 状態 ----
+let heat = BASE_HEAT;           // 温度（倍率）
+let camDistance = 0;            // カメラの距離（画面の大きさで決まる）
+let swayPhase = 0;              // カメラの左右の揺れの位相 (0..TAU)
+const wavePhase = new THREE.Vector2();   // 溜まりの表面のうねりの位相 (0..TAU)
+let flickerPhase = 0;           // 部屋の光の揺らぎの位相 (0..TAU)
+let totalWax = 0;               // 蝋の総量
+let maxBlobs = 0;               // 浮かぶ塊の数の上限（温度 1 のとき）
+const pool = { bottom: 0, top: 0 };   // 溜まりの蝋の量
+let blobs = [];                 // 浮かんでいる塊
+let bottomWait = 0;             // 底から次の塊を出すまでの秒数
+let topWait = 0;                // 上から次の塊を落とすまでの秒数
+let palette = null;             // いまの配色
+
+// ---- ランプと部屋 ----
+const waxHotColor = new THREE.Color();
+const waxColor = new THREE.Color();
+const liquidBrightColor = new THREE.Color();
+const liquidDeepColor = new THREE.Color();
+const glowColor = new THREE.Color();
+const glowLevel = { value: 1 };   // 部屋に届く光の明るさ
+
+// 下から上へ並べた [半径, 高さ] の断面を回して形を作る
+const lathe = (points) => new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(r, y)), LATHE_SEGMENTS);
+
+// 瓶・台座・キャップ。角の前後に短い区間を入れ、長い面が丸く陰影づかないようにする
+const bottlePoints = [];
+for (let i = 0; i <= BOTTLE_CURVE_STEPS; i++) {
+  const t = BOTTLE_SHOULDER * i / BOTTLE_CURVE_STEPS;
+  bottlePoints.push([bottleRadius(t), t * BOTTLE_HEIGHT]);
+}
+bottlePoints.push([BOTTLE_TOP_RADIUS, BOTTLE_HEIGHT]);
+const bottleMesh = new THREE.Mesh(lathe(bottlePoints), shaderMaterial(BottleShader, {
+  uniforms: {
+    uField: { value: fieldTarget.texture },
+    uTexel: { value: new THREE.Vector2(1 / fieldWidth, 1 / fieldHeight) },
+    // 濃さの差を 1 あたりの傾きに直す係数。描画先の解像度によらず、同じ陰影にする
+    uSlope: { value: fieldHeight / (2 * FIELD_HEIGHT) },
+    uWaxHot: { value: waxHotColor },
+    uWax: { value: waxColor },
+    uLiquidBright: { value: liquidBrightColor },
+    uLiquidDeep: { value: liquidDeepColor },
+  },
+}));
+bottleMesh.position.y = BASE_HEIGHT;
+
+// seam: 瓶との境目の高さ（y からの相対）
+function metalMesh(points, y, seam) {
+  const mesh = new THREE.Mesh(lathe(points), shaderMaterial(MetalShader, {
+    uniforms: { uGlow: { value: glowColor }, uSeam: { value: seam } },
+  }));
+  mesh.position.y = y;
+  return mesh;
+}
+const baseMesh = metalMesh([
+  [FOOT_RADIUS, 0], [FOOT_RADIUS + 0.015, 0.04], [FOOT_RADIUS, 0.1],
+  [WAIST_RADIUS + 0.02, WAIST_Y - 0.03], [WAIST_RADIUS - 0.03, WAIST_Y - 0.01],   // くびれの継ぎ目
+  [WAIST_RADIUS - 0.03, WAIST_Y + 0.01], [WAIST_RADIUS + 0.02, WAIST_Y + 0.03],
+  [BOTTLE_BOTTOM_RADIUS + 0.04, BASE_HEIGHT - 0.03], [BOTTLE_BOTTOM_RADIUS, BASE_HEIGHT],
+], 0, BASE_HEIGHT);
+const capMesh = metalMesh([
+  [CAP_BOTTOM_RADIUS, 0], [CAP_BOTTOM_RADIUS, 0.04], [CAP_BOTTOM_RADIUS - 0.02, 0.06],
+  [CAP_TOP_RADIUS + 0.01, CAP_HEIGHT - 0.05], [CAP_TOP_RADIUS - 0.02, CAP_HEIGHT - 0.01],
+  [CAP_TOP_RADIUS - 0.06, CAP_HEIGHT], [0.001, CAP_HEIGHT],
+], BASE_HEIGHT + BOTTLE_HEIGHT, 0);
+scene.add(bottleMesh, baseMesh, capMesh);
+
+const glowUniforms = { uGlow: { value: glowColor }, uLevel: glowLevel };
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(...ROOM_SIZE), shaderMaterial(WallShader, { uniforms: glowUniforms }));
+wall.position.set(0, ROOM_SIZE[1] / 2, WALL_Z);
+const table = new THREE.Mesh(new THREE.PlaneGeometry(...ROOM_SIZE), shaderMaterial(TableShader, { uniforms: glowUniforms }));
+table.rotation.x = -Math.PI / 2;
+table.position.z = WALL_Z + ROOM_SIZE[1] / 2;
+const halo = new THREE.Mesh(new THREE.PlaneGeometry(...HALO_PLANE), shaderMaterial(HaloShader, { uniforms: glowUniforms, ...addBlending }));
+halo.position.set(0, HALO_Y, HALO_Z);
+scene.add(wall, table, halo);
+
+// 配色を選び直す。前と同じ配色は続けない
+function pickPalette() {
+  palette = pick(PALETTES.filter((p) => p !== palette));
+  const jitter = rand(-HUE_JITTER, HUE_JITTER);
+  waxHotColor.setRGB(...palette.waxHot).offsetHSL(jitter, 0, 0);
+  waxColor.setRGB(...palette.wax).offsetHSL(jitter, 0, 0);
+  liquidBrightColor.setRGB(...palette.liquidBright).offsetHSL(jitter, 0, 0);
+  liquidDeepColor.setRGB(...palette.liquidDeep).offsetHSL(jitter, 0, 0);
+  glowColor.copy(waxColor).lerp(liquidBrightColor, GLOW_LIQUID_MIX);
+}
+
+// ---- 小物 ----
+// 小物の部品をすべて机の座標に置き、1 つの形にまとめて 1 回で描く
+const propParts = [];
+const leafParts = [];
+const shadowParts = [];
+const pose = (x, y, z, rotY = 0, rotX = 0) => new THREE.Matrix4().compose(
+  new THREE.Vector3(x, y, z),
+  new THREE.Quaternion().setFromEuler(new THREE.Euler(rotX, rotY, 0, 'YXZ')),
+  new THREE.Vector3(1, 1, 1),
+);
+
+// テクスチャの中の四角（ピクセル）を、UV の範囲にする
+const atlasRect = (x, y, width, height) => ({
+  u0: x / PROP_ATLAS_SIZE, u1: (x + width) / PROP_ATLAS_SIZE,
+  v0: 1 - (y + height) / PROP_ATLAS_SIZE, v1: 1 - y / PROP_ATLAS_SIZE,
+});
+// テクスチャの割り付け。左上に背表紙を並べ、右上にページの束と表紙の布地、左下に鉢の素焼きを置く。残りは白
+const SPINE_ROW = 64;
+const PAGES_AREA = { x: 512, y: 0, width: 512, height: 256 };
+const CLOTH_RECT = atlasRect(512, 256, 512, 256);
+const POT_AREA = { x: 0, y: 512, size: 512 };
+const POT_RECT = atlasRect(POT_AREA.x, POT_AREA.y, POT_AREA.size, POT_AREA.size);
+const WHITE_UV = [0.75, 0.25];
+const spineRect = (i) => atlasRect(4, i * SPINE_ROW + 2, 504, SPINE_ROW - 4);
+
+// 本と鉢のテクスチャ。背表紙のほかは灰色で描き、頂点の色を掛ける
+function createPropAtlas() {
+  const canvas = Object.assign(document.createElement('canvas'), { width: PROP_ATLAS_SIZE, height: PROP_ATLAS_SIZE });
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, PROP_ATLAS_SIZE, PROP_ATLAS_SIZE);
+
+  // 背表紙: 本の色の地に、上下へ丸みの陰を付け、金の線と飾りを入れる。
+  // 見る人の言語によらないよう、文字は使わない
+  const diamond = (x, y, r) => {
+    ctx.beginPath();
+    ctx.moveTo(x - r, y);
+    ctx.lineTo(x, y - r * 0.7);
+    ctx.lineTo(x + r, y);
+    ctx.lineTo(x, y + r * 0.7);
+    ctx.fill();
+  };
+  BOOK_COLORS.forEach((color, i) => {
+    const y = i * SPINE_ROW, h = SPINE_ROW;
+    const [r, g, b] = color.map((v) => Math.round(v * 255));
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, y, 512, h);
+    const round = ctx.createLinearGradient(0, y, 0, y + h);
+    round.addColorStop(0, 'rgba(0,0,0,0.45)');
+    round.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+    round.addColorStop(1, 'rgba(0,0,0,0.5)');
+    ctx.fillStyle = round;
+    ctx.fillRect(0, y, 512, h);
+    ctx.fillStyle = BOOK_GOLD;
+    for (const x of [26, 36, 470, 480]) ctx.fillRect(x, y, x % 10 ? 2 : 4, h);
+    const center = y + h / 2;
+    if (i % 3 === 0) {          // 菱形と、その両側の線
+      diamond(256, center, 14);
+      ctx.fillRect(166, center - 1, 70, 2);
+      ctx.fillRect(276, center - 1, 70, 2);
+    } else if (i % 3 === 1) {   // 金の枠の、暗いラベル
+      ctx.fillRect(166, y + 11, 180, h - 22);
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(169, y + 14, 174, h - 28);
+    } else {                    // 3 つの菱形
+      for (const x of [214, 256, 298]) diamond(x, center, 10);
+    }
+  });
+
+  // ページの束: 紙の重なりの細かい横線と、折丁の境目の濃い線
+  const { x: px, y: py, width: pw, height: ph } = PAGES_AREA;
+  ctx.fillStyle = '#d6d6d6';
+  ctx.fillRect(px, py, pw, ph);
+  ctx.fillStyle = '#000';
+  for (let y = py; y < py + ph; y += rand(2, 4)) {
+    ctx.globalAlpha = rand(0.08, 0.32);
+    ctx.fillRect(px, y, pw, 1);
+  }
+  for (let y = py + rand(10, 20); y < py + ph; y += rand(14, 26)) {
+    ctx.globalAlpha = rand(0.35, 0.6);
+    ctx.fillRect(px, y, pw, 2);
+  }
+  // 布地: 縦横の細かい織り目
+  ctx.fillStyle = '#cfcfcf';
+  ctx.globalAlpha = 1;
+  ctx.fillRect(512, 256, 512, 256);
+  ctx.fillStyle = '#000';
+  for (let k = 0; k < 256; k += 2) {
+    ctx.globalAlpha = rand(0.03, 0.14);
+    ctx.fillRect(512, 256 + k, 512, 1);
+    ctx.globalAlpha = rand(0.03, 0.14);
+    ctx.fillRect(512 + k * 2, 256, 1, 256);
+  }
+  // 鉢の素焼き: 色むら、ろくろの横筋、細かい粒、白い粉をふいた跡
+  const { x: potX, y: potY, size: potSize } = POT_AREA;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(potX, potY, potSize, potSize);
+  ctx.clip();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#d2d2d2';
+  ctx.fillRect(potX, potY, potSize, potSize);
+  const blot = (cx, cy, radius, color, alpha) => {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    g.addColorStop(0, color);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = g;
+    ctx.fillRect(cx - radius, cy - radius, 2 * radius, 2 * radius);
+  };
+  const potPoint = () => [potX + rand(0, potSize), potY + rand(0, potSize)];
+  for (let i = 0; i < 70; i++) blot(...potPoint(), rand(30, 110), i % 2 ? '#000' : '#fff', rand(0.1, 0.28));
+  ctx.fillStyle = '#000';
+  for (let y = potY; y < potY + potSize; y += rand(3, 11)) {
+    ctx.globalAlpha = rand(0.02, 0.09);
+    ctx.fillRect(potX, y, potSize, rand(1, 3));
+  }
+  for (let i = 0; i < 3500; i++) {
+    const [x, y] = potPoint();
+    ctx.globalAlpha = rand(0.1, 0.4);
+    ctx.fillStyle = i % 3 ? '#000' : '#fff';
+    ctx.fillRect(x, y, rand(1, 2.5), rand(1, 2.5));
+  }
+  for (let i = 0; i < 16; i++) blot(potX + rand(0, potSize), potY + rand(0, potSize * 0.3), rand(20, 60), '#fff', rand(0.2, 0.45));
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return texture;
+}
+
+// rectOf(頂点の番号) で、テクスチャの四角に UV を割り当てる。無ければ全体が白い所を読む
+function addPart(geometry, color, matrix, rectOf = null) {
+  const uv = geometry.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    const rect = rectOf?.(i);
+    if (rect) uv.setXY(i, rect.u0 + uv.getX(i) * (rect.u1 - rect.u0), rect.v0 + uv.getY(i) * (rect.v1 - rect.v0));
+    else uv.setXY(i, ...WHITE_UV);
+  }
+  geometry.applyMatrix4(matrix);
+  const colors = new Float32Array(geometry.attributes.position.count * 3);
+  for (let i = 0; i < colors.length; i += 3) colors.set(color, i);
+  geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+  propParts.push(geometry);
+}
+// parent の座標で、中心が (x, y, z) の箱を置く。faceRects は各面（+x, -x, +y, -y, +z, -z）のテクスチャの四角
+const addBox = (parent, w, h, d, x, y, z, color, faceRects) => addPart(
+  new THREE.BoxGeometry(w, h, d), color, parent.clone().multiply(pose(x, y, z)), (i) => faceRects?.[Math.floor(i / 4)],
+);
+
+// (x, z) に置いた小物の影。ランプの反対側へ少し伸ばす
+function addShadow(x, z, radius, length) {
+  const angle = Math.atan2(x, z);
+  const geometry = new THREE.PlaneGeometry(2, 2);
+  geometry.rotateX(-Math.PI / 2);
+  geometry.scale(radius, 1, length);
+  geometry.rotateY(angle);
+  geometry.translate(x + Math.sin(angle) * (length - radius) * 0.5, 0.01, z + Math.cos(angle) * (length - radius) * 0.5);
+  shadowParts.push(geometry);
+}
+
+// 本の山。冊数・大きさ・向き・色を選び直す。背表紙は本の +z の側にあり、手前に向けないものは裏返して、ページの束を見せる
+function addBooks(x, z) {
+  const cover = BOOK_COVER_THICKNESS, overhang = BOOK_COVER_OVERHANG, spine = BOOK_SPINE_THICKNESS;
+  const cloth = Array(6).fill(CLOTH_RECT);
+  const count = BOOK_COUNT[0] + randInt(BOOK_COUNT[1] - BOOK_COUNT[0] + 1);
+  // 色を重ならないように並べ替える
+  const colorOrder = BOOK_COLORS.map((_, i) => i);
+  for (let i = colorOrder.length - 1; i > 0; i--) {
+    const k = randInt(i + 1);
+    [colorOrder[i], colorOrder[k]] = [colorOrder[k], colorOrder[i]];
+  }
+  let y = 0;
+  for (let i = 0; i < count; i++) {
+    const w = randIn(BOOK_WIDTH);
+    const d = w * BOOK_DEPTH_RATIO;
+    const h = randIn(BOOK_THICKNESS);
+    const spineFront = Math.random() < BOOK_SPINE_FRONT_CHANCE;
+    const book = pose(x, y, z, rand(-BOOK_YAW, BOOK_YAW) + (spineFront ? 0 : Math.PI));
+    const colorIndex = colorOrder[i];
+    const color = BOOK_COLORS[colorIndex];
+    // 表紙は背表紙の手前で止める。重なると同じ面が 2 枚になり、カメラが動くとちらつく
+    addBox(book, w, cover, d - spine, 0, cover / 2, -spine / 2, color, cloth);
+    addBox(book, w, cover, d - spine, 0, h - cover / 2, -spine / 2, color, cloth);
+    // 背表紙の面だけは、テクスチャに本の色まで描いてある
+    const spineFaces = [CLOTH_RECT, CLOTH_RECT, CLOTH_RECT, CLOTH_RECT, spineRect(colorIndex), CLOTH_RECT];
+    addBox(book, w, h, spine, 0, h / 2, d / 2 - spine / 2, [1, 1, 1], spineFaces);
+    // ページの束は本の厚さに応じた範囲を読み、線の細かさを揃える。本ごとに読む場所をずらす
+    const sliceHeight = Math.round((h - 2 * cover) * PAGE_PIXELS_PER_UNIT);
+    const slice = atlasRect(
+      PAGES_AREA.x, PAGES_AREA.y + (i * 31) % (PAGES_AREA.height - sliceHeight), PAGES_AREA.width, sliceHeight,
+    );
+    addBox(
+      book, w - 2 * overhang, h - 2 * cover, d - spine - overhang,
+      0, h / 2, (overhang - spine) / 2, PAGE_COLOR, Array(6).fill(slice),
+    );
+    y += h;
+  }
+  addShadow(x, z, BOOK_WIDTH[1] * 0.66, BOOK_WIDTH[1] * 0.77);
+}
+
+// サンスベリアの葉の模様。濃い緑の地に淡い緑のぎざぎざの横縞を重ね、両ふちを黄色にする。
+// 葉の長さ方向に繰り返して貼るので、上下がつながるように描く
+function createLeafTexture() {
+  const [width, height] = LEAF_TEXTURE_SIZE;
+  const canvas = Object.assign(document.createElement('canvas'), { width, height });
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = LEAF_BASE_COLOR;
+  ctx.fillRect(0, 0, width, height);
+
+  // 横縞。上下の端をまたぐ縞は、反対側にも描く
+  const drawBand = (y, thickness, alpha) => {
+    const top = [], bottom = [];
+    for (let x = -8; x <= width + 8; x += 14) {
+      top.push([x, y + rand(-thickness, thickness) * 0.9]);
+      bottom.push([x, y + thickness + rand(-thickness, thickness) * 0.9]);
+    }
+    for (const offset of [-height, 0, height]) {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = LEAF_BAND_COLOR;
+      ctx.beginPath();
+      top.forEach(([px, py]) => ctx.lineTo(px, py + offset));
+      bottom.reverse().forEach(([px, py]) => ctx.lineTo(px, py + offset));
+      bottom.reverse();
+      ctx.fill();
+    }
+  };
+  for (let y = 0; y < height; y += randIn(LEAF_BAND_GAP)) drawBand(y, rand(5, 16), rand(0.3, 0.75));
+
+  // 長さ方向の細い筋
+  ctx.fillStyle = '#000';
+  for (let x = 0; x < width; x += rand(3, 9)) {
+    ctx.globalAlpha = rand(0.03, 0.12);
+    ctx.fillRect(x, 0, rand(1, 3), height);
+  }
+
+  // 両ふちの黄色。内側のふちを少し波打たせる（上下がつながるよう、波は整数回にする）
+  const marginWidth = randIn(LEAF_MARGIN_WIDTH) * width;
+  const phase = rand(0, TAU);
+  const margin = (y) => marginWidth * (1 + 0.16 * Math.sin(y / height * TAU * 7 + phase) + 0.08 * Math.sin(y / height * TAU * 23));
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = LEAF_MARGIN_COLOR;
+  for (const side of [0, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * width, 0);
+    for (let y = 0; y <= height; y += 8) ctx.lineTo(side ? width - margin(y) : margin(y), y);
+    ctx.lineTo(side * width, height);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return texture;
+}
+
+// 葉 1 枚の形。根もとは細く、中ほどで太くなり、先はとがる。中央がくぼみ、外へ反りながら少しねじれる
+function createLeaf(length, width, bend, twist, textureOffset) {
+  const positions = [], uvs = [], indices = [];
+  for (let row = 0; row <= LEAF_ROWS; row++) {
+    const t = row / LEAF_ROWS;
+    const halfWidth = width / 2
+      * (0.55 + 0.45 * THREE.MathUtils.smoothstep(t, 0, 0.28))
+      * Math.max(0.002, Math.min(1, (1 - t) / 0.26)) ** 0.85;
+    const angle = twist * t;
+    for (let column = 0; column <= LEAF_COLUMNS; column++) {
+      const u = column / LEAF_COLUMNS;
+      const across = u * 2 - 1;
+      const x = across * halfWidth;
+      const z = (1 - across * across) * LEAF_CUP * width * (1 - t * 0.6);
+      positions.push(
+        x * Math.cos(angle) + z * Math.sin(angle),
+        t * length,
+        -x * Math.sin(angle) + z * Math.cos(angle) + bend * length * t * t,
+      );
+      uvs.push(u, textureOffset + t * length / LEAF_TEXTURE_LENGTH);
+    }
+  }
+  const stride = LEAF_COLUMNS + 1;
+  for (let row = 0; row < LEAF_ROWS; row++) {
+    for (let column = 0; column < LEAF_COLUMNS; column++) {
+      const a = row * stride + column, b = a + 1, c = a + stride, d = c + 1;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// 鉢植え（サンスベリア）。葉は内側ほど長く立ち、外側ほど短く開く。株の向きを選び直す
+function addPlant(x, z) {
+  const potTop = 1.45, potBottom = 1.05;
+  const pot = pose(x, 0, z, Math.PI + rand(-POT_TURN, POT_TURN));   // テクスチャの継ぎ目は奥へ向ける
+  const potGeometry = lathe([
+    [0.001, 0], [potBottom, 0], [potTop, POT_HEIGHT - 0.32], [potTop + 0.1, POT_HEIGHT - 0.3],
+    [potTop + 0.1, POT_HEIGHT], [potTop - 0.08, POT_HEIGHT], [potTop - 0.08, POT_HEIGHT - 0.2], [0.001, POT_HEIGHT - 0.2],
+  ]);
+  // 回転体の UV は断面の点の番号で決まるので、模様が伸びないよう高さで置き直す
+  const potUv = potGeometry.attributes.uv, potPosition = potGeometry.attributes.position;
+  for (let i = 0; i < potUv.count; i++) potUv.setY(i, potPosition.getY(i) / POT_HEIGHT);
+  addPart(potGeometry, POT_COLOR, pot, () => POT_RECT);
+  addPart(new THREE.CylinderGeometry(potTop - 0.08, potTop - 0.08, 0.02, 32), SOIL_COLOR, pot.clone().multiply(pose(0, POT_HEIGHT - 0.14, 0)));
+
+  const { lerp } = THREE.MathUtils;
+  const plantAngle = rand(0, TAU);
+  for (let i = 0; i < LEAF_COUNT; i++) {
+    const ring = (i + 1) / LEAF_COUNT;       // 0 に近いほど内側の葉
+    const angle = plantAngle + i * 2.4;      // 黄金角に近い角度で、重なりを避ける
+    const length = lerp(LEAF_LENGTH[0], LEAF_LENGTH[1], ring) + Math.sin(i * 1.7) * 0.35;
+    const width = lerp(LEAF_WIDTH[0], LEAF_WIDTH[1], ring);
+    const twist = Math.sin(i * 2.1) * LEAF_TWIST;
+    const leaf = createLeaf(length, width, lerp(LEAF_BEND[0], LEAF_BEND[1], ring), twist, i * 0.37);
+    const radius = ring * (potTop - 0.3);
+    leaf.applyMatrix4(pose(
+      x + Math.sin(angle) * radius, POT_HEIGHT - 0.2, z + Math.cos(angle) * radius,
+      angle, lerp(LEAF_LEAN[0], LEAF_LEAN[1], ring),
+    ));
+    leafParts.push(leaf);
+  }
+  addShadow(x, z, 1.7, 2.8);
+}
+
+const propMesh = new THREE.Mesh(new THREE.BufferGeometry(), shaderMaterial(PropShader, {
+  uniforms: { ...glowUniforms, uPropMap: { value: createPropAtlas() } },
+}));
+const propShadowMesh = new THREE.Mesh(new THREE.BufferGeometry(), shaderMaterial(PropShadowShader, {
+  transparent: true, depthWrite: false,
+}));
+propShadowMesh.renderOrder = -1;   // 机の上に、にじみより先に描く
+const leafMesh = new THREE.Mesh(new THREE.BufferGeometry(), shaderMaterial(LeafShader, {
+  side: THREE.DoubleSide,
+  uniforms: { ...glowUniforms, uLeafMap: { value: createLeafTexture() } },
+}));
+scene.add(propMesh, propShadowMesh, leafMesh);
+
+// 本の山と鉢植えを作り直す。位置は変えない
+function arrangeProps() {
+  propParts.length = shadowParts.length = leafParts.length = 0;
+  addBooks(-5, -1.8);
+  addPlant(4.6, -1.8);
+  for (const [mesh, parts] of [[propMesh, propParts], [propShadowMesh, shadowParts], [leafMesh, leafParts]]) {
+    mesh.geometry.dispose();
+    mesh.geometry = mergeGeometries(parts);
+  }
+}
+
+// ---- 蝋 ----
+// 溜まりの面と、塊のぼかした円を描き込む器
+const poolUniforms = { uBottom: { value: 0 }, uTop: { value: 0 }, uPhase: { value: wavePhase } };
+const poolQuad = new THREE.Mesh(
+  new THREE.PlaneGeometry(2 * FIELD_HALF_WIDTH, FIELD_HEIGHT).translate(0, FIELD_HEIGHT / 2, 0),
+  shaderMaterial(PoolShader, { uniforms: poolUniforms, ...addBlending }),
+);
+// 塊 1 個につき、大小 3 個の玉と首の玉を描く
+const MAX_KERNELS = Math.ceil(MAX_BLOBS[1] * MAX_HEAT ** HEAT_COUNT_EXP) * (3 + NECK_BEADS);
+const kernelAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_KERNELS * 4), 4);
+kernelAttr.setUsage(THREE.DynamicDrawUsage);
+const kernelGeometry = new THREE.InstancedBufferGeometry();
+kernelGeometry.copy(new THREE.PlaneGeometry(2, 2));
+kernelGeometry.setAttribute('aKernel', kernelAttr);
+const kernelMesh = new THREE.Mesh(kernelGeometry, shaderMaterial(KernelShader, addBlending));
+kernelMesh.frustumCulled = false;
+fieldScene.add(poolQuad, kernelMesh);
+
+const bottomSurface = () => bottomThickness(pool.bottom);
+const topSurface = () => FIELD_HEIGHT - topThickness(pool.top);
+const poolSurface = (source) => (source === 'top' ? topSurface() : bottomSurface());
+const hasRoomForBlob = () => blobs.length < Math.round(maxBlobs * heat ** HEAT_COUNT_EXP);
+// 新しい塊の大きさ。温度が高いほど小さい
+const newBlobArea = () => Math.PI * (randIn(BLOB_RADIUS) * heat ** HEAT_RADIUS_EXP) ** 2;
+
+function resetWax() {
+  totalWax = randIn(WAX_AREA);
+  maxBlobs = Math.round(randIn(MAX_BLOBS));
+  pool.bottom = totalWax;
+  pool.top = 0;
+  blobs = [];
+  bottomWait = FIRST_BLOB_DELAY;
+  topWait = randIn(EMIT_TOP);
+}
+
+// 蝋を渡す相手（'bottom' | 'top' | 親の塊）が、いま渡せる量
+function availableWax(source) {
+  if (source === 'bottom') return pool.bottom - POOL_KEEP;
+  if (source === 'top') return pool.top;
+  return source.area - SPLIT_PARENT_KEEP;
+}
+
+// 蝋を渡す相手から、amount だけ減らす
+function takeWax(source, amount) {
+  if (source === 'bottom' || source === 'top') pool[source] -= amount;
+  else source.area -= amount;
+}
+
+// 新しい塊を出す。source（'bottom' | 'top' | 親の塊）から、targetArea になるまで蝋を受け取る
+function addBlob(source, targetArea, { x = rand(-BLOB_SPAWN_RANGE, BLOB_SPAWN_RANGE), temp = source === 'top' ? 0 : 1 } = {}) {
+  const fromPool = typeof source === 'string';
+  const blob = {
+    x, y: poolSurface(source), vy: 0,
+    area: BLOB_START_AREA,    // いまの大きさ
+    feed: targetArea - BLOB_START_AREA,   // これから受け取る量
+    source,
+    temp,                     // 0（冷たい・沈む）〜 1（熱い・昇る）
+    anchorX: x,               // 首の根もとの位置
+    neck: fromPool ? 1 : 0,   // 首の太さ（0 でちぎれた後）
+    leaving: fromPool,        // 溜まりから離れている最中か
+    absorbing: null,          // 戻る先。'bottom' | 'top'
+    mergeInto: null,          // 融合する相手
+    mergeWait: 0,             // また融合できるようになるまでの秒数
+    wander: rand(0, TAU),     // 左右にさまよう位相
+    wanderSpeed: randIn(WANDER_RATE),
+    spin: rand(0, TAU),       // 形のゆらぎの位相
+    spinSpeed: randSign() * randIn(SPIN_RATE),
+  };
+  takeWax(source, BLOB_START_AREA);
+  blobs.push(blob);
+  return blob;
+}
+
+// 塊が大きいほどゆっくり冷めるので、大きい塊は上まで届き、小さい塊は途中で引き返す
+function moveBlob(b, sim) {
+  const r = blobRadius(b.area);
+  b.temp *= Math.exp(-sim / (COOL_TIME * r));
+  const target = RISE_SPEED * (2 * b.temp - 1) * (b.feed > 0 ? FEEDING_SPEED : 1);
+  b.vy += (target - b.vy) * (1 - Math.exp(-sim / VELOCITY_TIME));
+  b.y = clamp(b.y + b.vy * sim, 0, FIELD_HEIGHT);
+
+  b.wander = (b.wander + b.wanderSpeed * sim) % TAU;
+  b.spin = (b.spin + b.spinSpeed * sim) % TAU;
+  // 瓶の細い所では、壁に押されて中央へ寄る
+  const limit = Math.max(0, bottleRadius(b.y / FIELD_HEIGHT) * FIELD_SCALE - r * BLOB_EDGE);
+  b.x += Math.sin(b.wander) * WANDER_SPEED * sim;
+  if (Math.abs(b.x) > limit) b.x += (Math.sign(b.x) * limit - b.x) * Math.min(1, sim);
+  b.mergeWait = Math.max(0, b.mergeWait - sim);
+}
+
+// 溜まりや親の塊から蝋を受け取り、大きくなる
+function feedBlob(b, sim) {
+  if (b.feed <= 0) return;
+  const amount = Math.min(b.feed, FEED_RATE * sim, Math.max(0, availableWax(b.source)));
+  if (amount <= 0) { b.feed = 0; return; }
+  b.feed -= amount;
+  b.area += amount;
+  takeWax(b.source, amount);
+}
+
+// 溜まりから十分離れると首がちぎれ、それまでは首を細くしていく
+function updateNeck(b) {
+  if (!b.leaving) return;
+  b.neck = clamp(1 - Math.abs(b.y - poolSurface(b.source)) / NECK_LENGTH, 0, 1);
+  // 蝋を受け取り終えたあと、首がちぎれるか、離れきらずに引き返したら、また溜まりへ戻れるようにする
+  const returning = b.source === 'top' ? b.vy > 0 : b.vy < 0;
+  if (b.feed <= 0 && (b.neck <= 0 || returning)) {
+    b.neck = 0;
+    b.leaving = false;
+  }
+}
+
+// 溜まりに触れた塊は、少しずつ溜まりへ戻る
+function updateAbsorb(b, sim) {
+  if (!b.leaving && !b.absorbing) {
+    const r = blobRadius(b.area);
+    if (b.vy > 0 && b.y + r * BLOB_EDGE >= topSurface()) b.absorbing = 'top';
+    else if (b.vy < 0 && b.y - r * BLOB_EDGE <= bottomSurface()) b.absorbing = 'bottom';
+  }
+  if (!b.absorbing) return;
+  const amount = Math.min(b.area, ABSORB_RATE * sim);
+  b.area -= amount;
+  pool[b.absorbing] += amount;
+}
+
+// 近づいた塊の組を見つけ、小さい方に融合する相手を覚えさせる
+function findMerges() {
+  for (let i = 0; i < blobs.length; i++) {
+    for (let j = i + 1; j < blobs.length; j++) {
+      const a = blobs[i], b = blobs[j];
+      if (a.mergeInto || b.mergeInto) continue;
+      if (a.leaving || b.leaving || a.absorbing || b.absorbing || a.mergeWait > 0 || b.mergeWait > 0) continue;
+      if (a.area + b.area > MAX_MERGED_AREA) continue;
+      const reach = (blobRadius(a.area) + blobRadius(b.area)) * MERGE_DISTANCE;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > reach) continue;
+      if (a.area < b.area) a.mergeInto = b;
+      else b.mergeInto = a;
+    }
+  }
+}
+
+// 小さい方の蝋を、少しずつ大きい方へ移す
+function updateMerges(sim) {
+  for (const b of blobs) {
+    const big = b.mergeInto;
+    if (!big) continue;
+    if (!blobs.includes(big) || big.absorbing) { b.mergeInto = null; continue; }
+    const amount = Math.min(b.area, MERGE_RATE * sim);
+    big.temp = (big.temp * big.area + b.temp * amount) / (big.area + amount);
+    b.area -= amount;
+    big.area += amount;
+    const pull = Math.min(1, sim * MERGE_PULL);
+    b.x += (big.x - b.x) * pull;
+    b.y += (big.y - b.y) * pull;
+  }
+}
+
+// 大きな塊は、ときどきちぎれて 2 つに分かれる（温度の差で上下に離れていく）
+function trySplit(b, sim) {
+  if (b.leaving || b.absorbing || b.mergeInto || b.feed > 0 || b.mergeWait > 0) return;
+  if (b.area < SPLIT_AREA || !hasRoomForBlob()) return;
+  if (Math.random() > SPLIT_CHANCE * sim) return;
+  const child = addBlob(b, b.area / 2, {
+    x: clamp(b.x + rand(-SPLIT_OFFSET[0], SPLIT_OFFSET[0]), -FIELD_HALF_WIDTH, FIELD_HALF_WIDTH),
+    temp: clamp(b.temp + randSign() * SPLIT_TEMP_GAP, 0, 1),
+  });
+  child.y = b.y + randSign() * SPLIT_OFFSET[1];
+  child.vy = b.vy;
+  child.mergeWait = b.mergeWait = MERGE_WAIT;
+}
+
+// 底から新しい塊を出し、上の溜まりから冷たい塊を落とす
+function updateEmission(sim) {
+  bottomWait -= sim;
+  if (bottomWait <= 0) {
+    bottomWait = randIn(EMIT_BOTTOM);
+    if (hasRoomForBlob() && pool.bottom > POOL_KEEP + EMIT_BOTTOM_MARGIN) addBlob('bottom', newBlobArea());
+  }
+  topWait -= sim * (1 + pool.top * TOP_RELEASE_BOOST);
+  if (topWait <= 0) {
+    topWait = randIn(EMIT_TOP);
+    if (hasRoomForBlob() && pool.top > TOP_POOL_MIN) addBlob('top', Math.min(pool.top, newBlobArea()));
+  }
+}
+
+// 戻りきった塊を片付ける
+function removeGoneBlobs() {
+  const gone = blobs.filter((b) => b.area <= BLOB_GONE_AREA && b.feed <= 0);
+  if (!gone.length) return;
+  for (const b of gone) pool[b.absorbing ?? 'bottom'] += b.area;
+  blobs = blobs.filter((b) => !gone.includes(b));
+  for (const b of blobs) if (gone.includes(b.source)) { b.source = 'bottom'; b.feed = 0; }
+}
+
+// 蝋が浮かんでいるほど電球の光がさえぎられ、部屋が少し暗くなる
+function updateGlowLevel(dt) {
+  flickerPhase = (flickerPhase + GLOW_FLICKER_SPEED * dt) % TAU;
+  const floating = 1 - (pool.bottom + pool.top) / totalWax;
+  glowLevel.value = GLOW_BRIGHT - GLOW_BLOCKED * floating + GLOW_FLICKER * Math.sin(flickerPhase);
+}
+
+function updateWax(dt) {
+  const sim = dt * heat ** HEAT_SPEED_EXP;
+  wavePhase.x = (wavePhase.x + POOL_WAVE_SPEED[0] * sim) % TAU;
+  wavePhase.y = (wavePhase.y + POOL_WAVE_SPEED[1] * sim) % TAU;
+
+  updateEmission(sim);
+  for (const b of blobs) {
+    feedBlob(b, sim);
+    moveBlob(b, sim);
+    updateNeck(b);
+    updateAbsorb(b, sim);
+    trySplit(b, sim);
+  }
+  findMerges();
+  updateMerges(sim);
+  removeGoneBlobs();
+  updateGlowLevel(dt);
+}
+
+// 塊を、ぼかした円の並びにする
+function writeKernels() {
+  let n = 0;
+  const data = kernelAttr.array;
+  const put = (x, y, rx, ry) => {
+    const i = n++ * 4;
+    data[i] = x;
+    data[i + 1] = y;
+    data[i + 2] = rx / KERNEL_ISO;
+    data[i + 3] = ry / KERNEL_ISO;
+  };
+  for (const b of blobs) {
+    const r = blobRadius(b.area);
+    // 大きな玉のまわりに小さな玉を回して、まん丸に見えないようにする
+    const stretch = 1 + Math.min(STRETCH_MAX, Math.abs(b.vy) * STRETCH);
+    const dx = Math.cos(b.spin) * r * LOBE_OFFSET, dy = Math.sin(b.spin) * r * LOBE_OFFSET * stretch;
+    put(b.x, b.y, r * LOBE_MAIN / stretch, r * LOBE_MAIN * stretch);
+    put(b.x + dx, b.y + dy, r * LOBE_SIDES[0], r * LOBE_SIDES[0]);
+    put(b.x - dx, b.y - dy, r * LOBE_SIDES[1], r * LOBE_SIDES[1]);
+    if (b.neck > 0) {
+      const surface = poolSurface(b.source);
+      const width = Math.max(r, NECK_MIN_RADIUS) * NECK_WIDTH * Math.sqrt(b.neck);
+      for (let i = 1; i <= NECK_BEADS; i++) {
+        const t = i / (NECK_BEADS + 1);
+        put(THREE.MathUtils.lerp(b.anchorX, b.x, t), THREE.MathUtils.lerp(surface, b.y, t), width, width);
+      }
+    }
+  }
+  kernelAttr.needsUpdate = true;
+  kernelGeometry.instanceCount = n;
+  kernelMesh.visible = n > 0;
+}
+
+// 溜まりの面と塊を、蝋の濃さの描画先へ描く
+function drawField() {
+  poolUniforms.uBottom.value = bottomSurface();
+  poolUniforms.uTop.value = topThickness(pool.top);
+  writeKernels();
+  renderer.setRenderTarget(fieldTarget);
+  renderer.render(fieldScene, fieldCamera);
+  renderer.setRenderTarget(null);
+}
+
+// ---- カメラ ----
+// ランプ全体が画面の高さの LAMP_SCREEN_HEIGHT に収まる距離に置く。縦長の画面では幅にも合わせる
+function fitCamera() {
+  const span = 2 * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
+  camDistance = Math.max(LAMP_HEIGHT / LAMP_SCREEN_HEIGHT / span, 2 * FOOT_RADIUS / LAMP_SCREEN_WIDTH / (span * camera.aspect));
+}
+
+function updateCamera(dt) {
+  swayPhase = (swayPhase + TAU / CAM_SWAY_PERIOD * dt) % TAU;
+  const centerY = LAMP_HEIGHT / 2 - CAM_TARGET_DROP;
+  camera.position.set(Math.sin(swayPhase) * CAM_SWAY, centerY + CAM_RISE, camDistance);
+  camera.lookAt(0, centerY, 0);
+}
+
+// ---- シーン切替 ----
+// 配色と小物を選び直し、蝋を底に戻して最初からやり直す
+function start() {
+  pickPalette();
+  arrangeProps();
+  resetWax();
+}
+
+const reset = () => fadeAndRun(start);
+
+// ---- 強度 ----
+function setHeat(value) {
+  heat = clamp(value, MIN_HEAT, MAX_HEAT);
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  updateWax(dt);
+  updateCamera(dt);
+  drawField();
+  renderer.render(scene, camera);
+}
+
+// ---- 入力・UI ----
+setupControls({
+  changeScene: reset,
+  intensity: {
+    up: () => setHeat(heat * HEAT_STEP),
+    down: () => setHeat(heat / HEAT_STEP),
+    level: () => logPosition(heat, MIN_HEAT, MAX_HEAT),
+  },
+  onResize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    fitCamera();
+  },
+});
+
+// ---- 開始 ----
+fitCamera();
+start();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

@@ -79,7 +79,7 @@ setupControls({
 ```
 
 - **シーン切替**: 暗転して次の場面へ移る操作。何が変わるかは作品ごとの仕様（`docs/specs/<作品名>.md`）に書く。暗転は `fadeAndRun(change)` で、暗転している間に `change()` を呼ぶ。暗転中かは `isFading()` で分かる。
-- **強度**: 作品ごとの強さ（速度・雨の強さ・火の強さ・泡の筋の数・オーロラの帯の数・水量）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
+- **強度**: 作品ごとの強さ（速度・雨の強さ・火の強さ・泡の筋の数・オーロラの帯の数・水量・温度）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
 - キー操作は Cmd / Ctrl / Alt を押しながらの操作には反応させず、ブラウザに任せる（Cmd+F など）。
 - スワイプは指での操作だけを受け付ける（マウスのドラッグや 2 本目の指には反応しない）。十分に動き、縦横の一方の動きがもう一方の 2 倍以上あるときだけスワイプとみなす。
 - **一覧へ戻る**: 「← 一覧」のリンクは `setupControls()` が操作ガイドの先頭に作る。全画面のときの Esc は全画面を抜けるだけにし、戻らない。隠れている間に押したときは操作ガイドを出すだけにする（見えていないリンクを誤って押して、一覧へ移らないようにするため）。移動の前に暗転はしない（ブラウザの「戻る」で戻ったときに、暗いまま復元されることがあるため）。
@@ -129,6 +129,7 @@ setupControls({
 | jellyfish.html — クラゲ水槽 | [docs/specs/jellyfish.md](docs/specs/jellyfish.md) |
 | aurora.html — オーロラ | [docs/specs/aurora.md](docs/specs/aurora.md)（隠し要素のサンタクロースを含む） |
 | waterfall.html — 滝 | [docs/specs/waterfall.md](docs/specs/waterfall.md)（景色の定義を含む） |
+| lavalamp.html — 溶岩ランプ | [docs/specs/lavalamp.md](docs/specs/lavalamp.md) |
 
 ### 仕様の書き方
 
