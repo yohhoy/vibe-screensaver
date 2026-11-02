@@ -24,6 +24,7 @@
 | docs/images/ | README 用のサムネイル |
 | docs/video.md | 動画の書き出しツールの使い方 |
 | docs/performance.md | GPU 負荷の基準値 |
+| tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
 | tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
