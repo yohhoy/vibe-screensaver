@@ -25,7 +25,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randomInterval, IS_TOUCH, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 炎・火の粉・おき火の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
@@ -301,8 +301,6 @@ function repeatTexture(n, draw) {
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   return texture;
 }
-
-const gray = (v, a = 1) => `rgba(${v},${v},${v},${a})`;
 
 // ふちのぼけた白い円（星、おき火の照り返し）
 const softDotTexture = canvasTexture(64, (g, n) => {
@@ -651,12 +649,6 @@ function createParticles(max, { blending = THREE.AdditiveBlending, minSize = 0, 
 
 function addParticle(sys, p) {
   if (sys.list.length < sys.max) sys.list.push(p);
-}
-
-// 1 秒に rate 個のペースで、dt 秒ぶんの粒を spawn() で作って加える（端数は次のフレームへ持ち越す）
-function emit(sys, rate, dt, spawn) {
-  sys.carry += rate * dt;
-  for (; sys.carry >= 1; sys.carry--) addParticle(sys, spawn());
 }
 
 // 寿命の尽きた粒を取り除く

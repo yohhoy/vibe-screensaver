@@ -27,6 +27,14 @@
   const randExp = (mean) => -Math.log(1 - Math.random()) * mean;
   // 指数分布で平均 mean 秒の間隔（min〜max に収める）
   const randomInterval = ([mean, min, max]) => clamp(randExp(mean), min, max);
+  // canvas に渡す灰色（v: 0〜255、a: 不透明度）
+  const gray = (v, a = 1) => `rgba(${v},${v},${v},${a})`;
+  // 粒の器 sys（max・list・carry を持つ）に、1 秒に rate 個のペースで、dt 秒ぶんの粒を spawn() で作って加える。
+  // 端数は次のフレームへ持ち越し、器がいっぱいなら作らない
+  function emit(sys, rate, dt, spawn) {
+    sys.carry += rate * dt;
+    for (; sys.carry >= 1; sys.carry--) if (sys.list.length < sys.max) sys.list.push(spawn());
+  }
 
   // ---- 暗転 ----
   let fadeEl = null;
@@ -152,7 +160,7 @@
   }
 
   window.Common = {
-    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval,
+    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval, gray, emit,
     IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls,
   };
 })();

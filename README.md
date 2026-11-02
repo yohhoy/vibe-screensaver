@@ -118,6 +118,18 @@ Webブラウザで動く、スクリーンセーバ風のアニメーション�
 
 </details>
 
+## [滝](https://yohhoy.github.io/vibe-screensaver/waterfall.html)
+
+[<img src="docs/images/waterfall.jpg" width="480" alt="滝">](https://yohhoy.github.io/vibe-screensaver/waterfall.html)
+
+深い森の大きな滝。白い水が流れ落ち、滝壺から霧が立ちのぼります。
+
+| キー | 動作 |
+|---|---|
+| Space / 左右スワイプ | シーン切替（次の景色） |
+| F / ダブルクリック | 全画面 |
+| ↑ / ↓ / 上下スワイプ | 水量の変更 |
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/](docs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

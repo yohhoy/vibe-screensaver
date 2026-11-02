@@ -1,0 +1,1586 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Waterfall</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  景色: <span id="scene-name"></span><br>
+  Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: 水量
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, gray, emit, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+
+// ---- 設定 ----
+// 座標: 滝壺の水面が y = 0、滝の中心が x = 0。カメラは +z の側から -z の向きに滝を見る。長さの単位はメートルのつもり
+
+// カメラ（滝壺の手前から見上げ、ゆっくり漂う）
+const CAM_POS = [0, 9, 88];
+const CAM_TARGET_Y = 23;          // 見る点の高さ
+const CAM_FOV = 46;
+const CAM_MIN_HFOV = 26;          // 横の画角の下限（度）。縦長の画面では縦の画角を広げて滝の幅を収める
+const CAM_SWAY = [9, 1.2, 5];     // 漂う幅 (x, y, z)
+const CAM_SWAY_PERIOD = [140, 47, 95];   // 漂う周期 (x, y, z)（秒）
+
+// 水量（倍率）
+const BASE_WATER = 1;
+const MIN_WATER = 0.13;
+const MAX_WATER = 2;
+const WATER_STEP = 1.25;          // ↑↓ 1回あたりの倍率
+
+// 滝（水の帯を何本も重ねる。中央の帯から順に使うので、水量が増えると滝の幅が広がる）
+const FALL_HEIGHT = 50;           // 滝口の高さ
+const FALL_MAX_HALF = 13;         // 水量が最大のときの滝の幅の半分
+const STREAM_COUNT = 90;          // 帯の数（水量が最大のとき）
+const STREAM_SEGMENTS = 22;       // 帯 1 本の縦の分割数
+const STREAM_WIDTH = [1.7, 0.7];  // 帯の幅の半分（滝の中央 / 端）
+const STREAM_SPREAD = 0.7;        // 滝壺に着くまでに帯の幅が広がる割合
+const STREAM_ORDER_JITTER = 3;    // 中央から順に使う順番の乱れ（距離）
+const STREAM_SWAY = 0.5;          // 帯が風で揺れる幅（滝壺の近くで最大）
+const STREAM_SWAY_SPEED = 0.7;    // 帯が風で揺れる速さ（rad/秒）
+const FALL_GRAVITY = 9.8;
+const LIP_SPEED = [3, 2.2];       // 滝口での水の速さ（下向き、手前向き）
+const STREAK_RATE = [0.55, 0.23]; // 筋の模様 2 枚の流れる速さ（1 秒の落下で模様の何枚ぶん進むか）
+
+// 滝のまわりに落ちる水滴（線で描く）
+const MAX_DROPS = 500;
+const DROP_RATE = 150;            // 1 秒に生まれる数（水量 1 のとき）
+const DROP_STREAK = 0.035;        // 線の長さ（速さ × この秒数）
+
+// 滝壺のしぶき
+const MAX_SPRAY = 900;
+const SPRAY_RATE = 280;           // 1 秒に生まれる数（水量 1 のとき）
+const SPRAY_SPEED = [3, 14];      // 跳ね上がる速さの範囲
+const SPRAY_SIZE = [0.05, 0.2];
+const SPRAY_GRAVITY = 7;          // 細かい粒なので、空気の抵抗も込みで弱めにする
+
+// 滝壺から立ちのぼる霧
+const MAX_MIST = IS_TOUCH ? 90 : 210;
+const MIST_RATE = IS_TOUCH ? 7 : 17;   // 1 秒に生まれる数（水量 1 のとき）
+const MIST_LIFE = [6, 12];        // 消えるまでの秒数の範囲
+const MIST_RISE = [1.2, 3.4];     // 上る速さの範囲
+const MIST_DRIFT = 3;             // 手前へ流れる速さの上限
+const MIST_SIZE = [7, 27];        // 生まれたとき / 消えるときの大きさ
+const BOIL_SHARE = 0.4;           // そのうち、滝の足もとで低くわき立つ霧の割合（滝と水面の境をぼかす）
+
+// 崖
+const CLIFF_COLS = IS_TOUCH ? 200 : 360;   // 崖の横の分割数
+const CLIFF_ROWS = IS_TOUCH ? 100 : 170;   // 崖の縦の分割数
+const PLATEAU_ROWS = 10;          // 崖の上の台地の奥行きの分割数
+const CLIFF_HALF = 120;           // 崖の横幅の半分
+const PLATEAU_DEPTH = 130;        // 崖の上の台地の奥行き
+const GORGE_CURVE = 45;           // 崖が両側で手前に迫る量（x = GORGE_WIDTH の所で）
+const GORGE_WIDTH = 60;
+const RIM_RISE = 7;               // 滝口の両側で崖の上が高くなる量
+const RECESS = 7;                 // 滝の裏で崖がえぐれている深さ
+const TALUS_HEIGHT = 11;          // 崖の足もとの崩れた斜面の高さ
+const TALUS_REACH = 20;           // 崩れた斜面が手前へ張り出す長さ
+const BLOCK_SIZE = [5, 3.2];      // 岩の塊の幅と高さ（縦の割れ目と地層で区切られる）
+const ROCK_COLORS = [[0.2, 0.19, 0.18], [0.42, 0.4, 0.37]];   // 岩の色（暗い / 明るい）
+const MOSS_COLOR = [0.2, 0.3, 0.1];
+const GRASS_COLOR = [0.14, 0.23, 0.09];
+const ROCK_TILE = 16;             // 岩の模様のテクスチャ 1 枚が受け持つ広さ
+
+// 岩
+const BOULDER_COUNT = 40;
+const BOULDER_SHAPES = 4;         // 岩の形の種類
+const BOULDER_COLOR = [0.3, 0.29, 0.27];
+const LIP_ROCK_COUNT = 3;         // 滝口の岩の数
+const LIP_ROCK_SIZE = [0.6, 1.3]; // 滝口の岩の大きさの範囲
+const LIP_ROCK_REJOIN = 0.3;      // 岩で分かれた水が合流し終える位置（滝口 0 〜 滝壺 1。落ちる時間の割合）
+
+// 木
+const CONIFER_SHARE = 0.55;       // 木のうち針葉樹の割合
+const LEAF_CARD_SCALE = IS_TOUCH ? 0.7 : 1;   // 葉の板の数の倍率。スマホでは減らし、そのぶん板を大きくする
+const LEAF_CARDS = Math.round(120 * LEAF_CARD_SCALE);       // 足もとの広葉樹 1 本の葉の板の数
+const LEAF_CARD_SIZE = 0.08 / Math.sqrt(LEAF_CARD_SCALE);   // 葉の板の大きさの半分（木の高さに対する割合）
+const BROADLEAF_SHAPES = 3;       // 足もとの広葉樹の形の種類
+const BROADLEAF_TRUNK_SIDES = 5;  // 足もとの広葉樹の幹の角数（ほとんど葉に隠れるので少なくてよい）
+const BROADLEAF_BRANCHES = 3;     // 足もとの広葉樹の枝の本数（同上）
+const CONIFER_TIERS = 20;         // 足もとの針葉樹の枝の段数
+const RIM_TEXTURE_SIZE = 512;     // 崖の上の木の絵を描くテクスチャの一辺（画素）
+const CROWN_SIZE = 0.8;           // 崖の上の広葉樹の樹冠の板の大きさ（木の高さに対する割合）
+const CROWN_LEAVES = 260;         // 樹冠 1 つに描く葉の数
+const RIM_CONIFER_WIDTH = 0.5;    // 崖の上の針葉樹の板の幅（木の高さに対する割合）。テクスチャの区画と同じ 1:2
+const RIM_CONIFER_LAYERS = 8;     // 崖の上の針葉樹の絵の段数
+const LEAF_ALPHA_TEST = 0.45;     // 葉の板のテクスチャで、不透明度がこれより低い所を描かない
+const RIM_TREE_COUNT = IS_TOUCH ? 160 : 240;   // 崖の上の木の数
+const RIM_TREE_HEIGHT = [8, 15];
+const RIM_TREE_DEPTH = 65;        // 崖の上の木を置く奥行き。これより奥は崖に隠れて見えない
+const BANK_TREE_COUNT = IS_TOUCH ? 22 : 32;    // 崖の足もとの木の数
+const BANK_TREE_HEIGHT = [13, 26];
+const VIEW_SLOPE = 1.05;          // 画面に入る横の広がり（横の画角の半分の tan）。21:9 まで収まる値。これより外には木を置かない
+const CONIFER_COLORS = [[0.03, 0.08, 0.05], [0.12, 0.24, 0.13]];     // 針葉樹の枝の色（根もと / 先）
+const BROADLEAF_COLORS = [[0.03, 0.09, 0.03], [0.26, 0.42, 0.12]];   // 広葉樹の葉の色（暗い葉 / 明るい葉）
+const TRUNK_COLOR = [0.2, 0.16, 0.12];
+
+// 滝壺の水面
+const POOL_SIZE = 700;
+const REFLECTION_SIZE = IS_TOUCH ? 256 : 360;   // 水面に映す景色を描く解像度（画面の高さに当たる画素数）
+const FOAM_REACH = 11;            // 泡が滝壺から広がる距離（1/e になる距離）
+const WAVE_SPEED = [0.05, 0.12, 0.09];   // 波 2 枚と泡の模様が外へ流れる速さ（1 秒に模様の何枚ぶんか）
+const WAVE_STRENGTH = 0.05;       // 波で映り込みが揺れる強さ
+
+// 空
+const SKY_RADIUS = 900;
+const STAR_COUNT = 1600;
+const STAR_SIZE = 2.6;            // 星の大きさ（画素）
+const CLOUD_SPEED = 0.003;        // 雲の流れる速さ（1 秒に模様の何枚ぶんか）
+
+// 虹（太陽と反対の向きを中心にした円。昼の景色だけ）
+const RAINBOW_RADIUS = [40.5, 42.5];   // 虹の内側 / 外側の半径（度）
+const RAINBOW_TINT = 3.5;          // 下の景色の色を虹の色に置き換える強さ。大きいほど、白い滝の上で色がはっきりする
+const RAINBOW_SPREAD = 14;         // 霧の広がり。滝の端からこのくらいの距離で虹が薄れる
+const RAINBOW_TOP = 38;            // 虹が消える高さ
+
+// 描画
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
+const BLOOM_SCALE = 0.5;          // ブルームを描く解像度の倍率（ぼかすだけなので粗くてよい）
+const MSAA_SAMPLES = 2;           // 崖や岩の輪郭のぎざぎざを抑える。4 にするとかなり重くなる
+const MSAA_OFF_PIXEL_RATIO = 1.25;   // 解像度の倍率がこれ以上なら MSAA を切る（画素が細かくてぎざぎざが目立たず、負荷も大きく減る）
+
+// 景色。色はすべて画面に出る値（0..1）。
+//   zenith / horizon: 天頂 / 低い空の色、fog: 遠くを霞ませる色と濃さ [r, g, b, 濃さ]
+//   cloud: 雲の色と濃さ [r, g, b, 濃さ]、stars: 星空を出すか
+//   ambient: 空の光 { sky, ground, intensity }、light: 太陽・月の光 { color, intensity, dir }
+//   disc: 空に見える月 { dir, color, size } または null。無ければ何も描かない
+//   lit / shade / glass: 滝の白い所 / 影の所 / 滝口のなめらかな水の色
+//   mist: 霧の色と不透明度 [r, g, b, a]、spray: しぶきの色
+//   deep / foam: 滝壺の水そのものの色 / 泡の色
+//   rainbow: 虹の濃さ（0 で無し）、bloom: ブルーム { strength, threshold }（strength が 0 なら描かない）、exposure: 全体の明るさ
+const SCENES = [
+  {
+    name: '新緑の昼',
+    zenith: [0.2, 0.42, 0.78], horizon: [0.6, 0.76, 0.92], fog: [0.66, 0.78, 0.86, 0.0032],
+    cloud: [1, 1, 1, 0.75], stars: false,
+    ambient: { sky: [0.75, 0.85, 1], ground: [0.32, 0.35, 0.26], intensity: 1.5 },
+    light: { color: [1, 0.96, 0.88], intensity: 2.6, dir: [-0.22, 0.5, 0.8] },
+    disc: null,
+    lit: [0.98, 0.99, 1], shade: [0.42, 0.54, 0.58], glass: [0.52, 0.58, 0.6],
+    mist: [0.95, 0.97, 1, 0.055], spray: [1, 1, 1],
+    deep: [0.03, 0.17, 0.16], foam: [0.96, 0.98, 1],
+    rainbow: 0.09, bloom: { strength: 0, threshold: 1 }, exposure: 1,
+  },
+  {
+    name: '夕暮れ',
+    zenith: [0.2, 0.2, 0.42], horizon: [0.98, 0.6, 0.38], fog: [0.72, 0.5, 0.44, 0.0045],
+    cloud: [1, 0.62, 0.5, 0.85], stars: false,
+    ambient: { sky: [0.5, 0.48, 0.72], ground: [0.16, 0.14, 0.18], intensity: 1.2 },
+    light: { color: [1, 0.68, 0.44], intensity: 2.4, dir: [0.8, 0.22, 0.55] },
+    disc: null,
+    lit: [1, 0.84, 0.74], shade: [0.42, 0.34, 0.44], glass: [0.42, 0.33, 0.36],
+    mist: [1, 0.78, 0.68, 0.06], spray: [1, 0.9, 0.8],
+    deep: [0.06, 0.06, 0.12], foam: [1, 0.86, 0.78],
+    rainbow: 0, bloom: { strength: 0.3, threshold: 0.8 }, exposure: 1,
+  },
+  {
+    name: '月夜',
+    zenith: [0.012, 0.024, 0.07], horizon: [0.05, 0.08, 0.16], fog: [0.04, 0.06, 0.12, 0.0052],
+    cloud: [0.14, 0.18, 0.28, 0.5], stars: true,
+    ambient: { sky: [0.3, 0.38, 0.62], ground: [0.05, 0.06, 0.1], intensity: 1.5 },
+    light: { color: [0.6, 0.72, 1], intensity: 2.4, dir: [-0.4, 0.6, 0.7] },
+    disc: { dir: [-0.1, 0.49, -0.866], color: [1.8, 1.7, 1.4], size: 0.016 },
+    lit: [0.64, 0.74, 0.92], shade: [0.16, 0.21, 0.33], glass: [0.06, 0.11, 0.17],
+    mist: [0.5, 0.6, 0.82, 0.055], spray: [0.8, 0.88, 1],
+    deep: [0.008, 0.016, 0.035], foam: [0.62, 0.74, 0.92],
+    rainbow: 0, bloom: { strength: 0.4, threshold: 0.5 }, exposure: 1,
+  },
+];
+
+// ---- ユーティリティ ----
+const GOLDEN_RATIO = 0.618034;    // この割合ずつずらすと、何個並べても偏らない
+const { smoothstep } = THREE.MathUtils;   // smoothstep(x, min, max)
+
+// 画面に出る色 [r, g, b]（sRGB）を THREE.Color に
+const srgb = (c) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace);
+// 同じ色を、線形の [r, g, b] の配列で
+const linear = (c) => srgb(c).toArray();
+const mix = (a, b, t) => a + (b - a) * t;
+
+// なめらかなノイズ（値ノイズ）。戻り値は 0..1
+function hash2(i, j) {
+  const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+// 格子点の値 at(i, j) をなめらかにつなぐ
+function smoothLattice(x, y, at) {
+  const i = Math.floor(x), j = Math.floor(y);
+  const u = x - i, v = y - j;
+  const su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
+  return mix(mix(at(i, j), at(i + 1, j), su), mix(at(i, j + 1), at(i + 1, j + 1), su), sv);
+}
+const valueNoise = (x, y) => smoothLattice(x, y, hash2);
+// 細かさの違うノイズを 4 枚重ねる。戻り値はほぼ 0..1
+function fbm(x, y) {
+  let sum = 0, amp = 0.53;
+  for (let k = 0; k < 4; k++) {
+    sum += amp * valueNoise(x, y);
+    x = x * 2.03 + 17.3;
+    y = y * 2.03 + 9.1;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
+// 崖の上端の高さ。滝口は FALL_HEIGHT ちょうどで、両側へ高くなる
+function rimY(x) {
+  const center = Math.exp(-((x / (FALL_MAX_HALF * 1.8)) ** 4));
+  return FALL_HEIGHT + (1 - center) * (RIM_RISE + 7 * fbm(x * 0.04, 3.7) + 14 * (x / 130) ** 2);
+}
+
+// 滝口の奥行きの位置（崖の凹凸を除いた、弧を描く崖の線）
+const lipZ = (x) => GORGE_CURVE * (x / GORGE_WIDTH) ** 2;
+
+// 崖の面の奥行きの位置。高さ y、横の位置 x の点の z を返す
+function wallZ(x, y) {
+  const top = rimY(x);
+  const below = top - y;   // 崖の上端から下へ測った距離
+  const fall = Math.exp(-((x / FALL_MAX_HALF) ** 4));   // 滝の裏か（中央で 1）
+  // 滝口のあたりは凹凸を抑え、水の帯が崖に埋もれないようにする
+  const rough = 1 - fall * (1 - smoothstep(below, 0, 6));
+  let z = lipZ(x);
+  z += rough * 9 * (fbm(x * 0.03, y * 0.035) - 0.5);                  // 大きなうねり
+  // 縦の割れ目と地層で区切られた岩の塊。列ごと・段ごとに前後にずらす
+  const col = Math.floor((x + 9 * fbm(y * 0.04, 2.5)) / BLOCK_SIZE[0]);
+  const row = Math.floor((y + 5 * fbm(x * 0.03, 8.5)) / BLOCK_SIZE[1]);
+  z += rough * (3.4 * (hash2(col, 5) - 0.5) + 3 * (hash2(col, row) - 0.5));
+  z += rough * 2.2 * (fbm(x * 0.35, y * 0.35) - 0.5);                 // 細かな凹凸
+  z -= RECESS * fall * smoothstep(below, 0.5, 9);                     // 滝の裏はえぐれている
+  const talus = clamp(1 - y / TALUS_HEIGHT, 0, 1);                    // 足もとの崩れた斜面（滝の近くには無い）
+  z += TALUS_REACH * talus * talus * smoothstep(Math.abs(x), 16, 42);
+  return z;
+}
+
+// 崖の上の台地の高さ。d は崖の上端から奥へ測った距離
+const plateauY = (x, d) => rimY(x) + 0.06 * d + 9 * fbm(x * 0.012 + 3, d * 0.012) * smoothstep(d, 0, 60);
+
+// 滝の水の落ちる位置。滝口 (x, y0, z0) から t 秒落ちた所の y と z
+const fallY = (y0, t) => y0 - LIP_SPEED[0] * t - 0.5 * FALL_GRAVITY * t * t;
+const fallZ = (z0, t) => z0 + LIP_SPEED[1] * t;
+// 滝口の高さ y0 から水面に着くまでの秒数
+const fallTime = (y0) => (-LIP_SPEED[0] + Math.sqrt(LIP_SPEED[0] ** 2 + 2 * FALL_GRAVITY * y0)) / FALL_GRAVITY;
+// 水が水面に着く線の、滝口より手前への距離
+const IMPACT_Z = fallZ(0, fallTime(FALL_HEIGHT));
+
+// ---- シェーダー ----
+// 空のグラデーションと雲、月。見上げた空しか映らないので、グラデーションは高い所まで伸ばす
+const SkyShader = {
+  uniforms: {
+    uZenith: { value: new THREE.Color() },
+    uHorizon: { value: new THREE.Color() },
+    uBelow: { value: new THREE.Color() },                   // 崖より低い所の色
+    uCloud: { value: new THREE.Vector4(0, 0, 0, 0) },       // 雲の色と濃さ
+    uMoonDir: { value: new THREE.Vector3(0, 1, 0) },
+    uMoonColor: { value: new THREE.Color(0, 0, 0) },
+    uMoonCos: { value: 1 },                                 // 月の半径の cos
+    uNoise: { value: null },
+    uCloudPhase: { value: 0 },                              // 雲が流れる位相（0..1。JS で求める）
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vDir;
+    void main() {
+      vDir = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uZenith, uHorizon, uBelow, uMoonDir, uMoonColor;
+    uniform vec4 uCloud;
+    uniform float uMoonCos, uCloudPhase;
+    uniform sampler2D uNoise;
+    varying vec3 vDir;
+    void main() {
+      vec3 d = normalize(vDir);
+      vec3 col = mix(uHorizon, uZenith, smoothstep(0.1, 0.7, d.y));
+      // 雲: 空を平面とみなしてノイズを貼る
+      vec2 p = d.xz / (abs(d.y) + 0.25);
+      float n = texture2D(uNoise, p * 0.6 + vec2(uCloudPhase, 0.0)).r;
+      col = mix(col, uCloud.rgb, uCloud.a * smoothstep(0.54, 0.72, n));
+      // 月
+      float m = dot(d, uMoonDir);
+      col += uMoonColor * (smoothstep(uMoonCos, uMoonCos + 0.00004, m) + 0.05 * pow(max(m, 0.0), 300.0));
+      // 崖より低い空は映り込みの描画先にしか出ない。そこでは水面の下に入った光線が岩の裏を抜けて空に届く。
+      // 波で読む位置がずれたときに、岸の下で空の色を拾わないように塗りつぶす
+      gl_FragColor = vec4(d.y < 0.18 ? uBelow : col, 1.0);
+    }`,
+};
+
+// 滝の水の帯。縦の座標を「落ちた秒数」にして筋の模様を流すと、下へ行くほど模様が伸びて速くなる
+const StreamShader = {
+  uniforms: {
+    uStreak: { value: null },
+    uPhase: { value: new THREE.Vector2() },       // 筋の模様 2 枚の流れる位相（0..1。JS で求める）
+    uSway: { value: 0 },                          // 風で揺れる位相（0..2π。JS で求める）
+    uLit: { value: new THREE.Color() },
+    uShade: { value: new THREE.Color() },
+    uGlass: { value: new THREE.Color() },
+    uHalf: { value: 1 },                          // いまの滝の幅の半分
+  },
+  vertexShader: /* glsl */`
+    attribute float aSide;    // 帯の幅の向きの位置（-1..1）
+    attribute float aTime;    // 滝口から落ちた秒数
+    attribute float aFall;    // 滝口から滝壺までの位置（0..1）
+    attribute float aSeed;    // 帯ごとの乱数（0..1）
+    uniform float uSway;
+    varying float vSide, vTime, vFall, vSeed, vX;
+    void main() {
+      vSide = aSide;
+      vTime = aTime;
+      vFall = aFall;
+      vSeed = aSeed;
+      vX = position.x;
+      vec3 p = position;
+      p.x += ${STREAM_SWAY.toFixed(2)} * aFall * aFall * sin(uSway + aSeed * 6.0 + p.y * 0.08);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D uStreak;
+    uniform vec2 uPhase;
+    uniform vec3 uLit, uShade, uGlass;
+    uniform float uHalf;
+    varying float vSide, vTime, vFall, vSeed, vX;
+    void main() {
+      float a = texture2D(uStreak, vec2(vX * 0.09 + vSeed, vTime * ${STREAK_RATE[0].toFixed(3)} + vSeed * 3.0 - uPhase.x)).r;
+      float b = texture2D(uStreak, vec2(vX * 0.035 + vSeed * 5.0, vTime * ${STREAK_RATE[1].toFixed(3)} + vSeed * 7.0 - uPhase.y)).r;
+      float foam = (a * 0.75 + b * 0.65) * (0.65 + 0.5 * vSeed);   // 帯ごとに白さを変えて、縦の柱の模様にする
+      float edge = 1.0 - vSide * vSide;
+      float aerated = smoothstep(0.0, 0.16, vFall);   // 滝口はなめらかで、落ちるにつれて白く泡立つ
+      vec3 col = mix(uShade, uLit, smoothstep(0.2, 0.85, foam));
+      col = mix(uGlass, col, aerated);
+      float alpha = edge * mix(0.6, 0.1 + 0.7 * smoothstep(0.1, 0.75, foam), aerated);
+      alpha *= 0.3 + 0.7 * smoothstep(1.0, 0.65, abs(vX) / uHalf);   // 滝の端ほど薄く、岩が透けて見える
+      gl_FragColor = vec4(col, alpha * (1.0 - smoothstep(0.93, 1.0, vFall)));
+    }`,
+};
+
+// しぶきと霧の粒。粒ごとに色・不透明度・大きさ・向きを持つ
+const ParticleShader = {
+  vertexShader: /* glsl */`
+    attribute vec4 color;     // rgb と不透明度
+    attribute float size;     // 大きさ（ワールドの単位）
+    attribute float angle;    // テクスチャの向き (rad)
+    uniform float uScale;     // 距離 1 で大きさ 1 の粒が何画素になるか
+    uniform float uMinSize;   // 遠くても小さくしすぎない画素数
+    varying vec4 vColor;
+    varying vec2 vRot;
+    void main() {
+      vColor = color;
+      vRot = vec2(cos(angle), sin(angle));
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = max(size * uScale / -mv.z, uMinSize);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D uMap;
+    varying vec4 vColor;
+    varying vec2 vRot;
+    void main() {
+      vec2 p = gl_PointCoord - 0.5;
+      p = vec2(p.x * vRot.x - p.y * vRot.y, p.x * vRot.y + p.y * vRot.x) + 0.5;
+      gl_FragColor = vec4(vColor.rgb, vColor.a * texture2D(uMap, p).r);
+    }`,
+};
+
+// 滝壺の水面。Reflector が描いた映り込みを波で揺らし、滝壺のまわりに泡を重ねる
+const PoolShader = {
+  uniforms: {
+    color: { value: null },
+    tDiffuse: { value: null },
+    textureMatrix: { value: null },
+    uNoise: { value: null },
+    uPhase: { value: new THREE.Vector3() },       // 波 2 枚と泡の模様が流れる位相（0..1。JS で求める）
+    uImpact: { value: new THREE.Vector2() },      // 滝の落ちる線の (幅の半分, z)
+    uDeep: { value: new THREE.Color() },
+    uFoam: { value: new THREE.Color() },
+    uFogColor: { value: new THREE.Color() },
+    uFogDensity: { value: 0 },
+  },
+  vertexShader: /* glsl */`
+    uniform mat4 textureMatrix;
+    varying vec4 vReflect;
+    varying vec3 vPos;
+    void main() {
+      vReflect = textureMatrix * vec4(position, 1.0);
+      vec4 world = modelMatrix * vec4(position, 1.0);
+      vPos = world.xyz;
+      gl_Position = projectionMatrix * viewMatrix * world;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse, uNoise;
+    uniform vec3 uPhase, uDeep, uFoam, uFogColor;
+    uniform vec2 uImpact;
+    uniform float uFogDensity;
+    varying vec4 vReflect;
+    varying vec3 vPos;
+    void main() {
+      // 滝の落ちる線からの距離 d と、そこから放射状に流れる座標 flow
+      vec2 p = vec2(vPos.x, vPos.z - uImpact.y);
+      float d = length(vec2(max(abs(p.x) - uImpact.x, 0.0), p.y));
+      vec2 flow = vec2(p.x / (1.0 + d * 0.035), d);
+      // 波。滝に近いほど大きく揺らす
+      vec2 w1 = texture2D(uNoise, flow * vec2(0.03, 0.06) - vec2(0.0, uPhase.x)).gb - 0.5;
+      vec2 w2 = texture2D(uNoise, flow * vec2(0.3, 0.22) - vec2(0.0, uPhase.y)).gb - 0.5;
+      vec2 tilt = (w1 + w2 * 0.45) * ${WAVE_STRENGTH.toFixed(3)} * (1.0 + 2.5 * exp(-d / 40.0));
+      // 映り込み（縦に長く揺らす）とフレネル
+      vec3 view = normalize(cameraPosition - vPos);
+      float fresnel = 0.05 + 0.95 * pow(1.0 - clamp(view.y + tilt.y, 0.0, 1.0), 4.0);
+      vec3 refl = texture2D(tDiffuse, vReflect.xy / vReflect.w + tilt * vec2(0.05, 1.6)).rgb;
+      vec3 col = mix(uDeep, refl, fresnel);
+      // 泡。滝に近いほど多く、外へ流れながら細かくなって消える
+      float reach = exp(-d / ${FOAM_REACH.toFixed(1)});
+      float n = texture2D(uNoise, flow * vec2(0.16, 0.09) - vec2(0.0, uPhase.z)).r * 0.6
+              + texture2D(uNoise, flow * vec2(0.55, 0.3) - vec2(0.0, uPhase.z * 2.0)).g * 0.4;
+      float edge = mix(0.72, 0.3, reach);
+      float foam = smoothstep(edge, edge + 0.2, n);
+      col = mix(col, uFoam, foam * smoothstep(0.03, 0.3, reach));
+      // 遠くを霞ませる
+      float fog = uFogDensity * length(cameraPosition - vPos);
+      gl_FragColor = vec4(mix(uFogColor, col, exp(-fog * fog)), 1.0);
+    }`,
+};
+
+// 虹。太陽と反対の向きを中心にした円。カメラから見た向きで決まるので、霧の前の 1 枚の板に描く。
+// 色を足しつつ下の景色を少し薄める。暗い岩の上では光って見え、白い滝の上でも淡い色として見える
+const RainbowShader = {
+  uniforms: {
+    uAntiSun: { value: new THREE.Vector3(0, -1, 0) },
+    uStrength: { value: 0 },
+    uReach: { value: 1 },     // 霧の届く横の距離
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vPos;
+    void main() {
+      vec4 world = modelMatrix * vec4(position, 1.0);
+      vPos = world.xyz;
+      gl_Position = projectionMatrix * viewMatrix * world;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uAntiSun;
+    uniform float uStrength, uReach;
+    varying vec3 vPos;
+    void main() {
+      float angle = degrees(acos(dot(normalize(vPos - cameraPosition), uAntiSun)));
+      float t = (angle - ${RAINBOW_RADIUS[0].toFixed(1)}) / ${(RAINBOW_RADIUS[1] - RAINBOW_RADIUS[0]).toFixed(1)};
+      if (t < -0.3 || t > 1.3) discard;
+      // 内側が紫、外側が赤。赤・緑・青の山を重ねると、間に黄色や水色ができる。内側の端に赤を少し足して紫にする
+      vec3 d = (t - vec3(0.8, 0.5, 0.2)) / 0.22;
+      vec3 spectrum = exp(-d * d) + vec3(0.35, 0.0, 0.0) * exp(-t * t / 0.02);
+      // 太陽の大きさのぶん色が混ざるので、少し白っぽくする
+      spectrum = spectrum * 0.75 + 0.25 * (spectrum.r + spectrum.g + spectrum.b) / 3.0;
+      // 霧のある所にだけ見える（低い所、滝の近く）
+      float x = vPos.x / uReach;
+      float mist = smoothstep(0.0, 3.0, vPos.y) * smoothstep(${RAINBOW_TOP.toFixed(1)}, 16.0, vPos.y) * exp(-x * x);
+      float amount = uStrength * mist;
+      gl_FragColor = vec4(spectrum * amount, amount * ${RAINBOW_TINT.toFixed(1)} * max(spectrum.r, max(spectrum.g, spectrum.b)));
+    }`,
+};
+
+// ---- three.js 初期化 ----
+// シーンはブルーム用の別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000000, 0);
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.5, SKY_RADIUS * 1.5);
+
+// マルチサンプルにするのはシーンを描く描画先だけ。後段のブルームと合成までマルチサンプルにすると、全画面の処理がとても重くなる
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
+  type: THREE.HalfFloatType,
+  samples: renderer.getPixelRatio() < MSAA_OFF_PIXEL_RATIO ? MSAA_SAMPLES : 0,
+});
+function updateSceneTargetSize() {
+  const pr = renderer.getPixelRatio();
+  sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
+}
+updateSceneTargetSize();
+
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
+const scenePass = new TexturePass(sceneTarget.texture);
+scenePass.material.blending = THREE.NoBlending;   // 加算合成で不透明度が 1 を超えても、色をそのまま写す
+composer.addPass(scenePass);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0, 0.6, 1);
+// composer が渡す大きさより粗く描く
+const setBloomSize = bloom.setSize.bind(bloom);
+bloom.setSize = (width, height) => setBloomSize(width * BLOOM_SCALE, height * BLOOM_SCALE);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+const ambientLight = new THREE.HemisphereLight(0xffffff, 0xffffff, 1);
+scene.add(ambientLight);
+const keyLight = new THREE.DirectionalLight(0xffffff, 1);
+scene.add(keyLight);
+
+// 映り込みに描かないものを置くレイヤー。水面に映る範囲にほとんど入らないものと、映っても見分けられない細かいもの
+const MAIN_ONLY_LAYER = 1;
+camera.layers.enable(MAIN_ONLY_LAYER);
+
+// ---- 状態 ----
+let water = BASE_WATER;    // 水量
+let time = 0;              // 経過秒
+let sceneIndex = 0;        // いまの景色
+let streamsInUse = 0;      // いま描いている水の帯の数
+let activeHalf = 0;        // いまの滝の幅の半分
+let mistOpacity = 0;       // いまの景色の霧の不透明度
+
+// ---- テクスチャ ----
+const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+
+// canvas に描くテクスチャ。background で塗ってから draw(context, 一辺の画素数) で描く。繰り返して貼れる
+function canvasTexture(n, draw, { background = null, flipY = true } = {}) {
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d');
+  if (background) {
+    g.fillStyle = background;
+    g.fillRect(0, 0, n, n);
+  }
+  draw(g, n);
+  const texture = new THREE.CanvasTexture(c);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.flipY = flipY;
+  texture.anisotropy = maxAnisotropy;
+  return texture;
+}
+
+// 繰り返して貼れるノイズ。r, g, b は別々の模様。雲と水面の波・泡に使う
+const noiseTexture = (() => {
+  const n = 256;
+  const wrap = THREE.MathUtils.euclideanModulo;
+  // 周期 period の格子で繰り返す値ノイズ
+  const tile = (x, y, period, seed) => smoothLattice(x, y, (a, b) => hash2(wrap(a, period) + seed, wrap(b, period) - seed));
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    for (let c = 0; c < 3; c++) {
+      let sum = 0, amp = 0.5, period = 6;
+      for (let k = 0; k < 5; k++) {
+        sum += amp * tile(x / n * period, y / n * period, period, 31.7 * (c + 1) + k * 5.3);
+        amp *= 0.5;
+        period *= 2;
+      }
+      data[(y * n + x) * 4 + c] = clamp(sum * 1.04, 0, 1) * 255;
+    }
+    data[(y * n + x) * 4 + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.anisotropy = maxAnisotropy;
+  texture.needsUpdate = true;
+  return texture;
+})();
+
+// 滝の筋の模様。頭（下）が明るく尾（上）へ薄れる細長い水塊を散らす。canvas の下がテクスチャの v の大きい側
+const streakTexture = canvasTexture(512, (g, n) => {
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 420; i++) {
+    const x = rand(0, n), y = rand(0, n), w = rand(1.5, 8), h = rand(30, 240), a = rand(0.15, 0.7);
+    const grad = g.createLinearGradient(0, y, 0, y + h);
+    grad.addColorStop(0, gray(255, 0));
+    grad.addColorStop(0.7, gray(255, a));
+    grad.addColorStop(1, gray(255, 0));
+    g.fillStyle = grad;
+    // 繰り返し貼っても継ぎ目が出ないよう、端をはみ出す水塊は反対側にも描く（グラデーションごとずらす）
+    for (const dx of [-n, 0, n]) for (const dy of [-n, 0]) {
+      g.setTransform(1, 0, 0, 1, dx, dy);
+      g.beginPath();
+      g.ellipse(x, y + h / 2, w, h / 2, 0, 0, TAU);
+      g.fill();
+    }
+  }
+}, { background: '#000', flipY: false });
+
+// 岩の模様。灰色の地に、明暗のまだらと横に走る細い割れ目と細かい粒を描く。色は頂点の色で付ける
+const rockTexture = canvasTexture(512, (g, n) => {
+  const each = (x, y, r, draw) => {
+    for (const dx of [-n, 0, n]) for (const dy of [-n, 0, n]) if (Math.hypot(x + dx - n / 2, y + dy - n / 2) < n + r) draw(x + dx, y + dy);
+  };
+  for (let i = 0; i < 90; i++) {
+    const x = rand(0, n), y = rand(0, n), r = rand(20, 80), v = Math.floor(rand(90, 240));
+    each(x, y, r, (px, py) => {
+      const grad = g.createRadialGradient(px, py, 0, px, py, r);
+      grad.addColorStop(0, gray(v, 0.45));
+      grad.addColorStop(1, gray(v, 0));
+      g.fillStyle = grad;
+      g.fillRect(px - r, py - r, r * 2, r * 2);
+    });
+  }
+  g.lineCap = 'round';
+  for (let i = 0; i < 40; i++) {
+    const x = rand(0, n), y = rand(0, n), len = rand(20, 90), slope = rand(-0.5, 0.5);
+    each(x, y, len, (px, py) => {
+      g.strokeStyle = gray(Math.floor(rand(20, 70)), rand(0.3, 0.7));
+      g.lineWidth = rand(0.8, 2.6);
+      g.beginPath();
+      g.moveTo(px, py);
+      g.lineTo(px + len, py + len * slope);
+      g.stroke();
+    });
+  }
+  for (let i = 0; i < 9000; i++) {
+    g.fillStyle = gray(Math.floor(rand(40, 255)), rand(0.15, 0.5));
+    g.fillRect(rand(0, n), rand(0, n), rand(1, 2.5), rand(1, 2.5));
+  }
+}, { background: gray(165) });
+
+// ふちのぼけた白い円（しぶき、星）
+const softDotTexture = canvasTexture(64, (g, n) => {
+  const r = n / 2;
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  [[0, 1], [0.35, 0.55], [1, 0]].forEach(([t, a]) => grad.addColorStop(t, gray(255, a)));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, n, n);
+}, { background: '#000' });
+
+// 霧の 1 かたまり。ぼけた円をいくつか重ねて、丸く見えないようにする
+const puffTexture = canvasTexture(128, (g, n) => {
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 16; i++) {
+    const a = rand(0, TAU), d = rand(0, n * 0.3);
+    const x = n / 2 + Math.cos(a) * d, y = n / 2 + Math.sin(a) * d, r = rand(n * 0.08, n * 0.2);
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, gray(255, 0.32));
+    grad.addColorStop(1, gray(255, 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, n, n);
+  }
+}, { background: '#000' });
+
+// 葉の束。透明の地に細長い葉を散らす。先に暗い葉を、あとから明るい葉を描き、束に奥行きを出す。色は頂点の色で付ける。
+// 葉の板は左下の LEAF_UV_SIZE の範囲だけを使う。右上の角は白く塗り、同じ材質で描く幹と枝がそこを読む
+const LEAF_UV_SIZE = 0.85;
+const SOLID_SIZE = 0.12;          // 白く塗る角の一辺（テクスチャの一辺を 1 とする）
+const SOLID_UV = [1 - SOLID_SIZE / 2, 1 - SOLID_SIZE / 2];   // 白い角の中央（幹と枝の全頂点で同じ値なので、ぼかしたテクスチャを読まない）
+const leafTexture = canvasTexture(256, (g, n) => {
+  const count = 190;
+  const c = n * LEAF_UV_SIZE / 2;   // 葉の束の中心。canvas の下が v = 0 なので、y は下から測る
+  for (let i = 0; i < count; i++) {
+    // 中央に多く、板のふちまで届かないように置く（板の四角い輪郭を見せない）
+    const a = rand(0, TAU), d = c * 0.84 * Math.sqrt(Math.random());
+    const len = rand(n * 0.04, n * 0.07);
+    const v = Math.floor(mix(95, 255, i / count) * rand(0.85, 1));
+    g.fillStyle = gray(v);
+    g.beginPath();
+    g.ellipse(c + Math.cos(a) * d, n - c + Math.sin(a) * d, len, len * 0.42, rand(0, TAU), 0, TAU);
+    g.fill();
+  }
+  g.fillStyle = gray(255);
+  g.fillRect(n * (1 - SOLID_SIZE), 0, n * SOLID_SIZE, n * SOLID_SIZE);
+});
+
+// 崖の上の広葉樹の樹冠を丸ごと描く。2 × 2 の区画に 1 種類ずつ。色は頂点の色で付ける。
+// 中央のかたまりと、それに必ず重なる外側のふくらみを暗く塗りつぶし、その上に葉を散らす。樹冠はひとつながりで、ふちはでこぼこになる
+const crownTexture = canvasTexture(RIM_TEXTURE_SIZE, (g, n) => {
+  const c = n / 2;   // 区画の一辺
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 2; col++) {
+    // 中央からの距離と半径の範囲は、外側のふくらみが中央（半径 0.19）に重なり、区画の外へはみ出さない値にする
+    const lobes = [[0.5, 0.52, 0.19], ...Array.from({ length: 10 }, (_, i) => {
+      const a = (i + rand(-0.3, 0.3)) * GOLDEN_RATIO * TAU, d = rand(0.14, 0.25);
+      const y = 0.52 + Math.sin(a) * d * 1.05;
+      return [0.5 + Math.cos(a) * d * mix(0.7, 1, y), y, rand(0.08, 0.14)];   // 上ほど細くする
+    })];
+    const ox = col * c, oy = row * c;
+    g.fillStyle = gray(70);
+    for (const [x, y, r] of lobes) {
+      g.beginPath();
+      g.arc(ox + x * c, oy + y * c, r * c, 0, TAU);
+      g.fill();
+    }
+    for (let i = 0; i < CROWN_LEAVES; i++) {
+      const [x, y, r] = lobes[i % lobes.length];
+      const a = rand(0, TAU), d = r * 1.05 * Math.sqrt(Math.random());
+      const px = x + Math.cos(a) * d, py = y + Math.sin(a) * d;
+      const len = rand(0.035, 0.06);
+      // あとから描く葉ほど明るく、上の葉ほど明るい
+      const v = Math.floor(clamp(mix(70, 255, i / CROWN_LEAVES) * mix(1.15, 0.65, py) * rand(0.85, 1.1), 0, 255));
+      g.fillStyle = gray(v);
+      g.beginPath();
+      g.ellipse(ox + px * c, oy + py * c, len * c, len * 0.45 * c, rand(0, TAU), 0, TAU);
+      g.fill();
+    }
+  }
+});
+
+// 崖の上の針葉樹を丸ごと描く。縦長の区画（4 × 2）に 1 種類ずつ。色は頂点の色で付ける。
+// 垂れ下がる枝のスカートを下の段から重ねて塗りつぶす。枝の間が透けないので、枯れ木に見えない
+const coniferCardTexture = canvasTexture(RIM_TEXTURE_SIZE, (g, n) => {
+  const cw = n / 4, ch = n / 2;   // 区画の幅と高さ
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 4; col++) {
+    const ox = col * cw, oy = row * ch;
+    const px = (x) => ox + x * cw, py = (y) => oy + y * ch;   // 区画の中の位置（0..1）を画素に
+    g.fillStyle = gray(45);   // 根もとの幹
+    g.fillRect(px(0.45), py(0.86), cw * 0.1, ch * 0.12);
+    for (let i = 0; i < RIM_CONIFER_LAYERS; i++) {
+      const t = i / (RIM_CONIFER_LAYERS - 1);
+      const bottom = mix(0.92, 0.2, t) + rand(-0.008, 0.008);
+      const apex = bottom - mix(0.26, 0.19, t);
+      const half = mix(0.46, 0.09, t ** 0.9) * rand(0.9, 1.05);
+      // 枝の先ほど明るい。段の根もとは暗く、上の段の影になる
+      const grad = g.createLinearGradient(0, py(apex), 0, py(bottom));
+      grad.addColorStop(0, gray(55));
+      grad.addColorStop(0.55, gray(95));
+      grad.addColorStop(1, gray(Math.floor(rand(200, 245))));
+      g.fillStyle = grad;
+      // 頂点から左の端へ下り、ぎざぎざの枝先を右の端まで描いて戻る
+      g.beginPath();
+      g.moveTo(px(0.5), py(apex));
+      const teeth = 5 + Math.round(5 * (1 - t));
+      for (let k = 0; k <= teeth; k++) {
+        const x = 0.5 + half * (k / teeth * 2 - 1);
+        const edge = 1 - Math.abs(k / teeth * 2 - 1);   // 端で 0、中央で 1。中央ほど枝先が下がる
+        g.lineTo(px(x), py(bottom - 0.035 * (1 - edge) + rand(-0.006, 0.006)));
+        if (k < teeth) g.lineTo(px(x + half / teeth), py(bottom - 0.05 - 0.035 * (1 - edge)));
+      }
+      g.closePath();
+      g.fill();
+    }
+  }
+});
+
+// ---- 空 ----
+// カメラに付いて動く
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(SKY_RADIUS, 32, 16),
+  new THREE.ShaderMaterial({ ...SkyShader, side: THREE.BackSide, depthWrite: false }));
+const skyUniforms = sky.material.uniforms;
+skyUniforms.uNoise.value = noiseTexture;
+sky.renderOrder = 0.5;   // 崖や木のあとに描いて、隠れた所の計算を省く
+scene.add(sky);
+
+const stars = (() => {
+  const positions = new Float32Array(STAR_COUNT * 3);
+  const colors = new Float32Array(STAR_COUNT * 3);
+  const dir = new THREE.Vector3();
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const el = Math.asin(rand(0.05, 1));     // 空に一様に散らす
+    const az = rand(0, TAU);
+    dir.set(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
+    dir.multiplyScalar(SKY_RADIUS * 0.9).toArray(positions, i * 3);
+    const b = 0.4 + Math.pow(Math.random(), 3) * 1.8;   // 暗い星を多く
+    colors.set([b, b, b * rand(0.9, 1.15)], i * 3);
+  }
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    .setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const points = new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: STAR_SIZE * renderer.getPixelRatio(), sizeAttenuation: false, vertexColors: true, fog: false,
+    alphaMap: softDotTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  points.renderOrder = -1;
+  points.layers.set(MAIN_ONLY_LAYER);
+  sky.add(points);
+  return points;
+})();
+
+function updateSky() {
+  sky.position.copy(camera.position);
+  skyUniforms.uCloudPhase.value = (time * CLOUD_SPEED) % 1;
+}
+
+// ---- 崖と台地 ----
+// 横に CLIFF_COLS、縦に「崖の面 → 台地」と続く 1 枚の格子。x は滝の近くほど細かく区切る
+{
+  const nx = CLIFF_COLS + 1, ny = CLIFF_ROWS + PLATEAU_ROWS + 1;
+  const positions = new Float32Array(nx * ny * 3);
+  const uvs = new Float32Array(nx * ny * 2);
+  const isWall = new Uint8Array(nx * ny);
+  for (let i = 0; i < nx; i++) {
+    const q = i / CLIFF_COLS * 2 - 1;
+    const x = CLIFF_HALF * Math.sign(q) * Math.abs(q) ** 1.5;
+    const top = rimY(x), rimZ = wallZ(x, top);
+    for (let j = 0; j < ny; j++) {
+      const k = i * ny + j;
+      let y, z;
+      if (j <= CLIFF_ROWS) {
+        y = mix(-2, top, j / CLIFF_ROWS);
+        z = wallZ(x, y);
+        isWall[k] = 1;
+      } else {
+        const d = PLATEAU_DEPTH * ((j - CLIFF_ROWS) / PLATEAU_ROWS) ** 2;
+        y = plateauY(x, d);
+        z = rimZ - d;
+      }
+      positions.set([x, y, z], k * 3);
+      uvs.set([x / ROCK_TILE, y / ROCK_TILE + z / ROCK_TILE * 0.5], k * 2);
+    }
+  }
+  const indices = [];
+  for (let i = 0; i < CLIFF_COLS; i++) for (let j = 0; j < ny - 1; j++) {
+    const a = i * ny + j, b = a + ny, c = a + 1, d = b + 1;
+    indices.push(a, b, c, c, b, d);
+  }
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    .setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  // 頂点の色: 岩は暗い色と明るい色のまだら、上向きの面と足もとには苔。滝の裏は濡れて暗い
+  const normals = geometry.attributes.normal;
+  const colors = new Float32Array(nx * ny * 3);
+  const rockA = linear(ROCK_COLORS[0]), rockB = linear(ROCK_COLORS[1]);
+  const moss = linear(MOSS_COLOR), grass = linear(GRASS_COLOR);
+  for (let k = 0; k < nx * ny; k++) {
+    const x = positions[k * 3], y = positions[k * 3 + 1];
+    const m = fbm(x * 0.1 + 5, y * 0.13);
+    const shade = smoothstep(m, 0.3, 0.7);
+    const wet = Math.exp(-((x / (FALL_MAX_HALF + 4)) ** 4)) * (1 - smoothstep(y, FALL_HEIGHT - 1, FALL_HEIGHT + 2));
+    const up = smoothstep(normals.getY(k), 0.2, 0.6);
+    const low = 1 - smoothstep(y, 0, 16);
+    const mossAmount = clamp(up + 0.25 + 0.5 * low, 0, 1) * smoothstep(fbm(x * 0.19, y * 0.21 + 11), 0.42, 0.56);
+    const stain = 1 - 0.5 * smoothstep(fbm(x * 0.55, y * 0.025 + 2), 0.48, 0.62);   // 岩肌を伝う水の縦のしみ
+    for (let c = 0; c < 3; c++) {
+      let v = mix(rockA[c], rockB[c], shade) * stain;
+      v = isWall[k] ? mix(v, moss[c] * mix(0.7, 1.15, shade), mossAmount * (1 - 0.6 * wet)) : grass[c] * mix(0.75, 1.2, shade);
+      colors[k * 3 + c] = v * mix(1, 0.55, wet) * mix(0.25, 1, smoothstep(y, 0, 2.5));   // 水際は濡れて暗い
+    }
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  scene.add(new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({
+    vertexColors: true, map: rockTexture,
+    side: THREE.DoubleSide,   // 映り込みは水面の下から見上げて描く。面の裏が抜けると、水面に空が映ってしまう
+  })));
+}
+
+// ---- 岩と木 ----
+// 岩。球をランダムな平面で切り落として、角ばった形にする。半径は 1 前後
+function boulderGeometry() {
+  const geometry = new THREE.IcosahedronGeometry(1, 2);
+  const pos = geometry.attributes.position;
+  const v = new THREE.Vector3();
+  const cuts = Array.from({ length: 14 }, () => ({
+    n: new THREE.Vector3(rand(-1, 1), rand(-0.4, 1), rand(-1, 1)).normalize(), d: rand(0.55, 0.92),
+  }));
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    for (const { n, d } of cuts) {
+      const over = v.dot(n) - d;
+      if (over > 0) v.addScaledVector(n, -over);
+    }
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  // 上を向いた面には苔
+  geometry.computeVertexNormals();
+  const normal = geometry.attributes.normal;
+  const rock = linear(BOULDER_COLOR), moss = linear(MOSS_COLOR);
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const m = smoothstep(normal.getY(i), 0.55, 0.85) * smoothstep(fbm(pos.getX(i) * 2 + 4, pos.getZ(i) * 2 + 4), 0.35, 0.55);
+    for (let c = 0; c < 3; c++) colors[i * 3 + c] = mix(rock[c], moss[c], m);
+  }
+  return geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+// 大きさ 1 の geometry を count 個、place(i) が返す { x, y, z, scale: [x, y, z], brightness } に置く。向きは Y 軸まわりにランダム
+function scatter(geometry, material, count, place) {
+  const mesh = new THREE.InstancedMesh(geometry, material, count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  const p = new THREE.Vector3(), s = new THREE.Vector3(), tint = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const { x, y, z, scale, brightness } = place(i);
+    q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, rand(0, TAU));
+    mesh.setMatrixAt(i, m.compose(p.set(x, y, z), q, s.set(...scale)));
+    mesh.setColorAt(i, tint.setScalar(brightness));
+  }
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// カメラがどこへ漂っても画面に入らない位置か（画面の外の木は置かない）
+const inView = (x, z) => Math.abs(x) < CAM_SWAY[0] + 12 + VIEW_SLOPE * (CAM_POS[2] + CAM_SWAY[2] - z);
+
+const triple = (v) => [v, v, v];
+
+// 葉の板や枝を三角形で積む器。法線は面の向きではなく、木のかたまりの外向きにして、ふんわりした陰影にする
+function triangleSoup() {
+  const position = [], normal = [], color = [], uv = [];
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
+  return {
+    // 頂点 corners（[x, y, z] 3 つ）、外向き out（単位ベクトルでなくてよい）、頂点の色 colors（線形の [r, g, b] 3 つ）、
+    // テクスチャの座標 uvs（[u, v] 3 つ。葉の板以外は省略して、不透明な所を読む）、
+    // 頂点ごとの法線 normals（[x, y, z] 3 つ。省略すると out）
+    add(corners, out, colors, uvs = triple(SOLID_UV), normals = triple(out)) {
+      const [a, b, c] = corners;
+      n.fromArray(out).normalize();
+      ab.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+      ac.set(c[0] - a[0], c[1] - a[1], c[2] - a[2]);
+      // 表が外を向くように頂点の順を決める（裏から見た面は法線が反転して暗くなるため）
+      for (const i of ab.cross(ac).dot(n) < 0 ? [0, 2, 1] : [0, 1, 2]) {
+        position.push(...corners[i]);
+        n.fromArray(normals[i]).normalize();
+        normal.push(n.x, n.y, n.z);
+        color.push(...colors[i]);
+        uv.push(...uvs[i]);
+      }
+    },
+    geometry() {
+      return new THREE.BufferGeometry()
+        .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+        .setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
+        .setAttribute('color', new THREE.Float32BufferAttribute(color, 3))
+        .setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    },
+  };
+}
+
+// 幹や枝。from から to へ、太さ r0 から r1 へ変わる sides 角の筒を積む（ふたは付けない）
+function addLimb(soup, from, to, r0, r1, sides) {
+  const colors = triple(linear(TRUNK_COLOR));
+  const axis = new THREE.Vector3(to[0] - from[0], to[1] - from[1], to[2] - from[2]).normalize();
+  const helper = Math.abs(axis.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(axis, helper).normalize();
+  const v = new THREE.Vector3().crossVectors(axis, u);
+  const dir = (i) => {   // i 番目の角の向き（筒の軸に垂直）。0.5 刻みで面の向きにも使う
+    const a = i / sides * TAU;
+    return u.clone().multiplyScalar(Math.cos(a)).addScaledVector(v, Math.sin(a)).toArray();
+  };
+  const at = (p, d, r) => p.map((x, k) => x + d[k] * r);
+  for (let i = 0; i < sides; i++) {
+    const d0 = dir(i), d1 = dir(i + 1), out = dir(i + 0.5);
+    soup.add([at(from, d0, r0), at(from, d1, r0), at(to, d1, r1)], out, colors);
+    soup.add([at(from, d0, r0), at(to, d1, r1), at(to, d0, r1)], out, colors);
+  }
+}
+
+// 葉の板を 1 枚（三角形 2 枚）積む。向きは外向き out からランダムに傾ける。法線は out のままにして、板ごとの陰影の差を出さない
+function addCard(soup, p, halfSize, out, color) {
+  const facing = new THREE.Vector3(out[0] + rand(-0.9, 0.9), out[1] + rand(-0.9, 0.9), out[2] + rand(-0.9, 0.9)).normalize();
+  const u = new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).cross(facing).normalize().multiplyScalar(halfSize);
+  const v = new THREE.Vector3().crossVectors(facing, u);
+  const corner = (a, b) => [p[0] + u.x * a + v.x * b, p[1] + u.y * a + v.y * b, p[2] + u.z * a + v.z * b];
+  const colors = triple(color), m = LEAF_UV_SIZE;
+  soup.add([corner(-1, -1), corner(1, -1), corner(1, 1)], out, colors, [[0, 0], [m, 0], [m, m]]);
+  soup.add([corner(-1, -1), corner(1, 1), corner(-1, 1)], out, colors, [[0, 0], [m, m], [0, m]]);
+}
+
+// いくつかのふくらみ lobes（[x, y, z, 半径] の配列）に葉の板を散らす。
+// 法線は樹冠の中心 center からの向きにする。ふくらみごとに陰影を付けると、玉の集まりに見えるため
+function addFoliage(soup, lobes, center, cards, halfSize) {
+  const dark = linear(BROADLEAF_COLORS[0]), light = linear(BROADLEAF_COLORS[1]);
+  const d = new THREE.Vector3();
+  for (let i = 0; i < cards; i++) {
+    const [lx, ly, lz, r] = lobes[i % lobes.length];
+    d.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize();
+    const k = 0.35 + 0.75 * Math.sqrt(Math.random());   // 表面の近くに多く置く
+    const p = [lx + d.x * r * k, ly + d.y * r * k, lz + d.z * r * k];
+    const out = new THREE.Vector3(p[0] - center[0], p[1] - center[1], p[2] - center[2]).normalize().toArray();
+    // 上の葉ほど明るく、内側の葉ほど暗い（内側の暗い板が、向こうの透けを減らす）
+    const inner = smoothstep(k, 0.45, 0.85);
+    const lit = (0.3 + 0.55 * (0.5 + 0.5 * out[1])) * rand(0.8, 1.15) * mix(0.6, 1, inner);
+    addCard(soup, p, halfSize * rand(0.8, 1.25), out, dark.map((v, ch) => mix(v, light[ch], lit)));
+  }
+}
+
+// 足もとの広葉樹。幹から枝を伸ばし、その先の大きさの違うふくらみを葉の板で覆う。高さは 1
+function broadleafGeometry() {
+  const soup = triangleSoup();
+  addLimb(soup, [0, -0.02, 0], [0, 0.72, 0], 0.05, 0.012, BROADLEAF_TRUNK_SIDES);
+  const center = [0, 0.62, 0];
+  const lobes = Array.from({ length: 9 }, (_, i) => {
+    const a = i * GOLDEN_RATIO * TAU, y = rand(0.42, 0.86);
+    const spread = rand(0.1, 0.25) * (1 - 0.6 * smoothstep(y, 0.6, 0.9));   // 上ほど細くする
+    return [Math.cos(a) * spread, y, Math.sin(a) * spread, rand(0.1, 0.17)];
+  });
+  // 枝は、幹の途中からふくらみの中心へ、上向きに伸ばす
+  for (const [x, y, z] of lobes.slice(0, BROADLEAF_BRANCHES)) addLimb(soup, [0, y * rand(0.45, 0.7), 0], [x, y, z], 0.014, 0.004, 3);
+  addFoliage(soup, lobes, center, LEAF_CARDS, LEAF_CARD_SIZE);
+  return soup.geometry();
+}
+
+// 針葉樹。垂れ下がる枝を段ごとに輪にして積む。枝の先ほど明るい。高さは 1
+function coniferGeometry(tiers) {
+  const soup = triangleSoup();
+  addLimb(soup, [0, -0.02, 0], [0, 0.94, 0], 0.024, 0.003, 3);
+  const dark = linear(CONIFER_COLORS[0]), light = linear(CONIFER_COLORS[1]);
+  for (let i = 0; i < tiers; i++) {
+    const t = i / (tiers - 1);
+    const y = mix(0.16, 0.92, t), len = mix(0.21, 0.035, t ** 0.85);
+    const branches = Math.round(mix(1.1, 0.5, t) * tiers);
+    const offset = rand(0, TAU);
+    for (let b = 0; b < branches; b++) {
+      const a = offset + (b + rand(-0.2, 0.2)) / branches * TAU;
+      const reach = len * rand(0.8, 1.15), w = reach * rand(0.18, 0.3);
+      const dx = Math.cos(a), dz = Math.sin(a);
+      const droop = reach * rand(0.45, 0.8);
+      const tip = [dx * reach, y - droop, dz * reach];
+      const root0 = [-dz * w, y + reach * 0.15, dx * w], root1 = [dz * w, y + reach * 0.15, -dx * w];
+      const shade = rand(0.75, 1.2);
+      const c0 = dark.map((v) => v * shade), c1 = light.map((v) => v * shade);
+      soup.add([root0, root1, tip], [dx, 0.55, dz], [c0, c0, c1]);
+    }
+  }
+  return soup.geometry();
+}
+
+const coniferMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+// 葉の板は表（外向き）だけ描く。裏も描くと、法線が反転して真っ黒な塊に見える
+const leafMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, map: leafTexture, alphaTest: LEAF_ALPHA_TEST });
+
+// 崖の上の木。滝口の真上は川なので、少し奥まで空ける。奥ほど背を高くして稜線を作る
+function rimTree() {
+  for (;;) {
+    const x = rand(-CLIFF_HALF, CLIFF_HALF);
+    const d = 2 + (RIM_TREE_DEPTH - 2) * Math.random() ** 1.3;
+    const z = wallZ(x, rimY(x)) - d;
+    if ((Math.abs(x) < FALL_MAX_HALF * 0.8 && d < 30) || !inView(x, z)) continue;
+    const h = randIn(RIM_TREE_HEIGHT) * (1 + d / RIM_TREE_DEPTH * 0.7);
+    return {
+      x, y: plateauY(x, d) - 0.3, z,
+      scale: [h * rand(0.85, 1.2), h, h * rand(0.85, 1.2)], brightness: rand(0.7, 1.25),
+    };
+  }
+}
+
+// 崖の足もとの斜面の木。画面の両端を縁取る
+function bankTree() {
+  for (;;) {
+    const x = randSign() * (32 + 50 * Math.random() ** 1.3);
+    const y = rand(0.6, TALUS_HEIGHT - 2);
+    const z = wallZ(x, y) + 0.5;
+    if (!inView(x, z)) continue;
+    const h = randIn(BANK_TREE_HEIGHT);
+    return {
+      x, y: y - 0.3, z,
+      scale: [h * rand(0.8, 1.15), h, h * rand(0.8, 1.15)], brightness: rand(0.65, 1.15),
+    };
+  }
+}
+
+// カメラの基準の位置に向けて立てた板を積む。遠い木を 1 枚の絵で描くのに使う。カメラの漂う幅より遠いので、向きは固定でよい。
+// 中心 (x, y, z)、大きさの半分 halfW / halfH、手前へ出す量 forward、下と上の頂点の色 low / high、テクスチャの区画の数 cols × rows
+function addFacingCard(soup, x, y, z, halfW, halfH, forward, low, high, cols, rows) {
+  const front = new THREE.Vector3(CAM_POS[0] - x, 0, CAM_POS[2] - z).normalize();
+  const out = front.toArray();
+  // 板の隅 (a, b)。a は横、b は縦に -1..1
+  const corner = (a, b) => [x + front.x * forward + front.z * halfW * a, y + halfH * b, z + front.z * forward - front.x * halfW * a];
+  // 法線を隅ごとに外へ開いて、1 枚の板でも丸みのある陰影にする
+  const normal = (a, b) => [front.x + front.z * a * 0.8, 0.35 + b * 0.6, front.z - front.x * a * 0.8];
+  // 区画を選び、半分は左右を反転して、同じ形が並んで見えないようにする
+  const col = randInt(cols), row = randInt(rows), flip = Math.random() < 0.5;
+  const u0 = (col + (flip ? 1 : 0)) / cols, u1 = (col + (flip ? 0 : 1)) / cols;
+  const v0 = row / rows, v1 = (row + 1) / rows;
+  soup.add([corner(-1, -1), corner(1, -1), corner(1, 1)], out, [low, low, high],
+    [[u0, v0], [u1, v0], [u1, v1]], [normal(-1, -1), normal(1, -1), normal(1, 1)]);
+  soup.add([corner(-1, -1), corner(1, 1), corner(-1, 1)], out, [low, high, high],
+    [[u0, v0], [u1, v1], [u0, v1]], [normal(-1, -1), normal(1, 1), normal(-1, 1)]);
+}
+
+// 崖の上の木。遠くて葉や枝の 1 本ずつは見えないので、木を丸ごと描いた板を 1 本につき 1 枚立てる。
+// 葉の板を重ねると離れた板が円盤のように浮いて見え、枝の三角形を積むと枝の間が透けて枯れ木に見えるため
+function plantRimTrees() {
+  const crowns = triangleSoup(), conifers = triangleSoup(), trunks = triangleSoup();
+  const tinter = (colors, brightness) => {
+    const dark = linear(colors[0]), light = linear(colors[1]);
+    return (t) => dark.map((v, k) => mix(v, light[k], t) * brightness);
+  };
+  const coniferCount = Math.round(RIM_TREE_COUNT * CONIFER_SHARE);
+  for (let i = 0; i < RIM_TREE_COUNT; i++) {
+    const { x, y, z, scale: [width, height], brightness } = rimTree();
+    if (i < coniferCount) {
+      const tint = tinter(CONIFER_COLORS, brightness);
+      const halfW = width * RIM_CONIFER_WIDTH / 2, halfH = height / 2;
+      addFacingCard(conifers, x, y + halfH, z, halfW, halfH, 0, tint(0.5), tint(1), 4, 2);
+    } else {
+      const tint = tinter(BROADLEAF_COLORS, brightness);
+      const halfW = width * CROWN_SIZE / 2, halfH = height * CROWN_SIZE / 2;
+      addLimb(trunks, [x, y, z], [x, y + height * 0.55, z], height * 0.04, height * 0.015, 3);
+      // 板を幹より手前に出す。幹が葉の上に透けて見えないように
+      addFacingCard(crowns, x, y + height - halfH, z, halfW, halfH, height * 0.05, tint(0.25), tint(0.65), 2, 2);
+    }
+  }
+  const cardMaterial = (map) => new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: LEAF_ALPHA_TEST });
+  for (const mesh of [
+    new THREE.Mesh(crowns.geometry(), cardMaterial(crownTexture)),
+    new THREE.Mesh(conifers.geometry(), cardMaterial(coniferCardTexture)),
+    new THREE.Mesh(trunks.geometry(), coniferMaterial),
+  ]) {
+    mesh.layers.set(MAIN_ONLY_LAYER);   // 崖の上の木は、水面に映る範囲にほとんど入らない
+    scene.add(mesh);
+  }
+}
+plantRimTrees();
+
+const bankConifers = Math.round(BANK_TREE_COUNT * CONIFER_SHARE), bankBroadleaves = BANK_TREE_COUNT - bankConifers;
+scatter(coniferGeometry(CONIFER_TIERS), coniferMaterial, bankConifers, bankTree);
+for (let i = 0; i < BROADLEAF_SHAPES; i++) {
+  const n = Math.floor(bankBroadleaves / BROADLEAF_SHAPES) + (i < bankBroadleaves % BROADLEAF_SHAPES ? 1 : 0);
+  scatter(broadleafGeometry(), leafMaterial, n, bankTree);
+}
+
+// 滝壺の岩。岸に沿って並べ、滝の手前にも少し置く
+{
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, map: rockTexture, flatShading: true });
+  for (let i = 0; i < BOULDER_SHAPES; i++) {
+    scatter(boulderGeometry(), material, Math.round(BOULDER_COUNT / BOULDER_SHAPES), () => {
+      const s = rand(1.2, 5);
+      const x = randSign() * rand(12, 52);
+      const z = lipZ(x) + rand(7, 25);
+      return { x, y: s * rand(-0.15, 0.2), z, scale: [s * rand(1, 1.5), s * rand(0.6, 1), s], brightness: rand(0.65, 1.1) };
+    });
+  }
+}
+
+// 滝口の岩。滝口の縁に埋め込み、水は岩の左右に分かれて流れる（下の avoidLipRocks）。岩の下には濡れた崖がのぞく
+// 滝口を等分した区画に 1 個ずつ置くので、岩どうしは重ならない
+const lipRocks = Array.from({ length: LIP_ROCK_COUNT }, (_, i) => {
+  const x = ((i + 0.5 + rand(-0.2, 0.2)) / LIP_ROCK_COUNT * 2 - 1) * FALL_MAX_HALF * 0.8;
+  const size = randIn(LIP_ROCK_SIZE), stretch = rand(1.1, 1.5);
+  return { x, size, stretch, halfWidth: size * stretch * 0.75 };
+});
+{
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  scatter(boulderGeometry(), material, LIP_ROCK_COUNT, (i) => {
+    const { x, size, stretch } = lipRocks[i];
+    return {
+      x, y: rimY(x) - size * 0.1, z: lipZ(x) - size * 0.4,
+      scale: [size * stretch, size * 0.8, size], brightness: rand(0.7, 1),
+    };
+  });
+}
+
+// 水の帯が滝口の岩にかからないよう、帯の位置を岩の脇へよける
+function avoidLipRocks(x, width) {
+  for (const r of lipRocks) {
+    const gap = r.halfWidth * 0.7 + width * 0.6;
+    if (Math.abs(x - r.x) < gap) return r.x + (x < r.x ? -gap : gap);
+  }
+  return x;
+}
+
+// ---- 滝 ----
+// 水の帯。中央に近い順に並べ、先頭から水量に応じた本数を描く
+const streams = [];
+for (let i = 0; i < STREAM_COUNT; i++) {
+  const original = (((i + 1) * GOLDEN_RATIO) % 1 * 2 - 1) * FALL_MAX_HALF;
+  const k = Math.abs(original) / FALL_MAX_HALF;
+  const width = mix(STREAM_WIDTH[0], STREAM_WIDTH[1], k) * rand(0.7, 1.3);
+  const x = avoidLipRocks(original, width);
+  const y0 = rimY(x) + 0.5 * (fbm(x * 0.3, 1.5) - 0.5);
+  streams.push({
+    x, rejoinX: original, y0, z0: lipZ(x) + 0.2, life: fallTime(y0),
+    width,
+    seed: Math.random(),
+  });
+}
+// 中央に近い順に並べる。順番を少し乱して、水量が増えたときに端へ細い筋から増えていくようにする
+for (const st of streams) st.order = Math.abs(st.x) + rand(0, STREAM_ORDER_JITTER);
+streams.sort((a, b) => a.order - b.order);
+
+const streamMesh = (() => {
+  const count = streams.length * (STREAM_SEGMENTS + 1) * 2;
+  const position = new Float32Array(count * 3);
+  const side = new Float32Array(count), fallT = new Float32Array(count);
+  const fallK = new Float32Array(count), seed = new Float32Array(count);
+  const indices = new Uint32Array(streams.length * STREAM_SEGMENTS * 6);
+  let v = 0, e = 0;
+  for (const s of streams) {
+    for (let j = 0; j <= STREAM_SEGMENTS; j++) {
+      const k = j / STREAM_SEGMENTS, t = k * s.life;
+      for (const sd of [-1, 1]) {
+        // 岩でよけた帯は、落ちるうちに元の位置へ戻る（岩の下で水が合流する）
+        const cx = mix(s.x, s.rejoinX, smoothstep(k, 0, LIP_ROCK_REJOIN));
+        position.set([cx + sd * s.width * (1 + STREAM_SPREAD * k), fallY(s.y0, t), fallZ(s.z0, t)], v * 3);
+        side[v] = sd;
+        fallT[v] = t;
+        fallK[v] = k;
+        seed[v] = s.seed;
+        v++;
+      }
+      if (j < STREAM_SEGMENTS) {
+        const a = v - 2;
+        indices.set([a, a + 1, a + 2, a + 2, a + 1, a + 3], e);
+        e += 6;
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.BufferAttribute(position, 3))
+    .setAttribute('aSide', new THREE.BufferAttribute(side, 1))
+    .setAttribute('aTime', new THREE.BufferAttribute(fallT, 1))
+    .setAttribute('aFall', new THREE.BufferAttribute(fallK, 1))
+    .setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  const mesh = new THREE.Mesh(geometry, new THREE.ShaderMaterial({
+    ...StreamShader, side: THREE.DoubleSide, transparent: true, depthWrite: false,
+  }));
+  mesh.material.uniforms.uStreak.value = streakTexture;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 2;
+  scene.add(mesh);
+  return mesh;
+})();
+const streamUniforms = streamMesh.material.uniforms;
+
+function updateStreams() {
+  streamUniforms.uPhase.value.set((time * STREAK_RATE[0]) % 1, (time * STREAK_RATE[1]) % 1);
+  streamUniforms.uSway.value = (time * STREAM_SWAY_SPEED) % TAU;
+}
+
+// ---- 水滴 ----
+// 速さのままに動かす（水滴・しぶき）
+function moveParticle(p, dt) {
+  p.x += p.vx * dt;
+  p.y += p.vy * dt;
+  p.z += p.vz * dt;
+}
+
+// 滝のまわりに落ちる細い水滴。速さの向きに伸ばした線で描く
+const drops = (() => {
+  const position = new Float32Array(MAX_DROPS * 6);
+  const color = new Float32Array(MAX_DROPS * 6);
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.BufferAttribute(position, 3).setUsage(THREE.DynamicDrawUsage))
+    .setAttribute('color', new THREE.BufferAttribute(color, 3).setUsage(THREE.DynamicDrawUsage));
+  const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  }));
+  lines.frustumCulled = false;
+  lines.renderOrder = 3;
+  lines.layers.set(MAIN_ONLY_LAYER);
+  scene.add(lines);
+  return { max: MAX_DROPS, position, color, geometry, list: [], carry: 0, tint: [1, 1, 1] };
+})();
+
+function updateDrops(dt) {
+  emit(drops, DROP_RATE * water, dt, () => {
+    const s = streams[randInt(streamsInUse)];
+    const t = rand(0, 0.5);   // 滝口からの落ち始めは、少しばらつかせる
+    return {
+      x: s.x + rand(-1.6, 1.6) * s.width, y: fallY(s.y0, t), z: fallZ(s.z0, t) + rand(-0.5, 1.5),
+      vx: rand(-0.7, 0.7), vy: -LIP_SPEED[0] - FALL_GRAVITY * t, vz: LIP_SPEED[1] + rand(-0.3, 0.9),
+      a: rand(0.1, 0.5),
+    };
+  });
+  const { position, color, tint } = drops;
+  let n = 0;
+  for (const p of drops.list) {
+    p.vy -= FALL_GRAVITY * dt;
+    moveParticle(p, dt);
+    if (p.y <= 0) continue;
+    position.set([p.x, p.y, p.z,
+      p.x - p.vx * DROP_STREAK, p.y - p.vy * DROP_STREAK, p.z - p.vz * DROP_STREAK], n * 6);
+    color.set([tint[0] * p.a, tint[1] * p.a, tint[2] * p.a, 0, 0, 0], n * 6);
+    drops.list[n++] = p;
+  }
+  drops.list.length = n;
+  drops.geometry.setDrawRange(0, n * 2);
+  drops.geometry.attributes.position.needsUpdate = true;
+  drops.geometry.attributes.color.needsUpdate = true;
+}
+
+// ---- しぶきと霧 ----
+// 距離 1 で大きさ 1 の粒の画素数。画面の高さと画角で変わる（リサイズで更新）
+const particleScale = { value: 1 };
+function updateParticleScale() {
+  particleScale.value = innerHeight * renderer.getPixelRatio() / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+}
+
+// max 個までの粒を入れる器。粒は list に持ち、毎フレーム write で書き込んで flush で描く
+function createParticles(max, { map, minSize = 0, depthTest = true, order = 0 }) {
+  const position = new Float32Array(max * 3);
+  const color = new Float32Array(max * 4);
+  const size = new Float32Array(max);
+  const angle = new Float32Array(max);
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.BufferAttribute(position, 3).setUsage(THREE.DynamicDrawUsage))
+    .setAttribute('color', new THREE.BufferAttribute(color, 4).setUsage(THREE.DynamicDrawUsage))
+    .setAttribute('size', new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage))
+    .setAttribute('angle', new THREE.BufferAttribute(angle, 1).setUsage(THREE.DynamicDrawUsage));
+  geometry.setDrawRange(0, 0);
+  const points = new THREE.Points(geometry, new THREE.ShaderMaterial({
+    ...ParticleShader,
+    uniforms: { uScale: particleScale, uMinSize: { value: minSize * renderer.getPixelRatio() }, uMap: { value: map } },
+    transparent: true, depthWrite: false, depthTest,
+  }));
+  points.frustumCulled = false;   // 毎フレーム位置が変わるので画面外の判定はしない
+  points.renderOrder = order;
+  scene.add(points);
+  return { max, points, position, color, size, angle, geometry, list: [], carry: 0, tint: [1, 1, 1] };
+}
+
+// k 番目の粒を書き込む。色はその器の tint で揃える
+function writeParticle(sys, k, p, alpha, size) {
+  sys.position[k * 3] = p.x;
+  sys.position[k * 3 + 1] = p.y;
+  sys.position[k * 3 + 2] = p.z;
+  sys.color.set(sys.tint, k * 4);
+  sys.color[k * 4 + 3] = alpha;
+  sys.size[k] = size;
+  sys.angle[k] = p.angle ?? 0;
+}
+
+function flushParticles(sys, n) {
+  sys.geometry.setDrawRange(0, n);
+  for (const name of ['position', 'color', 'size', 'angle']) sys.geometry.attributes[name].needsUpdate = true;
+}
+
+const spray = createParticles(MAX_SPRAY, { map: softDotTexture, minSize: 1.2, order: 4 });
+spray.points.layers.set(MAIN_ONLY_LAYER);
+// 霧は奥行きの判定をしない。岩や水面に切られて輪郭が出ないように
+const mist = createParticles(MAX_MIST, { map: puffTexture, depthTest: false, order: 5 });
+
+function updateSpray(dt) {
+  emit(spray, SPRAY_RATE * water, dt, () => {
+    const x = rand(-activeHalf, activeHalf);
+    return {
+      x, y: 0.2, z: lipZ(x) + IMPACT_Z + rand(-1.5, 1.5),
+      vx: rand(-3, 3), vy: randIn(SPRAY_SPEED) * Math.random() ** 0.5, vz: rand(-1, 6),
+      size: randIn(SPRAY_SIZE), a: rand(0.15, 0.6),
+    };
+  });
+  let n = 0;
+  for (const p of spray.list) {
+    p.vy -= SPRAY_GRAVITY * dt;
+    moveParticle(p, dt);
+    if (p.y <= 0) continue;
+    writeParticle(spray, n, p, p.a, p.size);
+    spray.list[n++] = p;
+  }
+  spray.list.length = n;
+  flushParticles(spray, n);
+}
+
+function updateMist(dt) {
+  emit(mist, MIST_RATE * water, dt, () => {
+    const x = rand(-activeHalf, activeHalf) * 1.1;
+    const boil = Math.random() < BOIL_SHARE;
+    return {
+      x, y: boil ? rand(0, 2) : rand(0, 4), z: lipZ(x) + IMPACT_Z + (boil ? rand(0, 4) : rand(-1, 7)),
+      vx: x * 0.03 + rand(-0.7, 0.7), vy: boil ? rand(0.2, 0.9) : randIn(MIST_RISE), vz: rand(0.6, MIST_DRIFT),
+      age: 0, life: boil ? rand(2, 4) : randIn(MIST_LIFE), angle: rand(0, TAU), spin: rand(-0.12, 0.12),
+      grow: boil ? rand(0.4, 0.6) : rand(0.75, 1.2), strength: boil ? 1.8 : 1,
+    };
+  });
+  let n = 0;
+  const opacity = mistOpacity * Math.pow(water, 0.25);
+  for (const p of mist.list) {
+    p.age += dt;
+    if (p.age >= p.life) continue;
+    const t = p.age / p.life;
+    p.x += p.vx * dt;
+    p.y += p.vy * (1 - 0.6 * t) * dt;
+    p.z += p.vz * dt;
+    p.angle += p.spin * dt;
+    writeParticle(mist, n, p, opacity * p.strength * Math.sin(Math.PI * t), mix(MIST_SIZE[0], MIST_SIZE[1], t) * p.grow);
+    mist.list[n++] = p;
+  }
+  mist.list.length = n;
+  flushParticles(mist, n);
+}
+
+// ---- 滝壺の水面 ----
+const pool = new Reflector(new THREE.PlaneGeometry(POOL_SIZE, POOL_SIZE), {
+  shader: PoolShader, clipBias: 0.001, multisample: 0,
+  textureWidth: 16, textureHeight: 16,   // 下の updateReflectionSize で画面に合わせる
+});
+pool.rotation.x = -Math.PI / 2;
+pool.position.z = POOL_SIZE / 2 - 60;
+pool.material.depthWrite = false;   // 霧やしぶきが水面に切られないように
+pool.renderOrder = 1;               // 崖や岩の水中の部分を水面で覆うよう、後から描く
+scene.add(pool);
+const poolUniforms = pool.material.uniforms;
+poolUniforms.uNoise.value = noiseTexture;   // Reflector は uniform を複製するので、テクスチャはここで渡す
+
+// 映り込みは小さい描画先に描くので、粒の大きさもその割合に縮める
+const renderReflection = pool.onBeforeRender;
+pool.onBeforeRender = (...args) => {
+  const scale = particleScale.value;
+  particleScale.value = scale * REFLECTION_SIZE / (innerHeight * renderer.getPixelRatio());
+  renderReflection.apply(pool, args);
+  particleScale.value = scale;
+};
+
+function updateReflectionSize() {
+  pool.getRenderTarget().setSize(Math.round(REFLECTION_SIZE * innerWidth / innerHeight), REFLECTION_SIZE);
+}
+
+function updatePool() {
+  poolUniforms.uPhase.value.set(
+    (time * WAVE_SPEED[0]) % 1, (time * WAVE_SPEED[1]) % 1, (time * WAVE_SPEED[2]) % 1);
+}
+
+// ---- 虹 ----
+// 霧より手前に置く板。霧の無い所まで広げると、描かない画素の計算が増えるだけなので、霧のある範囲に収める
+const rainbow = new THREE.Mesh(
+  new THREE.PlaneGeometry(170, RAINBOW_TOP),
+  new THREE.ShaderMaterial({
+    ...RainbowShader, transparent: true, depthWrite: false,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  }));
+rainbow.position.set(0, RAINBOW_TOP / 2, 24);
+rainbow.renderOrder = 6;
+rainbow.layers.set(MAIN_ONLY_LAYER);
+scene.add(rainbow);
+const rainbowUniforms = rainbow.material.uniforms;
+
+// 虹の濃さと広がりは霧に合わせる。水量が少ないと霧も少ないので薄く、滝が細いと狭くなる
+function updateRainbow() {
+  const strength = SCENES[sceneIndex].rainbow;
+  rainbow.visible = strength > 0;
+  rainbowUniforms.uStrength.value = strength * Math.min(1, Math.sqrt(water));
+  rainbowUniforms.uReach.value = activeHalf + RAINBOW_SPREAD;
+}
+
+// ---- カメラ ----
+function updateCamera() {
+  const s = (i) => Math.sin(time * TAU / CAM_SWAY_PERIOD[i]) * CAM_SWAY[i];
+  camera.position.set(CAM_POS[0] + s(0), CAM_POS[1] + s(1), CAM_POS[2] + s(2));
+  camera.lookAt(camera.position.x * 0.2, CAM_TARGET_Y, 0);
+}
+
+// 縦長の画面では縦の画角を広げて、滝の幅が収まるようにする
+function fitCamera() {
+  camera.aspect = innerWidth / innerHeight;
+  const toRad = THREE.MathUtils.degToRad;
+  const fitted = 2 * Math.atan(Math.tan(toRad(CAM_MIN_HFOV) / 2) / camera.aspect);
+  camera.fov = Math.max(CAM_FOV, THREE.MathUtils.radToDeg(fitted));
+  camera.updateProjectionMatrix();
+  updateParticleScale();
+}
+
+// ---- シーン切替 ----
+function setScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  skyUniforms.uZenith.value.copy(srgb(s.zenith));
+  skyUniforms.uHorizon.value.copy(srgb(s.horizon));
+  skyUniforms.uBelow.value.copy(srgb(s.deep));
+  const cloud = srgb(s.cloud);
+  skyUniforms.uCloud.value.set(cloud.r, cloud.g, cloud.b, s.cloud[3]);
+  stars.visible = s.stars;
+  if (s.disc) {
+    skyUniforms.uMoonDir.value.fromArray(s.disc.dir).normalize();
+    skyUniforms.uMoonColor.value.fromArray(s.disc.color);
+    skyUniforms.uMoonCos.value = Math.cos(s.disc.size);
+  } else {
+    skyUniforms.uMoonColor.value.setRGB(0, 0, 0);
+  }
+  const fog = srgb(s.fog);
+  scene.fog.color.copy(fog);
+  scene.fog.density = s.fog[3];
+  ambientLight.color.copy(srgb(s.ambient.sky));
+  ambientLight.groundColor.copy(srgb(s.ambient.ground));
+  ambientLight.intensity = s.ambient.intensity;
+  keyLight.color.copy(srgb(s.light.color));
+  keyLight.intensity = s.light.intensity;
+  keyLight.position.fromArray(s.light.dir);
+  streamUniforms.uLit.value.copy(srgb(s.lit));
+  streamUniforms.uShade.value.copy(srgb(s.shade));
+  streamUniforms.uGlass.value.copy(srgb(s.glass));
+  drops.tint = linear(s.spray);
+  spray.tint = linear(s.spray);
+  mist.tint = linear(s.mist);
+  mistOpacity = s.mist[3];
+  poolUniforms.uDeep.value.copy(srgb(s.deep));
+  poolUniforms.uFoam.value.copy(srgb(s.foam));
+  poolUniforms.uFogColor.value.copy(fog);
+  poolUniforms.uFogDensity.value = s.fog[3];
+  updateRainbow();
+  rainbowUniforms.uAntiSun.value.fromArray(s.light.dir).normalize().negate();
+  bloom.enabled = s.bloom.strength > 0;
+  bloom.strength = s.bloom.strength;
+  bloom.threshold = s.bloom.threshold;
+  renderer.toneMappingExposure = s.exposure;
+  document.getElementById('scene-name').textContent = s.name;
+}
+
+// 暗転している間に、次の景色へ
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+
+// ---- 強度 ----
+// 水量に応じて、中央から順に使う帯の数を変える（滝の幅が広がる）
+function setWater(value) {
+  water = clamp(value, MIN_WATER, MAX_WATER);
+  streamsInUse = clamp(Math.round(STREAM_COUNT * water / MAX_WATER), 1, STREAM_COUNT);
+  streamMesh.geometry.setDrawRange(0, streamsInUse * STREAM_SEGMENTS * 6);
+  activeHalf = 0;
+  for (let i = 0; i < streamsInUse; i++) activeHalf = Math.max(activeHalf, Math.abs(streams[i].x));
+  streamUniforms.uHalf.value = activeHalf;
+  poolUniforms.uImpact.value.set(activeHalf, IMPACT_Z);
+  updateRainbow();
+}
+
+// ---- メインループ ----
+function step(dt) {
+  time += dt;
+  updateStreams();
+  updateDrops(dt);
+  updateSpray(dt);
+  updateMist(dt);
+  updatePool();
+  updateCamera();
+  updateSky();
+}
+
+function render() {
+  renderer.setRenderTarget(sceneTarget);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);   // composer は最後に、呼ばれたときの描画先へ戻す
+  composer.render();
+}
+
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  step(dt);
+  render();
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
+  changeScene: nextScene,
+  // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
+  intensity: {
+    up: () => setWater(water * WATER_STEP),
+    down: () => setWater(water / WATER_STEP),
+    level: () => logPosition(water, MIN_WATER, MAX_WATER),   // ゲージの位置（0..1）
+  },
+  onResize() {
+    fitCamera();
+    renderer.setSize(innerWidth, innerHeight);
+    composer.setSize(innerWidth, innerHeight);
+    updateSceneTargetSize();
+    updateReflectionSize();
+  },
+});
+
+// ---- 開始 ----
+fitCamera();
+updateReflectionSize();
+setWater(BASE_WATER);
+setScene(randInt(SCENES.length));
+// 起動直後から霧が立ちこめている状態にするため、少し先まで進めておく
+for (let i = 0; i < 300; i++) step(1 / 30);
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
