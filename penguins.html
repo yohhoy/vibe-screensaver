@@ -60,7 +60,9 @@ const BG_BLUR_LEVELS = 2;         // 遠景のぼかしの強さ（半分に縮�
 const BG_GAIN = 1.1;              // 遠景の明るさの倍率（canvas の色は 1 までなので、トーンカーブの前に持ち上げる）
 const BERG_HEIGHT = 0.55;         // 氷山と山並みの高さの倍率
 const BERG_FACE_LIGHT = 0.42;     // 氷の壁の明るさ（0: 影の色、1: 光の色）
-const BERG_RELIEF = 1.6;          // 壁の溝の陰影の強さ
+const BERG_RELIEF = 0.8;          // 壁の溝の陰影の強さ
+const BERG_SLAB_WIDTH = 60;       // 崩れた大きな面の幅のめやす（canvas の px。1° がおよそ 56px）
+const BERG_SLAB_CONTRAST = 0.65;  // 面ごとの明暗の差（0: 差なし。BERG_FACE_LIGHT を中心に、この半分ずつ上下する）
 const BERG_CAP = 0.45;            // 頂の雪の明るさ（0: 壁と同じ、1: 光の色）
 const SKY_MOTTLE = 0.05;          // 空のむらの強さ（明るさの幅）。単調なグラデーションは絵に見える
 
@@ -141,6 +143,8 @@ const KICK_RATE = 2.2;            // 足で蹴る回数（1 秒あたり）
 const MAX_DECALS = 3000;
 const WALK_TRAIL = { size: [0.8, 3], spacing: 0.5 };    // 歩いた跡の 1 枚の大きさ (進む向き, 奥行き) と、置く間隔
 const SLIDE_TRAIL = { size: [0.5, 6], spacing: 0.3 };   // 滑り跡の 1 枚の大きさと、置く間隔
+const TRAIL_ALPHA = 0.3;          // 足跡と滑り跡の濃さ（0..1）
+const SHADOW_TAPER = 0.5;         // 影を足もとから先へ薄くする割合（0..1）
 
 // 雪の粒
 const MAX_FLAKES = 1500;
@@ -148,12 +152,19 @@ const MAX_SPRAY = 400;
 const SPRAY_PER_KICK = 9;         // 1 回蹴るごとの雪煙の粒の数
 const FLAKE_RADIUS = 0.02;        // 粒の半径（ピントが合っているとき）
 const BOKEH = 0.4;                // ぼけの強さ（ぼけの半径 / 画面の短い辺 = これ × |1/距離 - 1/ピントの距離|）
-const FLAKE_DISTANCE = [8, 300];  // カメラから粒までの距離の範囲
+const FLAKE_DISTANCE = [40, 140, 300];   // カメラから粒までの距離（手前の端, 手前と奥の境, 奥の端）
 const FLAKE_SHUTTER = 0.018;      // 速く流れる粒を横に伸ばす時間（秒）
 
 // 地吹雪（雪面の近くを流れる薄い膜）
 const SHEET_DEPTHS = [-7, 11];    // 膜を置く奥行き（列の奥と手前）
 const SHEET_SPEEDS = [0.012, 0.02];   // 風 1 あたりの流れる速さ（テクスチャの繰り返し / 秒）
+
+// 低い地吹雪（雪面のすぐ上を流れる薄い雪。起伏に沿わせる）
+const DRIFT_DEPTHS = [-10, 7];    // 帯を置く奥行き（列の奥と手前。腹滑りの線より手前）
+const DRIFT_HEIGHT = BIRD_HEIGHT / 3;   // 帯の高さ
+const DRIFT_WIND_GAIN = 2.5;      // 流れる速さ（風 1 あたりの m/s）
+const DRIFT_MAX_SPEED = 9;        // 流れる速さの上限（m/s）
+const DRIFT_NOISE_SCALE = 0.05;   // 模様の細かさ（テクスチャの繰り返し / m）
 
 // 隠し要素（ヒナ）
 const CHICK_INTERVAL = [180, 60, 600];   // ヒナが現れる間隔（平均, 最小, 最大）（秒）
@@ -237,54 +248,55 @@ const CHICK_SHAPE = {
 // 景色。色は sRGB の文字列。光は [R, G, B]（線形の明るさ。1 を超えてよく、最後にトーンカーブで収める）
 // sunAzimuth・sunElevation: 太陽の方位（度。+ が右）・高度（度）。sunVisible が真なら遠景に写し、列の奥から差す
 // 遠景の形と描き方は全シーンで共通で、色だけが違う（bergLit・bergShade・haze）
-// flakeNear: 雪の粒のうち、カメラのすぐ近くに置く割合
+// drift: 低い地吹雪の濃さ（0..1）。色は sheetColor
+// feather: 白い腹の羽毛のむらの強さ（明るさが変わる割合）。明るい景色ではトーンカーブでむらが縮むので強くする
 // walkSpeed: 歩く速さ。吹雪の中では遅い
 // headwind: 真なら、風はいつもペンギンの進む向きの逆から吹く。無ければ風向きはランダム
 const SCENES = [
   {
     name: 'Blue Sky',
     walkSpeed: 0.5, exposure: 1,
-    sky: [[0, '#d0deec'], [0.15, '#b4cce9'], [0.5, '#7da7df'], [1.5, '#5a89d1'], [3.5, '#4872be'], [5.5, '#4164ae'], [15, '#2f4e92']],
+    sky: [[0, '#d3dee9'], [0.15, '#b7cbe3'], [0.5, '#84a6d6'], [1.5, '#6088c6'], [3.5, '#4e70b2'], [5.5, '#4663a3'], [15, '#344f8a']],
     clouds: 0, cloudColor: '#ffffff',
     sunVisible: false, sunAzimuth: 30, sunElevation: 52,
     bergLit: '#dfe5eb', bergShade: '#5d7ea8', haze: '#cddbe9',
-    snow: '#e9ecef', snowLight: [0.36, 0.44, 0.62], sunLight: [0.92, 0.86, 0.76],
+    snow: '#cdd3db', snowLight: [0.33, 0.41, 0.58], sunLight: [0.78, 0.73, 0.65],
     skyLight: [0.32, 0.4, 0.56], groundLight: [0.36, 0.39, 0.45], rimLight: [0.03, 0.04, 0.05],
-    sheen: [0, 0, 0], hazeDistance: 320, sunGlow: [0, 0, 0],
-    trail: '#8ea3bd', trailAlpha: 0.26, trailLife: 60,
+    sheen: [0, 0, 0], hazeDistance: 320, feather: 0.55,
+    trail: '#8ea3bd', trailLife: 60,
     shadow: '#465f82', shadowAlpha: 0.7, shadowLength: 4,
-    wind: 0.8, fall: 0.15, flakes: 0, flakeAlpha: 1, flakeColor: '#ffffff', flakeNear: 0,
-    sheet: 0, sheetColor: '#eef3f6', fog: 0,
+    wind: 0.8, flakes: 0, flakeColor: '#ffffff',
+    sheet: 0, sheetColor: '#eef3f6', fog: 0, drift: 0.75,
   },
   {
     name: 'Midnight Sun',
     walkSpeed: 0.5, exposure: 1,
-    sky: [[0, '#f6c88f'], [0.7, '#eeaf85'], [2, '#c98f8e'], [5, '#8a86a2'], [15, '#4d6088']],
-    clouds: 0.5, cloudColor: '#f1c9aa',
+    sky: [[0, '#f2c48c'], [0.7, '#e4a67c'], [2, '#b58480'], [5, '#6f7088'], [15, '#39496c']],
+    clouds: 0.35, cloudColor: '#e4b797',
     sunVisible: true, sunAzimuth: 3, sunElevation: 1.25,
-    bergLit: '#ad8b88', bergShade: '#5a5a78', haze: '#e6b48f',
-    snow: '#efe6e0', snowLight: [0.33, 0.29, 0.38], sunLight: [1.5, 0.92, 0.5],
-    skyLight: [0.09, 0.085, 0.13], groundLight: [0.14, 0.11, 0.14], rimLight: [0.6, 0.38, 0.2],
-    sheen: [1.9, 1, 0.42], hazeDistance: 420, sunGlow: [0.2, 0.13, 0.07],
-    trail: '#6a6079', trailAlpha: 0.3, trailLife: 60,
-    shadow: '#332f50', shadowAlpha: 0.8, shadowLength: 30,
-    wind: 0.5, fall: 0.12, flakes: 400, flakeAlpha: 0.6, flakeColor: '#ffe6c8', flakeNear: 0,
-    sheet: 0, sheetColor: '#f0d3bd', fog: 0,
+    bergLit: '#9a7c7c', bergShade: '#4a4c68', haze: '#e6b48f',
+    snow: '#efe6e0', snowLight: [0.24, 0.22, 0.3], sunLight: [1.5, 0.92, 0.5],
+    skyLight: [0.14, 0.125, 0.17], groundLight: [0.22, 0.18, 0.2], rimLight: [0.6, 0.38, 0.2],
+    sheen: [1.9, 1, 0.42], hazeDistance: 420, sunGlow: [0.12, 0.08, 0.04], feather: 0.35,
+    trail: '#6a6079', trailLife: 60,
+    shadow: '#47425a', shadowAlpha: 0.95, shadowLength: 30,
+    wind: 0.5, fall: 0.12, flakes: 550, flakeAlpha: 1, flakeColor: '#fff1df',
+    sheet: 0, sheetColor: '#f0d3bd', fog: 0, drift: 0.6,
   },
   {
     name: 'Blizzard',
-    walkSpeed: 0.42, exposure: 0.8,
-    sky: [[0, '#b7bfc5'], [5, '#aab3ba'], [15, '#98a3ac']],
+    walkSpeed: 0.42, exposure: 0.9,
+    sky: [[0, '#94a2ae'], [5, '#7f8f9e'], [15, '#68798a']],
     clouds: 0, cloudColor: '#ffffff',
     sunVisible: false, sunAzimuth: 0, sunElevation: 70,
-    bergLit: '#b9c1c7', bergShade: '#afb8bf', haze: '#b7bfc5',
-    snow: '#e4e8eb', snowLight: [0.62, 0.66, 0.72], sunLight: [0, 0, 0],
-    skyLight: [0.5, 0.54, 0.6], groundLight: [0.28, 0.31, 0.35], rimLight: [0.03, 0.03, 0.04],
-    sheen: [0, 0, 0], hazeDistance: 130, sunGlow: [0, 0, 0],
-    trail: '#8f9ca6', trailAlpha: 0.3, trailLife: 9,
-    shadow: '#818f9b', shadowAlpha: 0.3, shadowLength: 2,
-    wind: 8, headwind: true, fall: 0.5, flakes: 1300, flakeAlpha: 1, flakeColor: '#ffffff', flakeNear: 0.12,
-    sheet: 0.3, sheetColor: '#dfe4e8', fog: 0.14,
+    bergLit: '#96a3af', bergShade: '#8b9aa6', haze: '#94a2ae',
+    snow: '#e1e7ed', snowLight: [0.59, 0.65, 0.74], sunLight: [0, 0, 0],
+    skyLight: [0.47, 0.53, 0.63], groundLight: [0.26, 0.31, 0.37], rimLight: [0.03, 0.03, 0.04],
+    sheen: [0, 0, 0], hazeDistance: 130, feather: 0.35,
+    trail: '#8b9aa9', trailLife: 9,
+    shadow: '#7c8c9d', shadowAlpha: 0.3, shadowLength: 2,
+    wind: 8, headwind: true, fall: 0.5, flakes: 1300, flakeAlpha: 0.7, flakeColor: '#d3dae1',
+    sheet: 0.18, sheetColor: '#b5c1cb', fog: 0.08, drift: 0.65,
   },
 ];
 
@@ -392,7 +404,7 @@ void main() {
 const BIRD_FRAG = `
 uniform sampler2D uAtlas;
 uniform vec3 uSunDir, uSun, uSky, uGround, uRim, uFogColor;
-uniform float uFog;
+uniform float uFog, uFeather;
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vView;
@@ -400,7 +412,9 @@ varying float vHeight;
 void main() {
   vec3 N = normalize(vNormal);
   vec3 V = normalize(vView);
-  vec3 albedo = texture2D(uAtlas, vUv).rgb;
+  vec4 tex = texture2D(uAtlas, vUv);
+  // アルファは白い腹の羽毛のむら（0.5 でむらなし）
+  vec3 albedo = tex.rgb * (1.0 + uFeather * (tex.a * 2.0 - 1.0));
   vec3 hemi = mix(uGround, uSky, 0.5 + 0.5 * N.y);
   vec3 col = albedo * (hemi + uSun * max(dot(N, uSunDir), 0.0));
   // 雪面に近い所は光が回らず暗い。これが無いと白い腹が雪に溶けて、黒い背だけが浮いて見える
@@ -426,13 +440,15 @@ void main() {
 
 const DECAL_FRAG = `
 uniform vec3 uColor;
-uniform float uRound;
+uniform float uRound, uTaper;
 varying vec2 vUv;
 varying float vAlpha;
 void main() {
   // uRound が 1 なら丸く、0 なら進む向きに切れ目のない帯にする
   float d = length(vUv * vec2(uRound, 1.0));
-  gl_FragColor = vec4(uColor, vAlpha * smoothstep(1.0, 0.25, d));
+  // uTaper: 影を足もとの側から先へ薄くする割合。符号で足もとが板の奥か手前かを決める
+  float taper = 1.0 - abs(uTaper) * (0.5 - 0.5 * vUv.y * sign(uTaper));
+  gl_FragColor = vec4(uColor, vAlpha * taper * smoothstep(1.0, 0.25, d));
   #include <colorspace_fragment>
 }`;
 
@@ -476,6 +492,27 @@ void main() {
   float n = texture2D(uNoise, vPos.xy * vec2(0.006, 0.05) + vec2(uScroll, 0.0), 4.0).r;
   float a = smoothstep(0.3, 0.75, n) * smoothstep(7.0, 0.2, vPos.y);
   gl_FragColor = vec4(uColor, uOpacity * a);
+  #include <colorspace_fragment>
+}`;
+
+const DRIFT_VERT = `
+varying vec2 vPos;
+void main() {
+  vPos = vec2(position.x, uv.y);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const DRIFT_FRAG = `
+uniform sampler2D uNoise;
+uniform vec3 uColor;
+uniform float uOpacity, uScroll, uSeed;
+varying vec2 vPos;   // x: 横の位置、y: 帯の下から上（0..1）
+void main() {
+  // 細い筋と、ひとかたまりずつ流れる濃淡を掛ける。上へ行くほど薄く、下のふちも薄くする（濃いと雪面との境目が線に見える）
+  float streak = texture2D(uNoise, vec2(vPos.x * ${DRIFT_NOISE_SCALE.toFixed(3)} + uScroll, vPos.y * 0.12 + uSeed), 2.0).r;
+  float puff = texture2D(uNoise, vec2(vPos.x * ${(DRIFT_NOISE_SCALE * 0.24).toFixed(3)} + uScroll * 0.24, uSeed * 3.0), 4.0).r;
+  float fade = smoothstep(0.0, 0.25, vPos.y) * (1.0 - vPos.y) * (1.0 - vPos.y);
+  gl_FragColor = vec4(uColor, uOpacity * smoothstep(0.3, 0.55, streak) * smoothstep(0.3, 0.5, puff) * fade);
   #include <colorspace_fragment>
 }`;
 
@@ -586,8 +623,13 @@ function makeNoiseTexture() {
     for (let x = 0; x < size; x++, i += 4) {
       const u = x / size, v = y / size;
       // 風紋（サスツルギ）。風に沿って斜めに伸びる、頂のとがった細長い起伏
-      const crest = 1 - Math.abs(2 * valueNoise(u * 12 + v * 24, v * 64, 12, 64) - 1);
-      const streak = 0.5 * crest + 0.3 * valueNoise(u * 24 + v * 24, v * 32, 24, 32) + 0.2 * valueNoise(u * 4, v * 8, 4, 8);
+      // 縦の位置をゆがめ、太さの違う筋を重ね、ところどころ弱めて、等高線のように規則正しく並ぶのを防ぐ
+      const w = v + (valueNoise(u * 5, v * 9, 5, 9) - 0.5) * 0.035;
+      const fine = 1 - Math.abs(2 * valueNoise(u * 12 + w * 24, w * 64, 12, 64) - 1);
+      const broad = 1 - Math.abs(2 * valueNoise(u * 7 + w * 14, w * 27, 7, 27) - 1);
+      const patchy = 0.35 + 0.65 * smoothstep(valueNoise(u * 6 + 3, v * 14 + 5, 6, 14), 0.35, 0.7);
+      const crest = (0.6 * fine + 0.4 * broad) * patchy;
+      const streak = 0.6 * crest + 0.25 * valueNoise(u * 24 + v * 24, v * 32, 24, 32) + 0.2 * valueNoise(u * 4, v * 8, 4, 8);
       data[i] = streak * 255;
       data[i + 1] = Math.random() * 255;
       data[i + 3] = 255;
@@ -614,7 +656,7 @@ const ATLAS = {
   foot: [0.85, 0.5, 0.15, 0.5],
 };
 
-// 模様の色は sRGB の [R, G, B]（0..1）。u: 周の向き（0.5 が腹や顔の正面）、v: 下から上
+// 模様の色は sRGB の [R, G, B]（0..1）で、胴だけ 4 つ目に羽毛のむら（-1..1）を持つ。u: 周の向き（0.5 が腹や顔の正面）、v: 下から上
 const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 const BLACK = [0.05, 0.05, 0.06];
 const SLATE = [0.23, 0.235, 0.26];       // 背と翼。青みの少ない濃い灰色
@@ -630,6 +672,11 @@ const BILL_ORANGE = [0.82, 0.48, 0.28];
 const FOOT_COLOR = [0.1, 0.1, 0.11];
 
 const frontAngle = (u) => Math.abs(u - 0.5) * 360;   // 正面からの角度（度）
+
+// 羽毛のむら（-1..1）。背丈 60px でも残るよう粗くし、斑と上下に伸びた筋を重ねる
+function featherGrain(u, v) {
+  return valueNoise(u * 12, v * 16, 12, 16) + valueNoise(u * 24, v * 8, 24, 8) - 1;
+}
 
 function paintAdultBody(u, v) {
   const a = frontAngle(u);
@@ -649,7 +696,9 @@ function paintAdultBody(u, v) {
   // 喉は黒い。耳の黄色い模様が首の横へ流れ、下へ行くほど淡くなる
   const patch = blob((a - 120) / 42, (v - 0.94) / 0.2, 0.35);
   const patchColor = mix3(GOLD, ORANGE, smoothstep(v, 0.74, 0.86));
-  return mix3(mix3(col, BLACK, smoothstep(v, 0.8, 0.87)), patchColor, patch).map((c) => c * shade);
+  // 4 つ目の値は羽毛のむら。胸の黄色より下の白い腹だけに入れる
+  const white = (1 - smoothstep(a, edge - 1.5, edge + 1.5)) * (1 - smoothstep(v, 0.48, 0.78));
+  return [...mix3(mix3(col, BLACK, smoothstep(v, 0.8, 0.87)), patchColor, patch).map((c) => c * shade), white * featherGrain(u, v)];
 }
 
 function paintChickBody(u, v) {
@@ -717,7 +766,7 @@ function makeAtlas() {
         data[i] = clamp(c[0], 0, 1) * 255;
         data[i + 1] = clamp(c[1], 0, 1) * 255;
         data[i + 2] = clamp(c[2], 0, 1) * 255;
-        data[i + 3] = 255;
+        data[i + 3] = (0.5 + 0.5 * (c[3] ?? 0)) * 255;   // 羽毛のむら。4 つ目の値が無ければ、むらなし
       }
     }
   };
@@ -977,8 +1026,12 @@ function shadeIce(p, layer, col, el) {
   const groove = tile(col * 3 + o, el * 40 + o);
   const relief = (groove - tile((col - 1.5) * 3 + o, el * 40 + o)) * BERG_RELIEF;
   const strata = tile(col * 0.4 + o, el * 260 + o) - 0.5;
-  const facet = tile(col * 0.35 + o, el * 7 + o) - 0.5;   // 崩れた大きな面の向きの違い
-  let v = clamp(BERG_FACE_LIGHT + relief + (groove - 0.5) * 0.35 + strata * 0.25 + facet * 1.6, 0, 1);
+  // 崩れた大きな面。幅のばらつく塊に分け、光の向きの違いで塊ごとに明暗を変える。境目はわずかに斜めにする
+  const warp = (tile(col * 0.25 + o, el * 5 + o) - 0.5) * BERG_SLAB_WIDTH * 1.5;
+  const slab = Math.floor((col + warp + el * 20) / BERG_SLAB_WIDTH + o);
+  const slabLight = NOISE_TABLE[(slab * 37) & 4095] - 0.5;
+  const facet = tile(col * 0.35 + o, el * 7 + o) - 0.5;   // 面の中の明暗のむら
+  let v = clamp(BERG_FACE_LIGHT + relief + (groove - 0.5) * 0.25 + strata * 0.25 + facet * 0.8 + slabLight * BERG_SLAB_CONTRAST, 0, 1);
   // 頂に積もった雪。深さと量は場所によって変わる
   const capDepth = 0.05 + 0.5 * tile(col * 0.8 + o, o) ** 2 * (0.4 + h * 0.35);
   const cap = 1 - smoothstep(depth, 0, capDepth);
@@ -1094,7 +1147,7 @@ const decalGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
 const makeDecalMaterial = (round) => new THREE.ShaderMaterial({
   vertexShader: DECAL_VERT,
   fragmentShader: DECAL_FRAG,
-  uniforms: { uColor: { value: new THREE.Color() }, uRound: { value: round } },
+  uniforms: { uColor: { value: new THREE.Color() }, uRound: { value: round }, uTaper: { value: 0 } },
   transparent: true,
   depthWrite: false,
   // 視線が雪面をかすめるので、高さを足すと足もとからずれて見える。奥行きの値だけを手前へずらす
@@ -1146,7 +1199,7 @@ function leaveTrail(b, trail) {
 
 function updateDecals() {
   const alpha = decalMesh.geometry.attributes.iAlpha;
-  const life = current.trailLife, strength = current.trailAlpha;
+  const life = current.trailLife, strength = TRAIL_ALPHA;
   for (let i = 0; i < MAX_DECALS; i++) {
     const age = (clock - decalBirth[i]) / life;
     alpha.array[i] = age < 1 ? strength * (1 - age * age) : 0;
@@ -1265,6 +1318,7 @@ const birdMaterial = new THREE.ShaderMaterial({
     uRim: { value: new THREE.Vector3() },
     uFogColor: { value: new THREE.Color() },
     uFog: { value: 0 },
+    uFeather: { value: 0 },
   },
 });
 
@@ -1889,10 +1943,8 @@ let flakes = [];
 
 // 粒の距離を選ぶ。手前と奥に散らし、列の前後にも置く
 function randomFlakeDistance() {
-  const r = Math.random();
-  if (r < current.flakeNear) return rand(FLAKE_DISTANCE[0], 30);
-  if (r < 0.65) return rand(40, 140);
-  return rand(140, FLAKE_DISTANCE[1]);
+  if (Math.random() < 0.65) return rand(FLAKE_DISTANCE[0], FLAKE_DISTANCE[1]);
+  return rand(FLAKE_DISTANCE[1], FLAKE_DISTANCE[2]);
 }
 
 function viewReach(d) {
@@ -1919,7 +1971,7 @@ function makeFlake() {
     d,
     z: CAM_DISTANCE - d,
     r,
-    alpha: Math.max(0.03, Math.min(1, FLAKE_RADIUS / r)) * rand(0.6, 1) * lerp(0.2, 1, smoothstep(d, 15, 45)),   // カメラのすぐ近くの粒は、ぼけてほとんど見えない
+    alpha: Math.max(0.03, Math.min(1, FLAKE_RADIUS / r)) * rand(0.6, 1),
     speed: rand(0.8, 1.2),
     wobble: rand(0, TAU),
     wobbleRate: rand(0.6, 1.6),
@@ -2006,6 +2058,52 @@ function updateSheets(dt) {
   });
 }
 
+// ---- 低い地吹雪 ----
+function makeDrift(z, renderOrder, seed) {
+  const width = 2 * (CAM_DISTANCE - z) * Math.tan(degToRad(BG_HALF_WIDTH));
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, 1, 240, 1),
+    new THREE.ShaderMaterial({
+      vertexShader: DRIFT_VERT,
+      fragmentShader: DRIFT_FRAG,
+      uniforms: {
+        uNoise: { value: noiseTex },
+        uColor: { value: new THREE.Color() },
+        uOpacity: { value: 0 },
+        uScroll: { value: 0 },
+        uSeed: { value: seed },
+      },
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  mesh.position.z = z;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  scene.add(mesh);
+  return mesh;
+}
+const drifts = [makeDrift(DRIFT_DEPTHS[0], 4, 0.21), makeDrift(DRIFT_DEPTHS[1], 7, 0.63)];
+
+// 帯を雪面の起伏に沿わせる
+function shapeDrifts() {
+  for (const drift of drifts) {
+    const pos = drift.geometry.attributes.position;
+    const uv = drift.geometry.attributes.uv;
+    for (let i = 0; i < pos.count; i++) pos.setY(i, groundHeight(pos.getX(i), drift.position.z) + uv.getY(i) * DRIFT_HEIGHT);
+    pos.needsUpdate = true;
+  }
+}
+
+function updateDrifts(dt) {
+  const speed = Math.min(current.wind * DRIFT_WIND_GAIN, DRIFT_MAX_SPEED);
+  drifts.forEach((drift, i) => {
+    const u = drift.material.uniforms.uScroll;
+    // 奥の帯を少し遅くして、2 枚が一緒に動いて見えないようにする
+    u.value = (u.value - windSign * speed * (i ? 1 : 0.8) * DRIFT_NOISE_SCALE * dt + 1) % 1;
+  });
+}
+
 // ---- カメラ ----
 const swayPhase = [rand(0, TAU), rand(0, TAU)];
 function updateCamera(dt) {
@@ -2040,14 +2138,20 @@ function applySceneColors(s) {
   b.uRim.value.set(...s.rimLight);
   b.uFogColor.value.copy(haze);
   b.uFog.value = s.fog;
+  b.uFeather.value = s.feather;
 
   decalMesh.material.uniforms.uColor.value.set(s.trail);
   shadowMesh.material.uniforms.uColor.value.set(s.shadow);
+  shadowMesh.material.uniforms.uTaper.value = -Math.sign(sun.z) * SHADOW_TAPER;   // 影は太陽の反対側へ伸びるので、足もとは太陽の側
   flakeMesh.material.uniforms.uColor.value.set(s.flakeColor);
   for (const sheet of sheets) {
     sheet.visible = s.sheet > 0;
     sheet.material.uniforms.uOpacity.value = s.sheet;
     sheet.material.uniforms.uColor.value.set(s.sheetColor);
+  }
+  for (const drift of drifts) {
+    drift.material.uniforms.uOpacity.value = s.drift;
+    drift.material.uniforms.uColor.value.set(s.sheetColor);
   }
   renderer.setClearColor(new THREE.Color(s.sky[s.sky.length - 1][1]).multiplyScalar(BG_GAIN));
   renderer.toneMappingExposure = s.exposure;
@@ -2070,6 +2174,7 @@ function setScene(index) {
   windSign = current.headwind ? -dir : randSign();
   chooseTerrain();
   shapeGround();
+  shapeDrifts();
   paintBackdrop(current);
   applySceneColors(current);
   clearDecals();
@@ -2108,6 +2213,7 @@ function step(dt) {
   writeBirds();
   updateFlakes(dt);
   updateSheets(dt);
+  updateDrifts(dt);
   updateCamera(dt);
   postMaterial.uniforms.uSeed.value = rand(0, 100);
 }
