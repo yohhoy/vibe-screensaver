@@ -207,8 +207,6 @@ const ADULT_SHAPE = {
   bellyRadius: 0.215,             // 腹ばいのときの回転の中心の高さ（腹が雪に少し沈む高さ。浮いて見えないように）
   neck: [0.02, 0.985, 0],
   shoulder: [-0.012, 0.75, 0.118],
-  wingLength: 1,                  // 翼の長さの倍率
-  wingOpen: 0,                    // 翼を体から離す角度の追加（ラジアン）
 };
 // ヒナは大人より丸っこい。この形で作ってから、全体を CHICK_SIZE 倍で描く
 const CHICK_SHAPE = {
@@ -232,17 +230,13 @@ const CHICK_SHAPE = {
   tailX: -0.24,
   head: [0.108, 0.122, 0.108],
   bill: [
-    [0, 0, 0.026, 0.02],
-    [0.05, 0.003, 0.016, 0.012],
-    [0.1, 0.012, 0.002, 0.002],
+    [0, 0, 0.036, 0.028],
+    [0.0525, 0.003, 0.022, 0.017],
+    [0.105, 0.013, 0.002, 0.002],
   ],
   billSmooth: 8,
-  billAt: [0.105, -0.012],
-  bellyRadius: 0.285,
+  billAt: [0.105, 0.012],
   neck: [0.012, 0.93, 0],
-  shoulder: [-0.012, 0.74, 0.16],
-  wingLength: 0.68,
-  wingOpen: 0.14,                 // 太い胴に翼が埋まらないように離す
 };
 
 // 景色。色は sRGB の文字列。光は [R, G, B]（線形の明るさ。1 を超えてよく、最後にトーンカーブで収める）
@@ -721,10 +715,10 @@ function paintChickHead(u, v) {
   const a = frontAngle(u);
   const noise = 0.85 + 0.25 * valueNoise(u * 40, v * 40, 40);
   // 黒い頭に白い顔
-  let col = mix3(BLACK, CHICK_FACE, blob((a - 62) / 62, (v - 0.42) / 0.26, 0.75));
+  let col = mix3(BLACK, CHICK_FACE, blob((a - 50) / 50, (v - 0.42) / 0.26, 0.75));
   // 喉は綿毛の色につなぐ
   col = mix3(col, DOWN_LIGHT, 1 - smoothstep(v, 0.02, 0.18));
-  col = mix3(col, BLACK, blob((a - 52) / 8, (v - 0.56) / 0.05, 0.5));
+  col = mix3(col, BLACK, blob((a - 52) / 12.8, (v - 0.56) / 0.08, 0.5));
   return col.map((c) => c * noise);
 }
 
@@ -743,6 +737,7 @@ function paintAdultFlipper(u, v) {
   // 背と同じ色で、付け根は肩になじむよう暗くする
   return mix3(mix3(SLATE, BLACK, 0.15 + 0.6 * smoothstep(v, 0.6, 1)), WHITE, front * 0.2);
 }
+// ヒナに翼は無いが、尾が翼と同じ場所の模様を使う
 const paintChickFlipper = (u, v) => mix3(DOWN, DOWN_LIGHT, valueNoise(u * 20, v * 20, 20)).map((c) => c * 0.85);
 
 const paintFoot = () => FOOT_COLOR;
@@ -1517,11 +1512,11 @@ function startSlide(b) {
   b.trailAt = b.p;
 }
 
-// 滑り出すペンギンを選ぶ。下り坂にいるほど選ばれやすい
+// 滑り出すペンギンを選ぶ。下り坂にいるほど選ばれやすい。ヒナは滑らない
 function chooseSlider() {
   let total = 0;
   const weights = birds.map((b) => {
-    if (b.state !== 'walk' || b.v < walkSpeed * 0.5 || Math.abs(b.p) > halfWidth * 0.95) return 0;
+    if (b.kind === 1 || b.state !== 'walk' || b.v < walkSpeed * 0.5 || Math.abs(b.p) > halfWidth * 0.95) return 0;
     const w = 1 + SLIDE_DOWNHILL_BIAS * Math.max(0, -slopeAhead(b.p));
     total += w;
     return w;
@@ -1529,11 +1524,12 @@ function chooseSlider() {
   if (!total) return;
   let r = Math.random() * total;
   const index = weights.findIndex((w) => (r -= w) <= 0);
-  const b = birds[index < 0 ? birds.length - 1 : index];
+  if (!weights[index]) return;   // 丸め誤差で、選べないペンギンに当たったとき
+  const b = birds[index];
   startSlide(b);
   // 後ろのペンギンがつられることがある
   const behind = birds
-    .filter((o) => o !== b && o.state === 'walk' && Math.abs(o.z0 - b.z0) <= FILE_WIDTH && o.p < b.p && b.p - o.p < o.gap * 4)
+    .filter((o) => o !== b && o.kind !== 1 && o.state === 'walk' && Math.abs(o.z0 - b.z0) <= FILE_WIDTH && o.p < b.p && b.p - o.p < o.gap * 4)
     .sort((x, y) => y.p - x.p)
     .slice(0, FOLLOW_SLIDE_MAX);
   for (const o of behind) {
@@ -1807,7 +1803,7 @@ function setBodyPart(mesh, chickMesh, slot, b, matrix) {
 }
 
 // 体。一歩ごとに、足を着いた瞬間に沈み、足の真上に乗ると伸びる（真横からは左右の傾きより、この上下と前後の揺れが見える）
-function poseBody(b, i, shape, motion) {
+function poseBody(b, i, motion) {
   const w = b.prone;
   const swing = Math.sin(b.phase);
   const rock = -Math.cos(b.phase * 2) * WALK_ROCK * motion;   // 足を着いた瞬間に前へ、足の真上に乗ると後ろへ
@@ -1820,7 +1816,7 @@ function poseBody(b, i, shape, motion) {
   const pitch = lerp(-b.lean + rock, -Math.PI / 2 * 0.96 + Math.atan(slope) + settle * 0.05 * Math.sin(b.landed * 12), w);
   // 腹ばいになるときは体の中ほどを中心に前へ倒す
   mBody.copy(mRoot);
-  move(mBody, Math.sin(b.phase * 2) * WALK_SURGE * motion, lerp(BODY_PIVOT + bob, shape.bellyRadius + bounce, w), swing * WALK_SHIFT * motion);
+  move(mBody, Math.sin(b.phase * 2) * WALK_SURGE * motion, lerp(BODY_PIVOT + bob, ADULT_SHAPE.bellyRadius + bounce, w), swing * WALK_SHIFT * motion);
   rotZ(mBody, pitch);
   rotX(mBody, roll);
   rotY(mBody, swing * b.twist * motion);
@@ -1837,22 +1833,22 @@ function poseHead(b, i, shape) {
   setBodyPart(headMesh, chickHeadMesh, i, b, mPart);
 }
 
-// 翼。歩くときは体から少し離して遅れて揺らす。腹ばいで蹴るときは広げて漕ぎ、滑るときは畳む。起き上がるときは雪を押す
-function poseWings(b, i, shape, amt, motion) {
+// 翼。歩くときは体から少し離して遅れて揺らす。腹ばいで蹴るときは広げて漕ぎ、滑るときは畳む。起き上がるときは雪を押す。ヒナには描かない
+function poseWings(b, i, amt, motion) {
   const w = b.prone;
+  const shoulder = ADULT_SHAPE.shoulder;
   for (const side of SIDES) {
     const lag = Math.sin(b.phase - 0.8) * side;
     const stroke = Math.sin(kickPhase(b, side));
     const proneOpen = lerp(lerp(0.34, 0.62, b.paddle), 0.8, b.push);
     const proneFore = lerp(lerp(0.12, 0.45 + 0.5 * stroke, b.paddle), 0.95, b.push);
-    const open = lerp(0.36 + b.wingOpen + 0.12 * amt, proneOpen, w) + shape.wingOpen;
+    const open = lerp(0.36 + b.wingOpen + 0.12 * amt, proneOpen, w);
     const fore = lerp(WALK_WING_SWING * lag * motion, proneFore, w);
     mPart.copy(mBody);
-    move(mPart, shape.shoulder[0], shape.shoulder[1], side * shape.shoulder[2]);
+    move(mPart, shoulder[0], shoulder[1], side * shoulder[2]);
     rotZ(mPart, fore);
     rotX(mPart, -side * open);
-    mPart.scale(vScale.set(1, shape.wingLength, 1));
-    flipperMesh.setMatrixAt(pairSlot(i, side), mPart);
+    flipperMesh.setMatrixAt(pairSlot(i, side), b.kind === 1 ? mHidden : mPart);
     setPartAttributes(flipperMesh, pairSlot(i, side), b);
   }
 }
@@ -1896,9 +1892,9 @@ function writeBirds() {
     rotY(mRoot, (dir > 0 ? 0 : Math.PI) - dir * b.heading);
     mRoot.scale(vScale.setScalar(b.size));
 
-    poseBody(b, i, shape, motion);
+    poseBody(b, i, motion);
     poseHead(b, i, shape);
-    poseWings(b, i, shape, amt, motion);
+    poseWings(b, i, amt, motion);
     poseFeet(b, i);
     poseShadow(b, i);
   }
