@@ -123,6 +123,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [ダイヤモンドの展示室](https://yohhoy.github.io/vibe-screensaver/diamond.html)
+
+[<img src="docs/images/diamond.jpg" width="480" alt="ダイヤモンドの展示室">](https://yohhoy.github.io/vibe-screensaver/diamond.html)
+
+閉館後の美術館で、台座に乗った大きなダイヤモンドをひとつだけ眺めます。ゆっくり回りながらきらめき、カットは毎回ランダムに作られます。
+
+シーン切替: 新しいカット / 強度: 回転の速さ
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

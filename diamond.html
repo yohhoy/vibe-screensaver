@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Diamond Gallery</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: カット変更 / F・ダブルクリック: 全画面 / ↑↓: 回転の速さ</span>
+  <span class="touch-only">左右スワイプ: カット変更 / 上下スワイプ: 回転の速さ</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, randIn, randInt, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+
+// ---- 設定 ----
+// 長さの基準は、回転軸からダイヤモンドのもっとも遠い点までの距離（1）。原点はガードルの中心。色は線形の値
+
+// カメラ（固定）
+const CAM_FOV = 28;
+const CAM_ELEVATION = 24 * Math.PI / 180;   // 見下ろす角度 (rad)
+const CAM_TARGET_Y = -0.2;        // 見る点の高さ
+const SCREEN_HEIGHT_RATIO = 0.5;  // ダイヤモンドの幅が画面の高さに占める割合
+const SCREEN_WIDTH_RATIO = 0.6;   // 縦長の画面で、ダイヤモンドの幅が画面の幅に占める割合の上限
+const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };
+const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
+
+// 部屋
+const FLOOR_Y = -5;
+const WALL_Z = -5.05;             // 奥の壁の位置。横長の画面で、壁と床の境が画面の下から 2 割弱に来る
+const ROOM_HALF_WIDTH = 30;       // 壁と床の左右の広がりの半分
+const FLOOR_NEAR_Z = 14;          // 床の手前の端
+const WALL_TOP_Y = 14;
+const AMBIENT = 1;                // 環境光の明るさ（壁・床・台座に一様に掛かる光）
+
+// 壁（壁紙）
+const WALL_COLOR = [0.042, 0.042, 0.042];   // 壁紙の地の色
+const WALLPAPER_WIDTH = 1.15;     // 壁紙の模様の繰り返しの幅
+const WALLPAPER_HEIGHT = 1.7;     // 壁紙の模様の繰り返しの高さ
+const WALLPAPER_MOTIF = 0.22;     // 地模様の明るさ（地に対する割合）。控えめにする
+const WALL_LIGHT_Y = -0.4;        // 壁に落ちる光の楕円の中心の高さ
+const WALL_LIGHT_SIZE = [5.2, 3.6];   // 壁に落ちる光の楕円の広がり（横、縦）
+const WALL_LIGHT_GAIN = 0.8;      // 壁に落ちる光の明るさ
+
+// 巾木
+const BASEBOARD_COLOR = [0.024, 0.024, 0.024];   // 巾木の色。壁より暗く、床より明るくして目立たせない
+const BASEBOARD_HEIGHT = 0.2;
+const BASEBOARD_DEPTH = 0.04;
+
+// 床（大理石のタイル）
+const FLOOR_COLOR = [0.016, 0.016, 0.016];  // 床の大理石の地の色
+const FLOOR_VEIN = [0.04, 0.04, 0.04];      // 床の大理石の筋の明るさ
+const FLOOR_PATTERN_SCALE = 4.5;  // 床の大理石の模様の細かさ
+const TILE_SIZE = 2.25;           // 床のタイルの一辺の長さ
+const TILE_JOINT = 0.006;         // 目地の幅の半分
+const TILE_JOINT_DARK = 0.65;     // 目地で暗くする割合 (0..1)
+const TILE_TONE = 0.3;            // タイルごとの明るさのばらつき（全体の幅）
+
+// 台座（ベルベットの円柱）
+const PEDESTAL_TOP_Y = -1.0;      // 台座の上面の高さ
+const PEDESTAL_RADIUS = 1.45;
+const PEDESTAL_ROUND = 0.09;      // 台座の上の角の丸みの半径
+const PEDESTAL_COLOR = [0.016, 0.016, 0.016];   // 台座のベルベットの色
+const VELVET_SHEEN = [0.065, 0.065, 0.065];     // ベルベットの輪郭のあたりの白っぽい光
+
+// ダイヤモンドを支える金属
+const METAL_COLOR = 0x828282;
+const METAL_SHININESS = 60;
+const METAL_AMBIENT = 0.45;       // 金属に当てる一様な光の強さ
+const METAL_LIGHT = 1.6;          // 金属に当てる、上からの光の強さ
+const METAL_LIGHT_POSITION = [1, 8, 3];
+const LEG_RADIUS = 0.016;         // 脚の半径
+const LEG_SPREAD = 0.75;          // 脚の足もとの開き（爪をつなぐ輪までの距離に対する割合。1 より小さいと下ほどすぼまる）
+const PRONG_RADIUS = 0.014;       // 爪の半径
+const PRONG_TIP_TAPER = 0.15;     // 爪の先の太さ（根もとの太さに対する割合）。先へ向かって細く尖らせる
+const PRONG_TIP_WIDTH = 1.8;      // 爪の先の部分の幅（爪の太さに対する倍率）
+const PRONG_TIP_FLAT = 0.45;      // 爪の先の部分の厚み（爪の太さに対する倍率）。上部の面に沿って平たくする
+const PRONG_COUNT = 4;            // 爪の数。脚は爪から台座へ伸びるので、同じ数になる
+const RAIL_HEIGHT = 0.4;          // 爪をつなぐ輪の高さ（ダイヤモンドの下端の深さに対する割合）
+const RAIL_RADIUS = 0.01;         // 爪をつなぐ輪の太さ（半径）
+const RAIL_OUTSET = 1.03;         // 輪が下部の面の外を通る位置（その高さの輪郭までの距離に対する割合）
+const RAIL_SEGMENTS = 48;         // 輪を作る円柱の数
+const PRONG_OUTSET = 1.015;       // 爪がガードルの外を通る位置（ガードルまでの距離に対する割合）
+const PRONG_TIP = 0.91;           // 爪の先が上部の面に載る位置（ガードルまでの距離に対する割合）
+
+// 照明（天井のスポットライト。位置は固定）。カメラとの間の向きが斜めの面の傾きに合うよう、ほぼ真上に集める
+const LIGHTS = [[-1.1, 9, -2.2], [1.3, 9, -0.6], [-0.7, 9, 1.4], [0.9, 9, 3.4]];
+const LIGHT_CORE = 20;            // 照明そのものの明るさ（ダイヤモンドに映る光）
+const LIGHT_CORE_POWER = 1800;    // 大きいほど照明が小さく映る
+const LIGHT_HALO = 0.5;           // 照明のまわりのにじみの明るさ
+const LIGHT_HALO_POWER = 40;
+const ENV_ROOM = [0.035, 0.035, 0.035];     // ダイヤモンドに映る部屋の暗い所
+const ENV_CEILING = [0.16, 0.16, 0.16];     // ダイヤモンドに映る天井の暗い所
+const ENV_PANEL = [1.05, 1.05, 1.05];       // ダイヤモンドに映る天井の明かりの明るさ。一様に明るいと、中が灰色になって明暗が出ない
+const ENV_PANEL_COLUMNS = 9;                // 天井の明かりの、周方向に並ぶ数
+const ENV_PANEL_ROWS = 20;                  // 天井の明かりの、高さ方向の細かさ
+
+// 光学（屈折率）。分散は本物（赤 2.41・青 2.45 ほど）より少し強くする
+const IOR = 2.42;
+const IOR_RGB = [2.38, IOR, 2.49];
+const F0 = ((IOR - 1) / (IOR + 1)) ** 2;   // 正面から見たときの反射率
+const MAX_BOUNCES = IS_TOUCH ? 4 : 5;   // 中で光線を追う回数
+
+// 回転と強度
+const ROTATION_PERIOD = 40;       // 強度 1 倍のときの 1 周の秒数
+const MIN_SPEED = 0.25;
+const MAX_SPEED = 4;
+const SPEED_STEP = 1.25;          // 1 回の操作で変える倍率
+
+// カットの生成
+const MAX_PLANES = 84;            // シェーダーに渡す平面の数の上限
+const GIRDLE_HALF_HEIGHT = 0.018; // ガードル（上部と下部の境の帯）の高さの半分
+const CUT_ASPECT = [1, 1.6];      // 輪郭の縦横比（長軸 / 短軸）
+const CUT_POINT = [0, 0.55];      // 輪郭の尖り（0 で左右対称の楕円、大きいほど片方の端が細い）
+const ROUND_CHANCE = 0.35;        // 縦横比を 1（円）にする確率
+const NO_POINT_CHANCE = 0.6;      // 尖りを 0 にする確率
+const BRILLIANT_CHANCE = 0.65;    // ブリリアント風にする確率（残りはステップ風）
+const BRILLIANT_SIDES = [5, 9];   // ブリリアント風の分割数（輪郭の辺はこの 2 倍）
+const STEP_SIDES = [4, 10];       // ステップ風の輪郭の辺の数
+const STEP_CROWN_TIERS = [1, 3];  // ステップ風の上部の段数
+const STEP_PAVILION_TIERS = [2, 4];   // ステップ風の下部の段数
+const CUT_TABLE = [0.5, 0.66];    // テーブルの大きさ（短軸に対する割合）
+const CUT_CROWN_TILT = [28, 38];  // 上部の面の傾き（度）
+const CUT_PAVILION_TILT = [39, 43];   // 下部の面の傾き（度）。外れると光が下へ抜けて中が暗くなる
+const UPPER_GIRDLE_TILT = 6;      // ブリリアント風の上部の外側の面を、主な面より傾ける量（度）
+const STAR_TILT_RATIO = 0.6;      // ブリリアント風のテーブルのまわりの面の傾き（主な面に対する割合）
+const LOWER_GIRDLE_TILT = 2;      // ブリリアント風の下部の外側の面を、主な面より傾ける量（度）
+const STEP_KEEL = 0.92;          // ステップ風の下部の段が内側へ進む深さ（短軸に対する割合）。1 だと下端が尖りすぎる
+const STEP_TILT_RANGE = 12;       // ステップ風の段の外側と内側の傾きの差（度）
+const CUT_DIFF = 0.25;            // シーン切替で、輪郭の値を変える量の下限（範囲の幅に対する割合）
+
+// 色付きのダイヤモンド
+const COLOR_CHANCE = 0.1;         // 色付きになる確率
+const COLOR_DENSITY = [0.08, 0.28];   // 吸収の強さ。大きいと暗い石になる
+const COLOR_FLOOR = 0.1;          // 吸収の計算で、色の各成分の下限（0 だと真っ暗な成分ができる）
+
+// 星形の光
+const STAR_COS = Math.cos(1.8 * Math.PI / 180);   // 面の向きと反射の向きの cos がこれより大きければ光る（ずれ 1.8 度まで）
+const STAR_SIZE = 150;            // もっとも大きい星の大きさ（CSS ピクセル）
+const STAR_GLOW = 5;              // 明るさ
+const STAR_ROTATION = 0.2;        // 星の傾き (rad)
+
+// 光の粒
+const MAX_FLECKS = 900;
+const FLECK_SIZE = 0.022;         // 粒の大きさの基準
+const FLECK_SIZE_GROW = 0.004;    // 離れた所ほど粒を大きくする割合
+const FLECK_MAX_LENGTH = 1.4;     // 虹色の筋の長さの上限。遠くへ伸びた筋は線に見えるので描かない
+const FLECK_FADE_DISTANCE = 0.1;  // 粒が遠くに落ちるほど暗くする割合（距離 1 あたり）
+const FLECK_FADE_LENGTH = 2.5;    // 虹色の筋が長いほど暗くする割合（長さ 1 あたり）
+const FLECK_GAIN = 0.42;          // 粒の明るさ
+
+// ブルーム
+const BLOOM_SCALE = 0.5;          // ブルームの解像度の倍率
+const BLOOM_STRENGTH = 0.26;
+const BLOOM_RADIUS = 0.3;
+const BLOOM_THRESHOLD = 1;
+
+// ---- ユーティリティ ----
+const degToRad = THREE.MathUtils.degToRad;
+const randIntIn = ([a, b]) => a + randInt(b - a + 1);   // a〜b の整数
+const glslVec3 = (c) => `vec3(${c.map((v) => v.toFixed(5)).join(', ')})`;
+
+// ---- シェーダー ----
+// ダイヤモンド。ダイヤモンドの座標で光線を追う
+const DIAMOND_VERTEX = /* glsl */`
+  varying vec3 vPos;
+  varying vec3 vNormal;
+  void main() {
+    vPos = position;
+    vNormal = normal;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const DIAMOND_FRAGMENT = /* glsl */`
+  #define MAX_PLANES ${MAX_PLANES}
+  #define LIGHT_COUNT ${LIGHTS.length}
+  #define MAX_BOUNCES ${MAX_BOUNCES}
+  uniform vec4 uPlanes[MAX_PLANES];   // xyz: 外向きの法線、w: 原点からの距離
+  uniform int uPlaneCount;
+  uniform vec3 uLights[LIGHT_COUNT];  // 照明の向き（ダイヤモンドの座標）
+  uniform vec3 uEye;                  // カメラの位置（ダイヤモンドの座標）
+  uniform vec3 uAbsorb;               // 中を通る距離あたりの吸収
+  uniform float uAngle;               // 回転角 (rad)
+  varying vec3 vPos;
+  varying vec3 vNormal;
+  const float F0 = ${F0.toFixed(4)};
+  const vec3 IOR_RGB = ${glslVec3(IOR_RGB)};
+
+  // 周囲の光。下は暗い部屋で、上は天井の明かりが並ぶ。部屋に固定するため、回転角のぶん向きを戻して読む
+  vec3 env(vec3 d) {
+    float sky = smoothstep(0.1, 0.55, d.y);
+    float column = sin((atan(d.z, d.x) - uAngle) * ${ENV_PANEL_COLUMNS.toFixed(1)});
+    float row = sin(d.y * ${ENV_PANEL_ROWS.toFixed(1)});
+    float panel = smoothstep(0.1, 0.45, column) * smoothstep(-0.1, 0.25, row);
+    vec3 col = mix(${glslVec3(ENV_ROOM)}, ${glslVec3(ENV_CEILING)} + ${glslVec3(ENV_PANEL)} * panel, sky);
+    for (int i = 0; i < LIGHT_COUNT; i++) {
+      float c = max(dot(d, uLights[i]), 0.0);
+      col += ${LIGHT_CORE.toFixed(2)} * pow(c, ${LIGHT_CORE_POWER.toFixed(1)}) + ${LIGHT_HALO.toFixed(3)} * pow(c, ${LIGHT_HALO_POWER.toFixed(1)});
+    }
+    return col;
+  }
+
+  // 面 n から外へ出す。全反射になる色は、向きを変えずに読む
+  vec3 leave(vec3 d, vec3 n, float ior) {
+    vec3 e = refract(d, -n, ior);
+    return dot(e, e) < 0.5 ? d : e;
+  }
+
+  void main() {
+    vec3 n = normalize(vNormal);
+    vec3 v = normalize(vPos - uEye);
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - max(-dot(v, n), 0.0), 5.0);
+    vec3 col = env(reflect(v, n)) * fresnel;
+
+    // 凸形なので、光線が出る面は「全部の平面との交点のうち、もっとも近いもの」
+    vec3 p = vPos;
+    vec3 d = refract(v, n, 1.0 / IOR_RGB.g);
+    vec3 hit = n;
+    float path = 0.0;
+    for (int b = 0; b < MAX_BOUNCES; b++) {
+      float tMin = 1e5;
+      for (int i = 0; i < uPlaneCount; i++) {
+        float dn = dot(uPlanes[i].xyz, d);
+        if (dn > 1e-5) {
+          float t = (uPlanes[i].w - dot(uPlanes[i].xyz, p)) / dn;
+          if (t < tMin) { tMin = t; hit = uPlanes[i].xyz; }
+        }
+      }
+      p += d * tMin;
+      path += tMin;
+      float c = dot(d, hit);
+      if (IOR_RGB.g * IOR_RGB.g * (1.0 - c * c) < 1.0 || b == MAX_BOUNCES - 1) break;   // 全反射でなければ外へ出る
+      d = reflect(d, hit);
+    }
+
+    // 分散は外へ出るときの屈折だけで計算する
+    vec3 inner = vec3(
+      env(leave(d, hit, IOR_RGB.r)).r,
+      env(leave(d, hit, IOR_RGB.g)).g,
+      env(leave(d, hit, IOR_RGB.b)).b
+    );
+    col += inner * exp(-uAbsorb * path) * (1.0 - fresnel);
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+// 部屋。暗い階調の段差を、ごく小さなノイズで隠す
+const ROOM_VERTEX = /* glsl */`
+  varying vec3 vWorld;
+  varying vec3 vLocal;
+  varying vec3 vNormal;
+  void main() {
+    vNormal = mat3(modelMatrix) * normal;
+    vLocal = position;
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xyz;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+const ROOM_COMMON = /* glsl */`
+  const float AMBIENT = ${AMBIENT.toFixed(2)};
+  uniform sampler2D uNoise;
+  varying vec3 vWorld;
+  varying vec3 vLocal;
+  varying vec3 vNormal;
+  float dither() {
+    return (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) * 0.0012;
+  }
+  // 壁のあたりの明るさ。天井からの光が中央に淡い楕円になって落ちる
+  float wallLight() {
+    vec2 q = (vWorld.xy - vec2(0.0, ${WALL_LIGHT_Y.toFixed(2)})) / vec2(${WALL_LIGHT_SIZE[0].toFixed(2)}, ${WALL_LIGHT_SIZE[1].toFixed(2)});
+    return AMBIENT + ${WALL_LIGHT_GAIN.toFixed(2)} * exp(-dot(q, q));
+  }
+`;
+const WALL_FRAGMENT = ROOM_COMMON + /* glsl */`
+  uniform sampler2D uPaper;
+  void main() {
+    // ダークグレーの壁紙。同系色の地模様と、絹のような縦の細かい筋
+    float motif = texture2D(uPaper, vWorld.xy / vec2(${WALLPAPER_WIDTH.toFixed(3)}, ${WALLPAPER_HEIGHT.toFixed(3)})).r;
+    float silk = texture2D(uNoise, vWorld.xy * vec2(0.22, 0.012)).r;
+    vec3 col = ${glslVec3(WALL_COLOR)} * (1.0 + ${WALLPAPER_MOTIF.toFixed(2)} * motif) * (0.94 + 0.12 * silk) * wallLight();
+    gl_FragColor = vec4(col + dither(), 1.0);
+  }
+`;
+const FLOOR_FRAGMENT = ROOM_COMMON + /* glsl */`
+  const float TILE = ${TILE_SIZE.toFixed(3)};
+  void main() {
+    // タイル張り。正面の中央にタイルの中心が来るように並べ、壁から手前へ並べる
+    vec2 cell = vec2(vWorld.x / TILE + 0.5, (vWorld.z - ${WALL_Z.toFixed(3)}) / TILE);
+    vec2 id = floor(cell);
+    vec2 toEdge = (0.5 - abs(cell - id - 0.5)) * TILE;
+    float joint = 1.0 - smoothstep(${TILE_JOINT.toFixed(4)}, ${(TILE_JOINT + 0.012).toFixed(4)}, min(toEdge.x, toEdge.y));
+    float hash = fract(sin(dot(id, vec2(12.9898, 78.233))) * 43758.5453);
+
+    // 暗い大理石。タイルごとに模様の位置と向きと明るさを変えて、一枚岩に見えないようにする。
+    // 斜めに流れる縞をむらで歪めて、細い筋にする。ノイズの等高線で筋を作ると、閉じた輪になって地図のように見える
+    vec2 p = vWorld.xz * ${FLOOR_PATTERN_SCALE.toFixed(2)} * vec2(hash < 0.5 ? 1.0 : -1.0, 1.0) + vec2(hash * 613.0, fract(hash * 37.0) * 409.0);
+    float turbulence = texture2D(uNoise, p * 0.0011).r * 1.25 + texture2D(uNoise, p * 0.0037).r * 0.5 + texture2D(uNoise, p * 0.021).r * 0.07;
+    float cloud = texture2D(uNoise, p * 0.0019 + 0.23).r * 0.7 + texture2D(uNoise, p * 0.0061).r * 0.3;
+    float strand = 1.0 - abs(sin(dot(p, vec2(0.28, 0.42)) + turbulence));
+    // 筋の濃さは広い範囲でゆるやかに変える。狭い範囲で消すと、筋が切れてひび割れに見える
+    float region = 0.2 + 0.8 * smoothstep(0.3, 0.7, texture2D(uNoise, vWorld.xz * 0.0016 + 0.61).r);
+    float vein = pow(strand, 34.0) * region;
+    float tone = 1.0 + (fract(hash * 91.0) - 0.5) * ${TILE_TONE.toFixed(3)};
+
+    // 磨いた石なので、台座の足もとに光がにじみ、奥の壁の光が映る
+    float r2 = dot(vWorld.xz, vWorld.xz);
+    float light = AMBIENT + 1.4 * exp(-r2 / 26.0);
+    float sheen = exp(-vWorld.x * vWorld.x / 26.0) * (1.0 - smoothstep(${WALL_Z.toFixed(3)}, 4.0, vWorld.z));
+    vec3 stone = ${glslVec3(FLOOR_COLOR)} * tone * (0.8 + 0.4 * cloud) + ${glslVec3(FLOOR_VEIN)} * vein;
+    vec3 col = stone * light * (1.0 - ${TILE_JOINT_DARK.toFixed(2)} * joint) + ${glslVec3(WALL_COLOR)} * 0.3 * sheen;
+    gl_FragColor = vec4(col + dither(), 1.0);
+  }
+`;
+const BASEBOARD_FRAGMENT = ROOM_COMMON + /* glsl */`
+  void main() {
+    // 上の面だけ、天井からの光を少し受ける
+    vec3 col = ${glslVec3(BASEBOARD_COLOR)} * wallLight() * (1.0 + 0.8 * step(0.5, vNormal.y));
+    gl_FragColor = vec4(col + dither(), 1.0);
+  }
+`;
+const PEDESTAL_FRAGMENT = ROOM_COMMON + /* glsl */`
+  const vec3 BASE = ${glslVec3(PEDESTAL_COLOR)};
+  const vec3 SHEEN = ${glslVec3(VELVET_SHEEN)};
+  const float RADIUS = ${PEDESTAL_RADIUS.toFixed(3)};
+
+  // 細かい毛の粒と、なでた跡のようなむら
+  float pile(vec2 q) {
+    float fiber = texture2D(uNoise, q * 0.36).r;
+    float nap = texture2D(uNoise, q * 0.017).r * 0.6 + texture2D(uNoise, q * 0.05).r * 0.4;
+    return (0.74 + 0.52 * nap) * (0.8 + 0.4 * fiber);
+  }
+
+  void main() {
+    // ベルベット: 面を斜めに見る所ほど、毛の先が光を受けて白っぽくなる。つやは無い
+    vec3 n = normalize(vNormal);
+    float grazing = 1.0 - max(dot(n, normalize(cameraPosition - vWorld)), 0.0);
+    vec3 sheen = SHEEN * grazing * grazing * grazing;
+
+    // 上面: 真上からの光の輪と、足もとの淡い影。ふちへ向かって毛が丸まり、白っぽくなる
+    float r2 = dot(vWorld.xz, vWorld.xz);
+    float edge = sqrt(r2) / RADIUS;
+    float shadow = 1.0 - 0.6 * exp(-r2 / 0.28);
+    vec3 topColor = (BASE * (AMBIENT + 2.6 * exp(-r2 / 2.6)) + sheen * (0.7 + 2.2 * pow(edge, 14.0))) * pile(vLocal.xz) * shadow;
+
+    // 側面: 上ほど明るく、左右の輪郭に向かって白っぽくなる。
+    // 台座が回って全周が見えるので、継ぎ目が出ないよう、向きの違う 2 つの投影を混ぜて貼る
+    float drop = max(${PEDESTAL_TOP_Y.toFixed(2)} - vWorld.y, 0.0);
+    float fall = 0.55 + 0.45 * exp(-drop * 0.8);
+    float side = vLocal.x / RADIUS;
+    float sidePile = mix(pile(vLocal.zy), pile(vLocal.xy), 1.0 - side * side);
+    vec3 sideColor = (BASE * AMBIENT + sheen * 1.4 + SHEEN * 0.45 * exp(-drop * 9.0)) * sidePile * fall;
+
+    // 角の丸みの所で、なめらかに移り変わる
+    vec3 col = mix(sideColor, topColor, smoothstep(0.15, 0.85, n.y));
+    gl_FragColor = vec4(col + dither(), 1.0);
+  }
+`;
+
+// 光の粒（床や壁に貼り付く、ぼけた板）
+const FLECK_VERTEX = /* glsl */`
+  attribute vec3 aColor;
+  attribute float aSpectrum;
+  varying vec3 vColor;
+  varying vec2 vUv;
+  varying float vSpectrum;
+  void main() {
+    vColor = aColor;
+    vUv = uv;
+    vSpectrum = aSpectrum;
+    gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
+  }
+`;
+const FLECK_FRAGMENT = /* glsl */`
+  varying vec3 vColor;
+  varying vec2 vUv;
+  varying float vSpectrum;
+  void main() {
+    // 色に分かれた光は、筋の長さに沿って赤から青へ変える
+    float u = vUv.x * 0.5 + 0.5;
+    vec3 rainbow = vec3(1.0 - smoothstep(0.12, 0.62, u), 1.0 - smoothstep(0.0, 0.5, abs(u - 0.5)), smoothstep(0.38, 0.88, u));
+    float x2 = vUv.x * vUv.x;
+    gl_FragColor = vec4(vColor * mix(vec3(1.0), rainbow * 1.6, vSpectrum) * exp(-x2 * x2 * 2.5 - vUv.y * vUv.y * 3.5), 1.0);
+  }
+`;
+
+// 星形の光（細い 4 本の光と、中心の点）
+const STAR_VERTEX = /* glsl */`
+  attribute float aSize;
+  attribute vec3 aColor;
+  varying vec3 vColor;
+  void main() {
+    vColor = aColor;
+    gl_PointSize = aSize;
+    gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
+  }
+`;
+const STAR_FRAGMENT = /* glsl */`
+  varying vec3 vColor;
+  const mat2 TILT = mat2(${Math.cos(STAR_ROTATION).toFixed(4)}, ${Math.sin(STAR_ROTATION).toFixed(4)}, ${(-Math.sin(STAR_ROTATION)).toFixed(4)}, ${Math.cos(STAR_ROTATION).toFixed(4)});
+  void main() {
+    vec2 p = TILT * (gl_PointCoord * 2.0 - 1.0);
+    vec2 a = abs(p);
+    float fade = max(1.0 - length(p), 0.0);
+    float rays = (exp(-a.x * 70.0) + exp(-a.y * 70.0)) * fade * fade;
+    gl_FragColor = vec4(vColor * (rays + exp(-dot(p, p) * 140.0)), 1.0);
+  }
+`;
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 1, 80);
+
+// マルチサンプルにするのはシーンを描く描画先だけ
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA_SAMPLES });
+function updateSceneTargetSize() {
+  const pr = renderer.getPixelRatio();
+  sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
+}
+updateSceneTargetSize();
+
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
+const scenePass = new TexturePass(sceneTarget.texture);
+scenePass.material.blending = THREE.NoBlending;   // 加算合成で不透明度が 1 を超えても、色をそのまま写す
+composer.addPass(scenePass);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+// composer が渡す大きさより粗く描く
+const setBloomSize = bloom.setSize.bind(bloom);
+bloom.setSize = (width, height) => setBloomSize(width * BLOOM_SCALE, height * BLOOM_SCALE);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// 支える金属の明かり
+scene.add(new THREE.AmbientLight(0xffffff, METAL_AMBIENT));
+const metalLight = new THREE.DirectionalLight(0xffffff, METAL_LIGHT);
+metalLight.position.set(...METAL_LIGHT_POSITION);
+scene.add(metalLight);
+
+const lightDirs = LIGHTS.map((l) => new THREE.Vector3(...l).normalize());
+
+// ---- 状態 ----
+let speed = 1;             // 強度（回転の速さの倍率）
+let angle = 0;             // 回転角 (rad)。0〜2π に収める
+let rotCos = 1;            // 回転角の cos
+let rotSin = 0;            // 回転角の sin
+let cut = null;            // いまのカットの値（CUT_* の範囲から選んだもの）
+let facets = [];           // 面の一覧 { normal, center, area }
+let planes = [];           // カットの平面 { n: [x, y, z], d }
+const absorb = new THREE.Vector3(0, 0, 0);   // 中を通る距離あたりの吸収（色付きのときだけ 0 以外）
+let starCount = 0;         // いま描く星形の光の数
+let fleckCount = 0;        // いま描く光の粒の数
+
+// ---- 展示室 ----
+// 壁紙や石やベルベットのむらに使う、灰色のノイズのテクスチャ
+function createNoiseTexture() {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(size, size);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const v = randInt(256);
+    image.data[i] = image.data[i + 1] = image.data[i + 2] = v;
+    image.data[i + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  return texture;
+}
+const noiseTexture = createNoiseTexture();
+
+// 壁紙の地模様。尖ったアーチを向かい合わせた格子（オジー）に、小さな花を置く。白い所が模様
+function createWallpaperTexture() {
+  const w = 512, h = 756;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = ctx.fillStyle = '#fff';
+  ctx.lineWidth = 6;
+  // 上の頂点から下の頂点まで、左右に膨らむ S 字の線
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(w / 2, 0);
+    ctx.bezierCurveTo(w / 2 + side * w * 0.06, h * 0.16, w / 2 + side * w * 0.5, h * 0.3, w / 2 + side * w * 0.5, h * 0.5);
+    ctx.bezierCurveTo(w / 2 + side * w * 0.5, h * 0.7, w / 2 + side * w * 0.06, h * 0.84, w / 2, h);
+    ctx.stroke();
+  }
+  // 格子の中心と、隣の格子の中心（四隅）に花を置く
+  const flower = (x, y) => {
+    for (let i = 0; i < 8; i++) {
+      const t = (i / 8) * TAU;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(t) * 42, y + Math.sin(t) * 42, 30, 10, t, 0, TAU);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, 11, 0, TAU);
+    ctx.fill();
+  };
+  for (const [x, y] of [[w / 2, h / 2], [0, 0], [w, 0], [0, h], [w, h]]) flower(x, y);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return texture;
+}
+const wallpaperTexture = createWallpaperTexture();
+
+const roomMaterial = (fragmentShader) => new THREE.ShaderMaterial({
+  vertexShader: ROOM_VERTEX, fragmentShader, uniforms: { uNoise: { value: noiseTexture }, uPaper: { value: wallpaperTexture } },
+});
+
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_HALF_WIDTH * 2, WALL_TOP_Y - FLOOR_Y), roomMaterial(WALL_FRAGMENT));
+wall.position.set(0, (WALL_TOP_Y + FLOOR_Y) / 2, WALL_Z);
+scene.add(wall);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_HALF_WIDTH * 2, FLOOR_NEAR_Z - WALL_Z), roomMaterial(FLOOR_FRAGMENT));
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, FLOOR_Y, (FLOOR_NEAR_Z + WALL_Z) / 2);
+scene.add(floor);
+
+const baseboard = new THREE.Mesh(new THREE.BoxGeometry(ROOM_HALF_WIDTH * 2, BASEBOARD_HEIGHT, BASEBOARD_DEPTH), roomMaterial(BASEBOARD_FRAGMENT));
+baseboard.position.set(0, FLOOR_Y + BASEBOARD_HEIGHT / 2, WALL_Z + BASEBOARD_DEPTH / 2);
+scene.add(baseboard);
+
+// 回る展示物（ダイヤモンド・爪・支柱・台座）をまとめる
+const exhibit = new THREE.Group();
+scene.add(exhibit);
+
+// 台座の断面。下から上へたどり、上の角だけを丸める
+const pedestalProfile = [new THREE.Vector2(PEDESTAL_RADIUS, FLOOR_Y)];
+for (let i = 0; i <= 8; i++) {
+  const t = (i / 8) * Math.PI / 2;
+  pedestalProfile.push(new THREE.Vector2(
+    PEDESTAL_RADIUS - PEDESTAL_ROUND * (1 - Math.cos(t)),
+    PEDESTAL_TOP_Y - PEDESTAL_ROUND * (1 - Math.sin(t)),
+  ));
+}
+pedestalProfile.push(new THREE.Vector2(0, PEDESTAL_TOP_Y));
+const pedestal = new THREE.Mesh(new THREE.LatheGeometry(pedestalProfile, 96), roomMaterial(PEDESTAL_FRAGMENT));
+exhibit.add(pedestal);
+
+// ---- カットの生成 ----
+// カットの値を選ぶ
+function randomCut() {
+  const brilliant = Math.random() < BRILLIANT_CHANCE;
+  return {
+    brilliant,
+    aspect: Math.random() < ROUND_CHANCE ? 1 : randIn(CUT_ASPECT),
+    point: Math.random() < NO_POINT_CHANCE ? 0 : randIn(CUT_POINT),
+    sides: randIntIn(brilliant ? BRILLIANT_SIDES : STEP_SIDES),
+    crownTiers: randIntIn(STEP_CROWN_TIERS),
+    pavilionTiers: randIntIn(STEP_PAVILION_TIERS),
+    table: randIn(CUT_TABLE),
+    crownTilt: degToRad(randIn(CUT_CROWN_TILT)),
+    pavilionTilt: degToRad(randIn(CUT_PAVILION_TILT)),
+  };
+}
+
+// 前のカットと見分けがつくか。輪郭の値のどれかが、範囲の幅の CUT_DIFF 以上変わっていればよい
+function isDifferentCut(a, b) {
+  if (!b) return true;
+  // 輪郭の辺の数で比べる（ブリリアント風は分割数の 2 倍）
+  const edges = (c) => (c.brilliant ? c.sides * 2 : c.sides);
+  return Math.abs(a.aspect - b.aspect) >= (CUT_ASPECT[1] - CUT_ASPECT[0]) * CUT_DIFF
+    || Math.abs(a.point - b.point) >= (CUT_POINT[1] - CUT_POINT[0]) * CUT_DIFF
+    || Math.abs(edges(a) - edges(b)) >= (BRILLIANT_SIDES[1] * 2 - STEP_SIDES[0]) * CUT_DIFF;
+}
+
+// 輪郭。縦横比と尖りから点の列を作り、もっとも遠い点までの距離を 1 にそろえる。長軸は x
+function outlinePoints({ aspect, point }) {
+  const points = [];
+  for (let i = 0; i < 128; i++) {
+    const t = (i / 128) * TAU;
+    const c = Math.cos(t);
+    points.push([aspect * c, Math.sin(t) * (1 - point * (1 + c) / 2)]);
+  }
+  const reach = Math.max(...points.map(([x, z]) => Math.hypot(x, z)));
+  return points.map(([x, z]) => [x / reach, z / reach]);
+}
+
+// カットを平面の並びにする。どの平面も輪郭（を内側へずらしたもの）に接するように置くので、形が破綻しない
+function buildPlanes(c) {
+  const points = outlinePoints(c);
+  // 向き phi で輪郭がもっとも遠くへ届く距離
+  const reach = (phi) => {
+    const cx = Math.cos(phi), sz = Math.sin(phi);
+    let best = -Infinity;
+    for (const [x, z] of points) best = Math.max(best, cx * x + sz * z);
+    return best;
+  };
+  let shortest = Infinity;
+  for (let i = 0; i < 64; i++) shortest = Math.min(shortest, reach((i / 64) * TAU));
+
+  const list = [];
+  const n = c.sides;
+  const step = TAU / n;
+  // ガードルの帯
+  const addGirdle = (phi) => list.push({ n: [Math.cos(phi), 0, Math.sin(phi)], d: reach(phi) });
+  // 向き phi、傾き tilt の面を、輪郭を inset だけ内側へずらした線と、ガードルの中心からの距離 y の高さを通るように置く。sign: 上部 1、下部 -1
+  const addFacet = (phi, tilt, inset, y, sign) => {
+    const s = Math.sin(tilt);
+    list.push({
+      n: [s * Math.cos(phi), sign * Math.cos(tilt), s * Math.sin(phi)],
+      d: s * (reach(phi) - inset) + Math.cos(tilt) * y,
+    });
+  };
+
+  const g = GIRDLE_HALF_HEIGHT;
+  const inset = (1 - c.table) * shortest;   // テーブルのふちまでの距離
+  let tableY;
+  if (c.brilliant) {
+    tableY = g + inset * Math.tan(c.crownTilt);
+    const upperTilt = c.crownTilt + degToRad(UPPER_GIRDLE_TILT);
+    const starTilt = c.crownTilt * STAR_TILT_RATIO;
+    const lowerTilt = c.pavilionTilt + degToRad(LOWER_GIRDLE_TILT);
+    for (let k = 0; k < n; k++) {
+      const phi = k * step;
+      addGirdle(phi);
+      addGirdle(phi + step / 2);
+      addFacet(phi, c.crownTilt, 0, g, 1);
+      addFacet(phi - step / 4, upperTilt, 0, g, 1);
+      addFacet(phi + step / 4, upperTilt, 0, g, 1);
+      addFacet(phi + step / 2, starTilt, inset, tableY, 1);
+      addFacet(phi, c.pavilionTilt, 0, g, -1);
+      addFacet(phi - step / 4, lowerTilt, 0, g, -1);
+      addFacet(phi + step / 4, lowerTilt, 0, g, -1);
+    }
+  } else {
+    // 段になった面。外側の段ほど傾きを大きくする（凸形を保つため）
+    const range = degToRad(STEP_TILT_RANGE);
+    const tiers = (count, tilt, totalInset, sign) => {
+      let y = g;
+      for (let j = 0; j < count; j++) {
+        const f = count > 1 ? j / (count - 1) : 0.5;
+        const t = tilt + range * (0.5 - f);
+        const from = (j / count) * totalInset;
+        for (let k = 0; k < n; k++) addFacet(k * step, t, from, y, sign);
+        y += (totalInset / count) * Math.tan(t);
+      }
+      return y;
+    };
+    for (let k = 0; k < n; k++) addGirdle(k * step);
+    tableY = tiers(c.crownTiers, c.crownTilt, inset, 1);
+    tiers(c.pavilionTiers, c.pavilionTilt, shortest * STEP_KEEL, -1);
+  }
+  list.push({ n: [0, 1, 0], d: tableY });
+  return list;
+}
+
+// 平面 plane の上の多角形を、別の平面で切り落とす（Sutherland-Hodgman）
+function clipPolygon(polygon, plane) {
+  const output = [];
+  const side = (p) => plane.n[0] * p[0] + plane.n[1] * p[1] + plane.n[2] * p[2] - plane.d;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    const sa = side(a), sb = side(b);
+    if (sa <= 0) output.push(a);
+    if ((sa < 0 && sb > 0) || (sa > 0 && sb < 0)) {
+      const t = sa / (sa - sb);
+      output.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+    }
+  }
+  return output;
+}
+
+// 平面の上に、ダイヤモンドより十分に大きい四角形を作る。外から見て反時計回り
+function squareOnPlane(plane) {
+  const normal = new THREE.Vector3(...plane.n);
+  const u = new THREE.Vector3(...(Math.abs(plane.n[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0])).cross(normal).normalize();
+  const v = new THREE.Vector3().crossVectors(normal, u);
+  const c = normal.clone().multiplyScalar(plane.d);
+  const big = 5;
+  return [[big, big], [-big, big], [-big, -big], [big, -big]].map(([s, t]) =>
+    c.clone().addScaledVector(u, s).addScaledVector(v, t).toArray());
+}
+
+function polygonArea(polygon) {
+  let area = 0;
+  const cross = new THREE.Vector3();
+  const p0 = new THREE.Vector3(...polygon[0]);
+  for (let i = 1; i < polygon.length - 1; i++) {
+    const a = new THREE.Vector3(...polygon[i]).sub(p0);
+    const b = new THREE.Vector3(...polygon[i + 1]).sub(p0);
+    area += cross.crossVectors(a, b).length() / 2;
+  }
+  return area;
+}
+
+// 平面の並びから、面の多角形を求める。平面ごとに大きな四角形を置き、ほかの全部の平面で切り落とす。面が残らなかった平面は除く
+function buildFacets(allPlanes) {
+  const result = [];
+  allPlanes.forEach((plane, index) => {
+    let polygon = squareOnPlane(plane);
+    allPlanes.forEach((other, j) => {
+      if (j !== index && polygon.length > 0) polygon = clipPolygon(polygon, other);
+    });
+    if (polygon.length < 3) return;
+    const area = polygonArea(polygon);
+    if (area >= 1e-4) result.push({ plane, polygon, area });
+  });
+  return result;
+}
+
+// ---- ダイヤモンド ----
+const diamondMaterial = new THREE.ShaderMaterial({
+  vertexShader: DIAMOND_VERTEX,
+  fragmentShader: DIAMOND_FRAGMENT,
+  uniforms: {
+    uPlanes: { value: Array.from({ length: MAX_PLANES }, () => new THREE.Vector4(0, 0, 0, 0)) },
+    uPlaneCount: { value: 0 },
+    uLights: { value: lightDirs.map((d) => d.clone()) },
+    uEye: { value: new THREE.Vector3() },
+    uAbsorb: { value: absorb },
+    uAngle: { value: 0 },
+  },
+});
+const diamondMesh = new THREE.Mesh(new THREE.BufferGeometry(), diamondMaterial);
+exhibit.add(diamondMesh);
+const standMaterial = new THREE.MeshPhongMaterial({ color: METAL_COLOR, specular: 0xffffff, shininess: METAL_SHININESS });
+const standMesh = new THREE.Mesh(new THREE.BufferGeometry(), standMaterial);
+exhibit.add(standMesh);
+
+// 2 点を結ぶ細い円柱
+function rod(a, b, radius) {
+  const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b);
+  const length = from.distanceTo(to);
+  const g = new THREE.CylinderGeometry(radius, radius, length, 12, 1);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), to.clone().sub(from).normalize()));
+  g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  return g;
+}
+
+// 2 点を結び、先へ向かって細くなる板。normal の向きに薄く、それと直角に幅を持たせる
+function blade(a, b, normal, radiusFrom, radiusTo, width, flat) {
+  const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b);
+  const axis = to.clone().sub(from);
+  const length = axis.length();
+  axis.normalize();
+  const thin = new THREE.Vector3(...normal);
+  thin.addScaledVector(axis, -thin.dot(axis)).normalize();
+  const wide = new THREE.Vector3().crossVectors(axis, thin);
+  const g = new THREE.CylinderGeometry(radiusTo, radiusFrom, length, 12, 1);
+  g.scale(width, 1, flat);
+  g.applyMatrix4(new THREE.Matrix4().makeBasis(wide, axis, thin));
+  g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  return g;
+}
+
+// 爪の折れ目に置く球
+function ball(p, radius) {
+  const g = new THREE.SphereGeometry(radius, 12, 8);
+  g.translate(...p);
+  return g;
+}
+
+// 高さ y で、向き (dx, dz) へ輪郭まで届く距離
+function outlineRadius(dx, dz, y) {
+  let r = Infinity;
+  for (const p of planes) {
+    const along = p.n[0] * dx + p.n[2] * dz;
+    if (along > 1e-5) r = Math.min(r, (p.d - p.n[1] * y) / along);
+  }
+  return r;
+}
+
+// 台座から立つ脚と、ガードルを押さえる爪、爪をつなぐ輪。カットの輪郭に合わせて作る。
+// 脚は爪をそのまま下へ伸ばした形にし、1 本の線で台座から上部の面まで続いて見えるようにする
+function buildStand(bottomY) {
+  const parts = [];
+  const railY = bottomY * RAIL_HEIGHT;
+  // 輪の上の点。下部の面に沿って一周する
+  const railPoint = (phi) => {
+    const dx = Math.cos(phi), dz = Math.sin(phi);
+    const r = outlineRadius(dx, dz, railY) * RAIL_OUTSET + RAIL_RADIUS;
+    return [dx * r, railY, dz * r];
+  };
+  for (let i = 0; i < RAIL_SEGMENTS; i++) {
+    parts.push(rod(railPoint(i / RAIL_SEGMENTS * TAU), railPoint((i + 1) / RAIL_SEGMENTS * TAU), RAIL_RADIUS));
+  }
+  for (let i = 0; i < PRONG_COUNT; i++) {
+    const phi = (i + 0.5) / PRONG_COUNT * TAU;
+    const dx = Math.cos(phi), dz = Math.sin(phi);
+    const r = outlineRadius(dx, dz, GIRDLE_HALF_HEIGHT);
+    // 爪の先が上部の面に載る高さ
+    const tipR = r * PRONG_TIP;
+    let tipY = Infinity;
+    let tipNormal = [0, 1, 0];
+    for (const p of planes) {
+      if (p.n[1] < 1e-3) continue;
+      const y = (p.d - p.n[0] * dx * tipR - p.n[2] * dz * tipR) / p.n[1];
+      if (y < tipY) { tipY = y; tipNormal = p.n; }
+    }
+    const at = (radius, y) => [dx * radius, y, dz * radius];
+    const mid = railPoint(phi);
+    const outer = at(r * PRONG_OUTSET + PRONG_RADIUS, 0);
+    // 先は上部の面から、平たくした厚みの分だけ浮かせる
+    const lift = PRONG_RADIUS * PRONG_TIP_FLAT;
+    const tip = [dx * tipR + tipNormal[0] * lift, tipY + tipNormal[1] * lift, dz * tipR + tipNormal[2] * lift];
+    // 脚の端は台座の毛に少し埋める
+    const foot = [mid[0] * LEG_SPREAD, PEDESTAL_TOP_Y - 0.01, mid[2] * LEG_SPREAD];
+    parts.push(rod(foot, mid, LEG_RADIUS), rod(mid, outer, PRONG_RADIUS),
+      blade(outer, tip, tipNormal, PRONG_RADIUS, PRONG_RADIUS * PRONG_TIP_TAPER, PRONG_TIP_WIDTH, PRONG_TIP_FLAT));
+    parts.push(ball(mid, LEG_RADIUS), ball(outer, PRONG_RADIUS));
+  }
+  const merged = mergeGeometries(parts);
+  parts.forEach((g) => g.dispose());
+  return merged;
+}
+
+// カットを作り、形と平面を入れ替える
+function applyCut(c) {
+  cut = c;
+  const built = buildFacets(buildPlanes(c));
+  // もっとも遠い点までの距離を 1 にそろえる（辺が少ないと、輪郭の角が外へ出るため）
+  let far = 0;
+  let bottomY = 0;
+  for (const f of built) {
+    for (const p of f.polygon) {
+      far = Math.max(far, Math.hypot(p[0], p[2]));
+      bottomY = Math.min(bottomY, p[1]);
+    }
+  }
+  planes = built.map((f) => f.plane);
+  planes.forEach((p) => { p.d /= far; });
+  bottomY /= far;
+
+  const positions = [];
+  const normals = [];
+  facets = built.map((f) => {
+    const polygon = f.polygon.map((p) => [p[0] / far, p[1] / far, p[2] / far]);
+    const center = [0, 0, 0];
+    polygon.forEach((p) => { center[0] += p[0]; center[1] += p[1]; center[2] += p[2]; });
+    center.forEach((_, i) => { center[i] /= polygon.length; });
+    for (let i = 1; i < polygon.length - 1; i++) {
+      positions.push(...polygon[0], ...polygon[i], ...polygon[i + 1]);
+      for (let j = 0; j < 3; j++) normals.push(...f.plane.n);
+    }
+    return { normal: f.plane.n, center, area: f.area / (far * far) };
+  });
+
+  diamondMesh.geometry.dispose();
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  diamondMesh.geometry = geometry;
+
+  const uniformPlanes = diamondMaterial.uniforms.uPlanes.value;
+  planes.forEach((p, i) => uniformPlanes[i].set(p.n[0], p.n[1], p.n[2], p.d));
+  diamondMaterial.uniforms.uPlaneCount.value = planes.length;
+
+  standMesh.geometry.dispose();
+  standMesh.geometry = buildStand(bottomY);
+}
+
+// 色を選ぶ。hue が null なら無色。density は吸収の強さ
+function setDiamondColor(hue, density) {
+  if (hue === null) {
+    absorb.set(0, 0, 0);
+    return;
+  }
+  const color = new THREE.Color().setHSL(hue, 1, 0.5, THREE.LinearSRGBColorSpace);
+  absorb.set(
+    -Math.log(Math.max(color.r, COLOR_FLOOR)) * density,
+    -Math.log(Math.max(color.g, COLOR_FLOOR)) * density,
+    -Math.log(Math.max(color.b, COLOR_FLOOR)) * density,
+  );
+}
+
+// ---- きらめき ----
+// 部屋の座標とダイヤモンドの座標の変換。回転軸が y なので、y は変わらない
+const toWorldX = (x, z) => rotCos * x + rotSin * z;
+const toWorldZ = (x, z) => -rotSin * x + rotCos * z;
+const toLocalX = (x, z) => rotCos * x - rotSin * z;
+const toLocalZ = (x, z) => rotSin * x + rotCos * z;
+
+// 毎フレーム書き換える頂点属性
+const dynamicAttribute = (array, size) => new THREE.BufferAttribute(array, size).setUsage(THREE.DynamicDrawUsage);
+const additive = { transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor };
+
+// 星形の光
+const MAX_STARS = MAX_PLANES * LIGHTS.length;
+const starPositions = new Float32Array(MAX_STARS * 3);
+const starColors = new Float32Array(MAX_STARS * 3);
+const starSizes = new Float32Array(MAX_STARS);
+const starGeometry = new THREE.BufferGeometry();
+starGeometry.setAttribute('position', dynamicAttribute(starPositions, 3));
+starGeometry.setAttribute('aColor', dynamicAttribute(starColors, 3));
+starGeometry.setAttribute('aSize', dynamicAttribute(starSizes, 1));
+const stars = new THREE.Points(starGeometry, new THREE.ShaderMaterial({
+  vertexShader: STAR_VERTEX, fragmentShader: STAR_FRAGMENT, depthTest: false, ...additive,
+}));
+stars.frustumCulled = false;
+stars.renderOrder = 2;
+scene.add(stars);
+
+// 光の粒
+const fleckPositions = new Float32Array(MAX_FLECKS * 4 * 3);
+const fleckColors = new Float32Array(MAX_FLECKS * 4 * 3);
+const fleckSpectrum = new Float32Array(MAX_FLECKS * 4);
+const fleckUvs = new Float32Array(MAX_FLECKS * 4 * 2);
+const fleckIndices = new Uint16Array(MAX_FLECKS * 6);
+for (let i = 0; i < MAX_FLECKS; i++) {
+  fleckUvs.set([-1, -1, 1, -1, 1, 1, -1, 1], i * 8);
+  fleckIndices.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+}
+const fleckGeometry = new THREE.BufferGeometry();
+fleckGeometry.setAttribute('position', dynamicAttribute(fleckPositions, 3));
+fleckGeometry.setAttribute('aColor', dynamicAttribute(fleckColors, 3));
+fleckGeometry.setAttribute('aSpectrum', dynamicAttribute(fleckSpectrum, 1));
+fleckGeometry.setAttribute('uv', new THREE.BufferAttribute(fleckUvs, 2));
+fleckGeometry.setIndex(new THREE.BufferAttribute(fleckIndices, 1));
+const flecks = new THREE.Mesh(fleckGeometry, new THREE.ShaderMaterial({
+  vertexShader: FLECK_VERTEX, fragmentShader: FLECK_FRAGMENT, side: THREE.DoubleSide, ...additive,
+}));
+flecks.frustumCulled = false;
+flecks.renderOrder = 1;
+scene.add(flecks);
+
+// 位置 (x, y, z) から向き (dx, dy, dz) へ進み、最初に当たった台座の上面・床・奥の壁の位置を返す。どこにも当たらなければ null
+function hitRoom(x, y, z, dx, dy, dz) {
+  let t = Infinity;
+  let wallHit = false;
+  if (dy < -1e-4) {
+    const tTop = (PEDESTAL_TOP_Y - y) / dy;
+    const onTop = tTop > 0 && Math.hypot(x + dx * tTop, z + dz * tTop) < PEDESTAL_RADIUS;
+    t = onTop ? tTop : (FLOOR_Y - y) / dy;
+  }
+  if (dz < -1e-4) {
+    const tWall = (WALL_Z - z) / dz;
+    if (tWall > 0 && tWall < t) { t = tWall; wallHit = true; }
+  }
+  if (t === Infinity || t <= 0) return null;
+  const hit = { x: x + dx * t, y: y + dy * t, z: z + dz * t, t, wallHit };
+  if (Math.abs(hit.x) > ROOM_HALF_WIDTH || hit.z > FLOOR_NEAR_Z || hit.y > WALL_TOP_Y) return null;
+  return hit;
+}
+
+// 光の粒を 1 個置く。a から b までの筋で、a と b が同じ点なら丸い粒になる。spectrum: 虹色の筋なら 1
+function addFleck(a, b, r, g, bl, spectrum) {
+  if (fleckCount >= MAX_FLECKS) return;
+  const width = FLECK_SIZE + FLECK_SIZE_GROW * a.t;
+  const lift = 0.004;   // 面に重ならないよう、少し浮かせる
+  let ux = b.x - a.x, uy = a.wallHit ? b.y - a.y : 0, uz = a.wallHit ? 0 : b.z - a.z;
+  const length = Math.hypot(ux, uy, uz);
+  if (length < 1e-5) { ux = 1; uy = 0; uz = 0; } else { ux /= length; uy /= length; uz /= length; }
+  const half = length / 2 + width;
+  // 筋と直交する、面の上の向き
+  const vx = a.wallHit ? -uy : -uz, vy = a.wallHit ? ux : 0, vz = a.wallHit ? 0 : ux;
+  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2 + (a.wallHit ? 0 : lift), cz = (a.z + b.z) / 2 + (a.wallHit ? lift : 0);
+  const gain = FLECK_GAIN / (1 + a.t * FLECK_FADE_DISTANCE) / (1 + length * FLECK_FADE_LENGTH);
+  const i = fleckCount * 12;
+  [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([s, t], j) => {
+    fleckPositions[i + j * 3] = cx + ux * half * s + vx * width * t;
+    fleckPositions[i + j * 3 + 1] = cy + uy * half * s + vy * width * t;
+    fleckPositions[i + j * 3 + 2] = cz + uz * half * s + vz * width * t;
+    fleckColors[i + j * 3] = r * gain;
+    fleckColors[i + j * 3 + 1] = g * gain;
+    fleckColors[i + j * 3 + 2] = bl * gain;
+    fleckSpectrum[fleckCount * 4 + j] = spectrum;
+  });
+  fleckCount++;
+}
+
+// ダイヤモンドの中を光線が進む。入口から出口までの向きと距離を返す（シェーダーと同じ計算）
+function traceInside(px, py, pz, dx, dy, dz) {
+  let hit = null;
+  let path = 0;
+  for (let b = 0; b < MAX_BOUNCES; b++) {
+    let tMin = Infinity;
+    for (const plane of planes) {
+      const n = plane.n;
+      const dn = n[0] * dx + n[1] * dy + n[2] * dz;
+      if (dn > 1e-5) {
+        const t = (plane.d - n[0] * px - n[1] * py - n[2] * pz) / dn;
+        if (t < tMin) { tMin = t; hit = n; }
+      }
+    }
+    if (tMin === Infinity) return null;
+    px += dx * tMin; py += dy * tMin; pz += dz * tMin;
+    path += tMin;
+    const c = dx * hit[0] + dy * hit[1] + dz * hit[2];
+    if (IOR * IOR * (1 - c * c) < 1) return { px, py, pz, dx, dy, dz, n: hit, cos: c, path };
+    dx -= 2 * c * hit[0]; dy -= 2 * c * hit[1]; dz -= 2 * c * hit[2];
+  }
+  return null;
+}
+
+// 星形の光を 1 個置く。align: 面の向きと、照明をカメラへ反射する向きの cos
+function addStar(x, y, z, align, area) {
+  if (starCount >= MAX_STARS) return;
+  const k = THREE.MathUtils.smoothstep((align - STAR_COS) / (1 - STAR_COS), 0, 0.85);
+  starPositions.set([x, y, z], starCount * 3);
+  starColors.fill(STAR_GLOW * k, starCount * 3, starCount * 3 + 3);
+  starSizes[starCount] = STAR_SIZE * renderer.getPixelRatio() * k * Math.min(1, 0.55 + Math.sqrt(area));
+  starCount++;
+}
+
+// 中を通った光が、屈折率 ior で外へ出て部屋に届く点。全反射して出られなければ null
+function landingPoint(out, ior) {
+  const q = 1 - ior * ior * (1 - out.cos * out.cos);
+  if (q < 0) return null;
+  const m = ior * out.cos - Math.sqrt(q);
+  const ex = ior * out.dx - m * out.n[0], ey = ior * out.dy - m * out.n[1], ez = ior * out.dz - m * out.n[2];
+  return hitRoom(toWorldX(out.px, out.pz), out.py, toWorldZ(out.px, out.pz), toWorldX(ex, ez), ey, toWorldZ(ex, ez));
+}
+
+// 面の中心から入り、中を通って色に分かれた光を、虹色の筋にする。(lx, ly, lz) は部屋の座標での照明の向き
+function addRefractedFleck(facet, lx, ly, lz, fresnel) {
+  const [nx, ny, nz] = facet.normal;
+  const [cx, cy, cz] = facet.center;
+  const localX = toLocalX(lx, lz), localZ = toLocalZ(lx, lz);
+  const cosI = nx * localX + ny * ly + nz * localZ;
+  const eta = 1 / IOR;
+  const tn = eta * cosI - Math.sqrt(1 - eta * eta * (1 - cosI * cosI));
+  const out = traceInside(cx, cy, cz, tn * nx - eta * localX, tn * ny - eta * ly, tn * nz - eta * localZ);
+  if (!out) return;
+  // 赤と青の光の届く点を結ぶ
+  const red = landingPoint(out, IOR_RGB[0]), blue = landingPoint(out, IOR_RGB[2]);
+  if (!red || !blue || red.wallHit !== blue.wallHit) return;
+  if (Math.hypot(red.x - blue.x, red.y - blue.y, red.z - blue.z) > FLECK_MAX_LENGTH) return;
+  const tint = (channel) => Math.exp(-absorb.getComponent(channel) * out.path) * (1 - fresnel);
+  addFleck(red, blue, tint(0), tint(1), tint(2), 1);
+}
+
+// 星形の光と光の粒を求める。光が入る上部の面と、全部の照明の組み合わせを調べる
+function updateSparkle() {
+  starCount = 0;
+  fleckCount = 0;
+
+  for (const facet of facets) {
+    const [localNx, ny, localNz] = facet.normal;
+    if (ny <= 0.02) continue;
+    const [localCx, cy, localCz] = facet.center;
+    const nx = toWorldX(localNx, localNz), nz = toWorldZ(localNx, localNz);
+    const cx = toWorldX(localCx, localCz), cz = toWorldZ(localCx, localCz);
+    let vx = camera.position.x - cx, vy = camera.position.y - cy, vz = camera.position.z - cz;
+    const vLength = Math.hypot(vx, vy, vz);
+    vx /= vLength; vy /= vLength; vz /= vLength;
+
+    for (const light of LIGHTS) {
+      let lx = light[0] - cx, ly = light[1] - cy, lz = light[2] - cz;
+      const lLength = Math.hypot(lx, ly, lz);
+      lx /= lLength; ly /= lLength; lz /= lLength;
+      const cosI = nx * lx + ny * ly + nz * lz;
+      if (cosI <= 0) continue;
+      const fresnel = F0 + (1 - F0) * (1 - cosI) ** 5;
+
+      // 星形の光: 面が照明をちょうどカメラへ反射するとき
+      const hx = vx + lx, hy = vy + ly, hz = vz + lz;
+      const align = (nx * hx + ny * hy + nz * hz) / Math.hypot(hx, hy, hz);
+      if (align > STAR_COS) addStar(cx, cy, cz, align, facet.area);
+
+      // 光の粒: 表面で反射した光
+      const mirrored = hitRoom(cx, cy, cz, 2 * cosI * nx - lx, 2 * cosI * ny - ly, 2 * cosI * nz - lz);
+      if (mirrored) addFleck(mirrored, mirrored, fresnel, fresnel, fresnel, 0);
+
+      addRefractedFleck(facet, lx, ly, lz, fresnel);
+    }
+  }
+
+  starGeometry.setDrawRange(0, starCount);
+  for (const name of ['position', 'aColor', 'aSize']) starGeometry.attributes[name].needsUpdate = true;
+  fleckGeometry.setDrawRange(0, fleckCount * 6);
+  for (const name of ['position', 'aColor', 'aSpectrum']) fleckGeometry.attributes[name].needsUpdate = true;
+}
+
+// ---- 回転 ----
+// 回転を進め、ダイヤモンドの座標での照明とカメラの位置を更新する
+function updateRotation(dt) {
+  angle = (angle + (TAU / ROTATION_PERIOD) * speed * dt) % TAU;
+  exhibit.rotation.y = angle;
+  rotCos = Math.cos(angle);
+  rotSin = Math.sin(angle);
+  const toLocal = (out, v) => out.set(toLocalX(v.x, v.z), v.y, toLocalZ(v.x, v.z));
+  const { uLights, uEye, uAngle } = diamondMaterial.uniforms;
+  lightDirs.forEach((d, i) => toLocal(uLights.value[i], d));
+  toLocal(uEye.value, camera.position);
+  uAngle.value = angle;
+}
+
+// ---- カメラ ----
+// ダイヤモンドの幅が画面の高さの SCREEN_HEIGHT_RATIO になる距離に置く。縦長の画面では幅にも合わせる
+function fitCamera() {
+  const span = 2 * Math.tan(degToRad(CAM_FOV) / 2);
+  const distance = Math.max(2 / SCREEN_HEIGHT_RATIO / span, 2 / SCREEN_WIDTH_RATIO / (span * camera.aspect));
+  camera.position.set(0, CAM_TARGET_Y + distance * Math.sin(CAM_ELEVATION), distance * Math.cos(CAM_ELEVATION));
+  camera.lookAt(0, CAM_TARGET_Y, 0);
+  camera.updateMatrixWorld();
+}
+
+// ---- シーン切替 ----
+// 新しいカットと色を作る
+function newDiamond() {
+  let next = randomCut();
+  // まれに見分けのつくカットが出ないときは、40 回で諦めてそのまま使う
+  for (let i = 0; i < 40 && !isDifferentCut(next, cut); i++) next = randomCut();
+  applyCut(next);
+  if (Math.random() < COLOR_CHANCE) setDiamondColor(Math.random(), randIn(COLOR_DENSITY));
+  else setDiamondColor(null);
+}
+
+const nextCut = () => fadeAndRun(newDiamond);
+
+// ---- 強度 ----
+function setSpeed(value) {
+  speed = clamp(value, MIN_SPEED, MAX_SPEED);
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  updateRotation(dt);
+  updateSparkle();
+  renderer.setRenderTarget(sceneTarget);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  composer.render();
+}
+
+// ---- 入力・UI ----
+setupControls({
+  changeScene: nextCut,
+  intensity: {
+    up: () => setSpeed(speed * SPEED_STEP),
+    down: () => setSpeed(speed / SPEED_STEP),
+    level: () => logPosition(speed, MIN_SPEED, MAX_SPEED),
+  },
+  onResize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    updateSceneTargetSize();
+    composer.setSize(innerWidth, innerHeight);
+    fitCamera();
+  },
+});
+
+// ---- 開始 ----
+fitCamera();
+newDiamond();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
