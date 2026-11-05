@@ -1,7 +1,5 @@
 # DEVELOPMENT.md — 実装者向けメモ
 
-作品の概要・操作は [README.md](README.md)、作品ごとの仕様は `docs/specs/<作品名>.md` を参照。
-
 ## 方針
 
 - 1 作品 = HTML 1 ファイル。全作品で共通の処理は [common.js](common.js)、共通の CSS は [common.css](common.css) にまとめ、各 HTML から読み込む。ビルド・npm は使わない。
@@ -12,6 +10,7 @@
 - 1 秒に描く回数を抑える作品は、`tick` の先頭を [jellyfish.html](jellyfish.html) と同じ書き方（`nextDraw`）にする。前回描いた時刻との差で判定すると、時計を止めた `tools/gpu-bench.mjs` の撮影で一度も描かず、`--shots` の画像が一色になる。
 - ブルームなどを使う作品では、マルチサンプルにするのはシーンを描く描画先だけにする。composer の描画先までマルチサンプルにすると、全画面の処理がとても重くなる。ブルームは解像度を下げて描き、効果がほとんど無い場面では切る。
 - コメント・UI の文言は日本語。ただし、シーン名とそのラベル（`Course: Downtown`、`Scene: Moon`）は英語にする。文体は、ユーザ向けの文章（README.md・index.html）は敬体、実装者向けの文章（DEVELOPMENT.md・CLAUDE.md・docs・コメント）は常体にする。
+
 
 ## ファイルの構成
 
@@ -29,6 +28,7 @@
 | tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
+| .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。
 
@@ -39,12 +39,13 @@
 | シェーダー（任意） | 独自の GLSL |
 | three.js 初期化 | レンダラー、シーン、カメラ、ポストエフェクト |
 | 状態 | 速度など、実行中に変わる値 |
-| （作品の本体） | パイプ、トンネルとハッチ、街・輪・ドローン、雨と波紋、炎と火の粉、クラゲと泡、オーロラ、崖と滝と滝壺、カメラなど |
+| （作品の本体） | パイプ、雨と波紋、カメラなど |
 | シーン切替（任意） | 暗転して次の場面へ移る処理（場面が 1 つだけの作品には無い） |
 | 強度 | 強度を変える処理（`setSpeed` など） |
 | メインループ | `tick(now)`。経過時間は最大 0.1 秒に抑える |
 | 入力・UI | `setupControls()` を 1 回呼ぶ |
 | 開始 | 初期化して `renderer.setAnimationLoop(tick)` |
+
 
 ## 共通の仕組み（common.js）
 
@@ -80,7 +81,7 @@ setupControls({
 ```
 
 - **シーン切替**: 暗転して次の場面へ移る操作。何が変わるかは作品ごとの仕様（`docs/specs/<作品名>.md`）に書く。暗転は `fadeAndRun(change)` で、暗転している間に `change()` を呼ぶ。暗転中かは `isFading()` で分かる。
-- **強度**: 作品ごとの強さ（速度・雨の強さ・火の強さ・泡の筋の数・オーロラの帯の数・水量・温度・ペンギンの数）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
+- **強度**: 作品ごとの強さ（速度・雨の強さ・ペンギンの数など。何を変えるかは各作品の仕様にある）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
 - キー操作は Cmd / Ctrl / Alt を押しながらの操作には反応させず、ブラウザに任せる（Cmd+F など）。
 - スワイプは指での操作だけを受け付ける（マウスのドラッグや 2 本目の指には反応しない）。十分に動き、縦横の一方の動きがもう一方の 2 倍以上あるときだけスワイプとみなす。
 - **一覧へ戻る**: 「← 一覧」のリンクは `setupControls()` が操作ガイドの先頭に作る。全画面のときの Esc は全画面を抜けるだけにし、戻らない。隠れている間に押したときは操作ガイドを出すだけにする（見えていないリンクを誤って押して、一覧へ移らないようにするため）。移動の前に暗転はしない（ブラウザの「戻る」で戻ったときに、暗いまま復元されることがあるため）。
@@ -98,41 +99,12 @@ setupControls({
 
 ### 小さな関数
 
-`TAU`、`clamp`、`rand(a, b)`、`randIn([a, b])`、`randInt(n)`、`randSign()`、`pick(arr)`、`randExp(mean)`（指数分布）、`randomInterval([mean, min, max])`（ランダムに起こる出来事の間隔）、`gray(v, a)`（canvas に渡す灰色）、`emit(sys, rate, dt, spawn)`（粒を一定のペースで生む）。2 つ以上の作品で使う小さな関数は、各作品に書かずにここに置く。three.js に頼るもの（`THREE.MathUtils.smoothstep` など）は three.js のものを使う。
+一覧は common.js の末尾の `window.Common = { … }` を見る（乱数の関数、`emit` など）。2 つ以上の作品で使う小さな関数は、各作品に書かずにここに置く。three.js に頼るもの（`THREE.MathUtils.smoothstep` など）は three.js のものを使う。
 
-## 作品を追加・変更したとき
-
-- 新作は既存ファイル（[pipes.html](pipes.html) など）を土台にし、`<head>`、`#hud`、節の順番を揃える。
-- [index.html](index.html) の作品一覧にリンクを追加・更新する。
-- README.md の作品ごとの節（1 行の概要・操作）を更新する。
-- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
-- `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作り、下の「作品ごとの仕様」に追加する。
-- 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
-- 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
-- 見た目を変えないリファクタリングは、`Math.random` を固定の乱数に差し替え、決まったコマ数だけ進めた画像を変更前後で比べる。`node tools/video-compare.mjs` で「全コマ一致」になるかを見ればよい。
-  - three.js は UUID を作るのに `Math.random` を使う。テクスチャや材質を作る順番を変えると乱数の列がずれ、コードが正しくても画像が変わる。比べるときは、変更前のコードも作る順番を揃える。
-  - `setAnimationLoop` を止めて 1 回だけ描くと、撮影した画像が空白になることがある。同じコマを描き続けて撮る。
-  - 空白の画像どうしでも差は 0 になる。差だけでなく、画像に中身があることも確かめる。
-- GPU の負荷を測るのは、指示があったときだけにする。測るときは `node tools/gpu-bench.mjs` で変更前後を比べる。基準値と比べ方は [docs/performance.md](docs/performance.md) にある。
-  - 前回の計測から変わったのが測り直す作品だけなら、ほかの作品の値はそのまま使える。「測った条件」のコミットは新しいハッシュだけにし、作品名などの注記は付けない。
-- 手で測るときは、描画のあとに `gl.readPixels` で 1 画素読み、GPU の完了を待ってから時間を測る（描画の命令を出すだけなら、すぐに戻ってしまう）。GPU のクロックが負荷に応じて変わるので、ふつうに測ると値が段階的に変わる。変更前後を交互に数回ずつ測り、中央値で比べる。
 
 ## 作品ごとの仕様
 
-作品ごとの仕様は `docs/specs/` に分けてある。作品を触るときは、そのファイルを読んでから作業する。調整用の定数の意味は、各 HTML の「設定」節のコメントを見る。
-
-| 作品 | 仕様 |
-|---|---|
-| pipes.html — 3D パイプ | [docs/specs/pipes.md](docs/specs/pipes.md) |
-| tube.html — チューブトンネル | [docs/specs/tube.md](docs/specs/tube.md)（隠し要素のマスコットを含む） |
-| drone.html — ナイトドローン | [docs/specs/drone.md](docs/specs/drone.md)（コースの定義を含む） |
-| ripple.html — 雨の水面 | [docs/specs/ripple.md](docs/specs/ripple.md)（景色の定義を含む） |
-| campfire.html — 焚き火 | [docs/specs/campfire.md](docs/specs/campfire.md) |
-| jellyfish.html — クラゲ水槽 | [docs/specs/jellyfish.md](docs/specs/jellyfish.md) |
-| aurora.html — オーロラ | [docs/specs/aurora.md](docs/specs/aurora.md)（隠し要素のサンタクロースを含む） |
-| waterfall.html — 滝 | [docs/specs/waterfall.md](docs/specs/waterfall.md)（景色の定義を含む） |
-| lavalamp.html — 溶岩ランプ | [docs/specs/lavalamp.md](docs/specs/lavalamp.md) |
-| penguins.html — ペンギンの行進 | [docs/specs/penguins.md](docs/specs/penguins.md)（景色の定義と、隠し要素のヒナを含む） |
+`<作品名>.html` の仕様は `docs/specs/<作品名>.md` にある。作品を触るときは、その概要と見出しを見て、関係する節を読んでから作業する。調整用の定数の意味は、各 HTML の「設定」節のコメントを見る。
 
 ### 仕様の書き方
 
@@ -156,4 +128,24 @@ setupControls({
   - 隠しキー: 「**C** キーですぐに呼び出せる（操作ガイドには表示しない）。」
   - 用語: 「操作ガイド」（HUD とは書かない）、`MSAA`、「起動時」、`canvas`
 
-SNS 投稿用などの動画の書き出し方は [docs/video.md](docs/video.md) にある。
+
+## 作品を追加・変更したとき
+
+- 新作は既存ファイル（[pipes.html](pipes.html) など）を土台にし、`<head>`、`#hud`、節の順番を揃える。
+- [index.html](index.html) の作品一覧にリンクを追加・更新する。
+- README.md の作品ごとの節（1 行の概要・操作）を更新する。
+- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
+- `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
+- 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
+- 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
+- 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
+- GPU の負荷を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
+
+
+## 見た目を変えないリファクタリング
+
+`Math.random` を固定の乱数に差し替え、決まったコマ数だけ進めた画像を変更前後で比べる。`node tools/video-compare.mjs`（[docs/video.md](docs/video.md)）で「全コマ一致」になるかを見ればよい。
+
+- three.js は UUID を作るのに `Math.random` を使う。テクスチャや材質を作る順番を変えると乱数の列がずれ、コードが正しくても画像が変わる。比べるときは、変更前のコードも作る順番を揃える。
+- `setAnimationLoop` を止めて 1 回だけ描くと、撮影した画像が空白になることがある。同じコマを描き続けて撮る。
+- 空白の画像どうしでも差は 0 になる。差だけでなく、画像に中身があることも確かめる。
