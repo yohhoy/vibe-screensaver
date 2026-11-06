@@ -10,7 +10,7 @@ node tools/video-export.mjs waterfall --scenes 0,1,2 --seconds 5 --out out.mp4
 
 ## 場面の指定
 
-シーンの定義がある drone・ripple・waterfall・penguins は、`--scenes` に場面の番号を並べる。範囲外の番号を渡すと、エラーに場面の名前の一覧が出る。省くと、起動時に乱数で選ばれた場面だけを撮る（どの場面になるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+シーンの定義がある drone・ripple・waterfall・penguins・sandpicture は、`--scenes` に場面の番号を並べる。範囲外の番号を渡すと、エラーに場面の名前の一覧が出る。省くと、起動時に乱数で選ばれた場面だけを撮る（どの場面になるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
 
 各場面の前に `--warmup` の秒数だけ進めてから収録を始める。起動直後は絵が揃っていない作品（パイプが伸びていない pipes など）では長めにする。
 

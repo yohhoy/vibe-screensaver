@@ -34,6 +34,7 @@ const SCENES = {
   ripple: { names: 'SCENES', select: 'setScene(i)' },
   waterfall: { names: 'SCENES', select: 'setScene(i)' },
   penguins: { names: 'SCENES', select: 'setScene(i)' },
+  sandpicture: { names: 'SCENES', select: 'setScene(i)' },
 };
 const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture'];
 

@@ -69,7 +69,7 @@ const FILL_HEIGHT = 0.92;                  // 山の高さが画面の高さの�
 const WATCH_SEC = 30;                      // 流すのをやめてから次の絵に移るまでの秒数
 
 // ガラスと光
-const LIQUID_TOP_GAIN = 0.92;              // 液体の上端の明るさ（配色の液体の色に対する倍率）
+const LIQUID_TOP_GAIN = 0.92;              // 液体の上端の明るさ（シーンの液体の色に対する倍率）
 const LIQUID_BOTTOM_GAIN = 0.74;           // 液体の下端の明るさ（同じ）
 const EDGE_DARK = 0.05;                    // 画面の縁を暗くする強さ
 const EDGE_WIDTH = 0.12;                   // 縁を暗くする幅（画面の高さに対する割合）
@@ -113,15 +113,15 @@ const CAMEL_MAX_PITCH = 0.9;               // 斜面に合わせて傾ける角�
 const CAMEL_READ_SEC = 0.1;                // ラクダがいる間に砂の表面を読み出す間隔（秒）
 const CAMEL_COLOR = 0x1a120c;
 
-// 配色（docs/specs/sandpicture.md の「配色の定義」。この順番でローテーションする）。
+// シーン（docs/specs/sandpicture.md の「シーンの定義」。この順番でローテーションする）。
 // 砂は 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 34〜53 の範囲で、大きいほど急な斜面で積もる。
 // 3 色の安息角を離しておくと、山の上に積もる層の厚さが色ごとに変わり、地層のように見える
-const PALETTES = [
+const SCENES = [
   { name: 'Desert', liquid: 0xe9dcbc, sand: [[0x3a2418, 50], [0xd0702a, 42], [0xf3ede2, 34]] },
   { name: 'Ocean', liquid: 0xcfe2ec, sand: [[0x14254a, 50], [0x1f8a8a, 42], [0xf0f4f6, 34]] },
   { name: 'Sunset', liquid: 0xf3dcd6, sand: [[0x4a2160, 50], [0xc0303f, 42], [0xe6b53a, 34]] },
 ];
-const SAND_COLORS = 3;                     // 1 つの配色の砂の色の数
+const SAND_COLORS = 3;                     // 1 つのシーンの砂の色の数
 
 // 描画
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
@@ -417,7 +417,7 @@ const overlayCamera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
 
 // ---- 状態 ----
 let holeCount = BASE_HOLES;     // 落とし口の数（強度）
-let paletteIndex = randInt(PALETTES.length) - 1;   // いまの配色（PALETTES の番号）。最初の絵で 1 つ進むので、起動時の配色がランダムになる
+let sceneIndex = 0;             // いまのシーン（SCENES の番号）
 let W = 0, H = 0;               // 格子の大きさ（マス）
 let targets = [];               // 格子の描画先（交互に読み書きする 2 枚）
 let current = 0;                // いまの格子が入っている描画先の番号
@@ -480,7 +480,7 @@ function addHole() {
   const flow = randomFlow();
   const drift = HOLE_DRIFT_PERIOD.map((period) => ({ speed: TAU / randIn(period), phase: rand(0, TAU) }));
   holes.push({
-    home: best, x: best, width, color: randInt(PALETTES[paletteIndex].sand.length), time: randIn(STRATUM_SEC),
+    home: best, x: best, width, color: randInt(SCENES[sceneIndex].sand.length), time: randIn(STRATUM_SEC),
     flow, flowTarget: flow, flowTime: randIn(FLOW_CHANGE_SEC), drift,
   });
 }
@@ -555,7 +555,7 @@ function readSurface() {
 // 口ごとに切り替えるので、山ごとに層の色の順番と厚さが変わる。
 // 流れる量も口ごとに、ときどき選び直した目標へなめらかに近づけ、位置もゆっくり動かす
 function updateStreams(dt) {
-  const count = PALETTES[paletteIndex].sand.length;
+  const count = SCENES[sceneIndex].sand.length;
   const follow = 1 - Math.exp(-dt / FLOW_SMOOTH_SEC);
   for (const h of holes) {
     h.time -= dt;
@@ -597,7 +597,7 @@ function updatePicture(dt) {
   }
   if (!pouring) {
     watchTime += dt;
-    if (watchTime >= WATCH_SEC && !isFading()) fadeAndRun(newPicture);
+    if (watchTime >= WATCH_SEC && !isFading()) nextScene();
   }
 }
 
@@ -811,18 +811,18 @@ function hideCamel() {
 }
 
 // ---- シーン切替 ----
-// 格子を画面に合わせて空にし、配色を次に進め、落とし口を選び直す
-function newPicture() {
+// 格子を画面に合わせて空にし、シーンを index に替え、落とし口を選び直す
+function setScene(index) {
   buildGrid();
   clearGrid();
-  paletteIndex = (paletteIndex + 1) % PALETTES.length;
-  const palette = PALETTES[paletteIndex];
-  palette.sand.forEach(([hex, angle], i) => {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  s.sand.forEach(([hex, angle], i) => {
     viewPass.uniforms.uSand.value[i].copy(hexToVec3(hex));
     simPass.uniforms.uSticky.value[i] = stickyFraction(angle);
   });
-  viewPass.uniforms.uLiquidTop.value.copy(hexToVec3(palette.liquid, LIQUID_TOP_GAIN));
-  viewPass.uniforms.uLiquidBottom.value.copy(hexToVec3(palette.liquid, LIQUID_BOTTOM_GAIN));
+  viewPass.uniforms.uLiquidTop.value.copy(hexToVec3(s.liquid, LIQUID_TOP_GAIN));
+  viewPass.uniforms.uLiquidBottom.value.copy(hexToVec3(s.liquid, LIQUID_BOTTOM_GAIN));
   holes = [];
   pouring = true;
   watchTime = 0;
@@ -834,7 +834,7 @@ function newPicture() {
   hideCamel();
 }
 
-const nextPicture = () => fadeAndRun(newPicture);
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
 
 // ---- 強度 ----
 function setHoleCount(value) {
@@ -861,7 +861,7 @@ function tick(now) {
 
 // ---- 入力・UI ----
 setupControls({
-  changeScene: nextPicture,
+  changeScene: nextScene,
   intensity: {
     up: () => setHoleCount(holeCount + 1),
     down: () => setHoleCount(holeCount - 1),
@@ -877,7 +877,7 @@ setupControls({
 });
 
 // ---- 開始 ----
-newPicture();
+setScene(randInt(SCENES.length));
 renderer.setAnimationLoop(tick);
 </script>
 </body>
