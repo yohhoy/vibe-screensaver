@@ -26,7 +26,7 @@ import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, randIn, randInt, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 長さの基準は、回転軸からダイヤモンドのもっとも遠い点までの距離（1）。原点はガードルの中心。色は線形の値
@@ -163,6 +163,24 @@ const FLECK_MAX_LENGTH = 1.4;     // 虹色の筋の長さの上限。遠くへ�
 const FLECK_FADE_DISTANCE = 0.1;  // 粒が遠くに落ちるほど暗くする割合（距離 1 あたり）
 const FLECK_FADE_LENGTH = 2.5;    // 虹色の筋が長いほど暗くする割合（長さ 1 あたり）
 const FLECK_GAIN = 0.42;          // 粒の明るさ
+
+// 蜘蛛（隠し要素）。天井から糸で降りてきて、しばらく止まり、また昇っていく
+const SPIDER_INTERVAL = [300, 180, 600];   // 現れる間隔 [平均, 下限, 上限]（秒）
+const SPIDER_SIZE = 0.4;          // 脚を広げた幅
+const SPIDER_Z = -1.6;            // 降りてくる奥行き。台座より奥、壁より手前
+const SPIDER_X = [1.55, 1.8];     // 降りてくる横の位置（回転軸からの距離）。ダイヤモンドの近くで、重ならない所
+const SPIDER_STOP = [-0.1, 0.1];  // 止まる高さ（画面の中央の高さからのずれ）
+const SPIDER_DESCEND_TIME = 7;    // 降りるのにかかる秒数
+const SPIDER_HANG_TIME = [3, 5];  // 止まっている秒数
+const SPIDER_ASCEND_TIME = 9;     // 昇るのにかかる秒数。糸をたぐるので降りるより遅い
+const SPIDER_COLOR = [0.002, 0.002, 0.002];
+const THREAD_COLOR = [0.16, 0.16, 0.16];
+const THREAD_WIDTH = 0.008;
+const SPIDER_SWAY = 0.0008;       // 糸の揺れの角度 (rad)。糸が長いので、小さくても左右に大きく揺れる
+const SPIDER_SWAY_PERIOD = 5;     // 糸の揺れの周期（秒）
+// 脚の動き [振れ幅 (rad), 速さ（1 秒あたりの回数。SPIDER_SWAY_PERIOD 秒で割り切れる整数）]。
+// 控えめにして、昇るときだけ小刻みに速く動かし、ちょこちょこと昇るコミカルな印象にする
+const SPIDER_LEG_MOTION = { down: [0.012, 1], hang: [0.02, 1], up: [0.06, 4] };
 
 // ブルーム
 const BLOOM_SCALE = 0.5;          // ブルームの解像度の倍率
@@ -1117,6 +1135,128 @@ function fitCamera() {
   camera.updateMatrixWorld();
 }
 
+// ---- 蜘蛛（隠し要素） ----
+// 天井から垂らした糸と、その先の蜘蛛のシルエット。部屋に固定して置き、カメラの方へ向ける（展示物と一緒には回らない）。
+// 蜘蛛は canvas に描いた板で、脚を動かすときだけ描き直す。リアルにはせず、影絵ていどの形にとどめる
+const SPIDER_TOP = 0.15, SPIDER_BOTTOM = -0.85;   // 板の上端と下端（糸の付け根が 0、蜘蛛の幅が 1 の座標）
+const SPIDER_BODY = 0.25;         // 糸の付け根から体の中心までの長さ（同じ座標）
+// 脚 [付け根, 膝, 先]（右側。左は鏡写し）。ぶら下がった姿を後ろから見た形で、前の脚は下へ、後ろの脚は上へ伸ばす
+const SPIDER_LEGS = [
+  [[0.035, -0.33], [0.2, -0.4], [0.27, -0.72]],
+  [[0.045, -0.31], [0.26, -0.25], [0.42, -0.52]],
+  [[0.045, -0.29], [0.26, -0.15], [0.45, -0.3]],
+  [[0.035, -0.27], [0.19, -0.03], [0.36, 0.04]],
+];
+
+const spiderCanvas = Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
+const spiderTexture = new THREE.CanvasTexture(spiderCanvas);
+
+// 脚の角度を pose(脚の番号, 左右) で振って描く（脚ごとに付け根のまわりで回す）
+function drawSpider(pose) {
+  const ctx = spiderCanvas.getContext('2d');
+  const s = spiderCanvas.width;
+  const px = (x) => (x + 0.5) * s, py = (y) => (SPIDER_TOP - y) * s;
+  ctx.clearRect(0, 0, s, s);
+  ctx.fillStyle = ctx.strokeStyle = '#fff';
+  ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.ellipse(px(0), py(-0.12), 0.085 * s, 0.12 * s, 0, 0, TAU);   // 腹
+  ctx.ellipse(px(0), py(-0.3), 0.065 * s, 0.075 * s, 0, 0, TAU);   // 頭胸部
+  ctx.fill();
+  ctx.lineWidth = 0.022 * s;
+  for (const side of [-1, 1]) {
+    SPIDER_LEGS.forEach((leg, i) => {
+      const a = pose(i, side) * side, c = Math.cos(a), sn = Math.sin(a);
+      const [bx, by] = leg[0];
+      ctx.beginPath();
+      for (const [x, y] of leg) {
+        const dx = x - bx, dy = y - by;
+        ctx.lineTo(px(side * (bx + dx * c - dy * sn)), py(by + dx * sn + dy * c));
+      }
+      ctx.stroke();
+    });
+  }
+  spiderTexture.needsUpdate = true;
+}
+
+// 部屋に固定した糸の付け根（天井）。子の糸と蜘蛛を、付け根のまわりに揺らす
+const spiderRig = new THREE.Group();
+spiderRig.visible = false;
+scene.add(spiderRig);
+const thread = new THREE.Mesh(
+  new THREE.PlaneGeometry(THREAD_WIDTH, 1).translate(0, -0.5, 0),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(...THREAD_COLOR) }),
+);
+const spiderMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(SPIDER_SIZE, SPIDER_SIZE).translate(0, SPIDER_SIZE * (SPIDER_TOP + SPIDER_BOTTOM) / 2, 0),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(...SPIDER_COLOR), map: spiderTexture, transparent: true, depthWrite: false }),
+);
+spiderRig.add(thread, spiderMesh);
+
+let spider = null;         // いる蜘蛛 { phase: 'down' | 'hang' | 'up', t: その段階の経過秒数, hang, startY, stopY }。いなければ null
+let spiderWait = randomInterval(SPIDER_INTERVAL);   // 次に現れるまでの秒数
+let spiderClock = 0;       // 揺れと脚の動きの位相（秒）。0〜SPIDER_SWAY_PERIOD に収める
+
+// 画面の点（NDC）を、蜘蛛が降りる奥行きの面に写す
+function toSpiderPlane(ndcX, ndcY) {
+  const p = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(camera).sub(camera.position);
+  return p.multiplyScalar((SPIDER_Z - camera.position.z) / p.z).add(camera.position);
+}
+
+function startSpider() {
+  if (spider) return;
+  const side = randSign();
+  // 縦長の画面では、画面からはみ出さないよう内へ寄せる
+  const x = side * Math.min(randIn(SPIDER_X), toSpiderPlane(1, 0).x - SPIDER_SIZE * 0.6);
+  const ndcX = x / toSpiderPlane(1, 0).x;
+  // 画面の上端より上から降り始め（脚の先まで隠す）、体の中心が画面の中央の高さに来る所で止まる
+  const top = toSpiderPlane(ndcX, 1).y;
+  const stopY = toSpiderPlane(ndcX, 0).y + SPIDER_SIZE * SPIDER_BODY + randIn(SPIDER_STOP);
+  spider = {
+    phase: 'down', t: 0, hang: randIn(SPIDER_HANG_TIME),
+    startY: top - SPIDER_SIZE * SPIDER_BOTTOM + 0.05, stopY,
+  };
+  spiderWait = randomInterval(SPIDER_INTERVAL);
+  spiderRig.position.set(x, WALL_TOP_Y, SPIDER_Z);
+  spiderRig.rotation.y = Math.atan2(camera.position.x - x, camera.position.z - SPIDER_Z);
+  spiderRig.visible = true;
+}
+
+function updateSpider(dt) {
+  if (!spider) {
+    spiderWait -= dt;
+    if (spiderWait <= 0) startSpider();
+    return;
+  }
+  spider.t += dt;
+  spiderClock = (spiderClock + dt) % SPIDER_SWAY_PERIOD;
+  const { startY, stopY } = spider;
+  let y = stopY;
+  if (spider.phase === 'down') {
+    const u = Math.min(spider.t / SPIDER_DESCEND_TIME, 1);
+    y = stopY + (startY - stopY) * (1 - u) ** 3;   // 速く降りて、ゆっくり止まる
+    if (u >= 1) Object.assign(spider, { phase: 'hang', t: 0 });
+  } else if (spider.phase === 'hang') {
+    if (spider.t >= spider.hang) Object.assign(spider, { phase: 'up', t: 0 });
+  } else {
+    const u = Math.min(spider.t / SPIDER_ASCEND_TIME, 1);
+    y = stopY + (startY - stopY) * u * u * (3 - 2 * u);
+    if (u >= 1) {
+      spider = null;
+      spiderRig.visible = false;
+      return;
+    }
+  }
+  const length = WALL_TOP_Y - y;
+  thread.scale.y = length;
+  spiderMesh.position.y = -length;
+  spiderRig.rotation.z = SPIDER_SWAY * Math.sin(TAU * spiderClock / SPIDER_SWAY_PERIOD);
+  // 脚を左右と前後で交互に動かす
+  const [legAmp, legSpeed] = SPIDER_LEG_MOTION[spider.phase];
+  const w = TAU * legSpeed * spiderClock;
+  drawSpider((i, side) => legAmp * Math.sin(w + i * Math.PI / 2 + (side > 0 ? Math.PI : 0)));
+}
+
 // ---- シーン切替 ----
 // 新しいカットと色を作る
 function newDiamond() {
@@ -1143,6 +1283,7 @@ function tick(now) {
   last = now;
   updateRotation(dt);
   updateSparkle();
+  updateSpider(dt);
   renderer.setRenderTarget(sceneTarget);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
@@ -1157,6 +1298,7 @@ setupControls({
     down: () => setSpeed(speed / SPEED_STEP),
     level: () => logPosition(speed, MIN_SPEED, MAX_SPEED),
   },
+  keys: { KeyC: startSpider },   // 隠し要素の蜘蛛を呼び出す（操作ガイドには表示しない）
   onResize() {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
