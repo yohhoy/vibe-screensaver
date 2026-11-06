@@ -534,12 +534,12 @@ const RippleShader = {
 
 // 水面: 波紋とうねりの傾きから法線を求め、空を映す
 const WaterShader = {
+  // 水面の位置は、頂点から補間せずに画素ごとに視線と水面の交点から求める。
+  // 水面は大きな三角形 2 つなので、補間すると GPU によっては精度が足りず、
+  // カメラが回るたびに映り込みが左右にがたつく（Windows の Chrome など）
   vertexShader: /* glsl */`
-    varying vec3 vWorld;
     void main() {
-      vec4 wp = modelMatrix * vec4(position, 1.0);
-      vWorld = wp.xyz;
-      gl_Position = projectionMatrix * viewMatrix * wp;
+      gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
     }
   `,
   fragmentShader: /* glsl */`
@@ -549,7 +549,16 @@ const WaterShader = {
     uniform float uWavePhase[${BASE_WAVES.length}];   // うねりの各波の時間の位相（0..2π。JS で求める）
     uniform vec3 uWater;
     uniform float uF0, uFog;
-    varying vec3 vWorld;
+    uniform mat4 uClipToWorld;      // クリップ座標 → ワールド座標（カメラの逆行列。JS で求める）
+    uniform vec2 uViewport;         // 描画先の大きさ（画素）
+
+    // この画素の視線と水面 y = 0 の交点
+    vec3 waterPoint() {
+      vec4 ndc = vec4(gl_FragCoord.xy / uViewport * 2.0 - 1.0, 1.0, 1.0);
+      vec4 far = uClipToWorld * ndc;
+      vec3 ray = far.xyz / far.w - cameraPosition;
+      return cameraPosition + ray * (cameraPosition.y / max(-ray.y, 1e-6));
+    }
 
     // 波数 k の波を、1 画素あたりの水面の広さ fp で描くときの強さ。
     // 波が画素より細かくなる遠くでは 0 にして、ちらつきを防ぐ
@@ -572,7 +581,8 @@ const WaterShader = {
     }
 
     void main() {
-      vec2 p = vWorld.xz;
+      vec3 world = waterPoint();
+      vec2 p = world.xz;
       vec2 fw = fwidth(p);
       float fp = max(fw.x, fw.y);   // 1 画素あたりの水面の広さ
 
@@ -583,7 +593,7 @@ const WaterShader = {
       g += base * ${f(BASE_WAVE_STRENGTH)};
 
       vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
-      vec3 V = normalize(cameraPosition - vWorld);
+      vec3 V = normalize(cameraPosition - world);
       vec3 R = reflect(-V, N);
       R.y = abs(R.y);               // 水面より下を向いたら折り返す
       float fres = uF0 + (1.0 - uF0) * pow(1.0 - max(dot(N, V), 0.0), 5.0);
@@ -597,7 +607,7 @@ const WaterShader = {
       col += uLightColor * uGlow * 2.0 * pow(max(dot(R, uLightDir), 0.0), 400.0);
 
       // 遠くは地平線の霞に溶かす
-      float dist = length(vWorld - cameraPosition);
+      float dist = length(world - cameraPosition);
       vec3 haze = skyBase(normalize(vec3(-V.x, 0.0, -V.z)));
       col = mix(col, haze, 1.0 - exp(-dist * uFog));
       gl_FragColor = vec4(col, 1.0);
@@ -691,6 +701,8 @@ const waterUniforms = {
   uWater: { value: new THREE.Vector3() },
   uF0: { value: 0 },
   uFog: { value: 0 },
+  uClipToWorld: { value: new THREE.Matrix4() },
+  uViewport: { value: new THREE.Vector2() },
 };
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE).rotateX(-Math.PI / 2),
@@ -1145,6 +1157,8 @@ function updateCamera() {
   camera.rotation.set(-CAM_PITCH, yaw, 0);
   camera.updateMatrixWorld();
   sky.position.copy(camera.position);
+  waterUniforms.uClipToWorld.value.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
+  renderer.getDrawingBufferSize(waterUniforms.uViewport.value);
 }
 
 // ---- 時間で動く位相 ----
