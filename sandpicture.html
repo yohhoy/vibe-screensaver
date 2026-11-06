@@ -458,16 +458,20 @@ void main() {
   ivec2 cell0 = clamp(ivec2(floor(gp0)), ivec2(0), ivec2(uW - 1, uH - 1));
   float density = 0.0;
   vec3 stream = vec3(0.0);
-  for (int k = -${STREAM_REACH}; k <= ${STREAM_REACH}; k++) {
-    ivec2 p = cell0 + ivec2(0, k);
-    if (!fallingAt(p)) continue;
-    vec4 g = texelFetch(uGrid, p, 0);
-    // 筋の横の位置は粒ごとにずらす。マスが横長なので、横の距離は CELL_ASPECT 倍して測る
-    float dx = (gp0.x - float(p.x) - 0.5 - (g.b - 0.5) * ${STREAM_OFFSET.toFixed(3)}) * ${CELL_ASPECT};
-    float dy = (gp0.y - float(p.y) - 0.5) / ${STREAM_SIGMA.toFixed(3)};
-    float w = (1.0 - smoothstep(${(STREAM_HALF_WIDTH * 0.3).toFixed(3)}, ${STREAM_HALF_WIDTH.toFixed(3)}, abs(dx))) * exp(-dy * dy);
-    density += w;
-    stream += w * baseColor(g.r) * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (g.g - 0.5));
+  // 落ちている粒は、その列の砂の表面より上にしかない。上 STREAM_REACH マスまで表面より下の画素（積もった砂の奥）では探さない。
+  // 積もった砂の画素で探すと、1 マスごとに下を読むので、1 画素で 80 回ほどテクスチャを読むことになる
+  if (cell0.y + ${STREAM_REACH} >= int(surfaceAt(cell0.x))) {
+    for (int k = -${STREAM_REACH}; k <= ${STREAM_REACH}; k++) {
+      ivec2 p = cell0 + ivec2(0, k);
+      if (!fallingAt(p)) continue;
+      vec4 g = texelFetch(uGrid, p, 0);
+      // 筋の横の位置は粒ごとにずらす。マスが横長なので、横の距離は CELL_ASPECT 倍して測る
+      float dx = (gp0.x - float(p.x) - 0.5 - (g.b - 0.5) * ${STREAM_OFFSET.toFixed(3)}) * ${CELL_ASPECT};
+      float dy = (gp0.y - float(p.y) - 0.5) / ${STREAM_SIGMA.toFixed(3)};
+      float w = (1.0 - smoothstep(${(STREAM_HALF_WIDTH * 0.3).toFixed(3)}, ${STREAM_HALF_WIDTH.toFixed(3)}, abs(dx))) * exp(-dy * dy);
+      density += w;
+      stream += w * baseColor(g.r) * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (g.g - 0.5));
+    }
   }
   if (density > 0.0) col = mix(col, stream / density, min(density * ${STREAM_GAIN.toFixed(3)}, ${STREAM_ALPHA.toFixed(3)}));
   vec2 sv = vUv * vec2(uAspect, 1.0);
