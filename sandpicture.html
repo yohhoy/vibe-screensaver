@@ -98,12 +98,19 @@ const INNER_DARK = 0.97;                   // 表面から 2 マスより内側�
 
 // ラクダ（隠し要素）
 const CAMEL_INTERVAL = [120, 60, 180];     // 出てくる間隔（秒）: [平均, 最小, 最大]
-const CAMEL_HEIGHT_PX = 36;                // ラクダの高さ（CSS ピクセル）
+const CAMEL_HEIGHT_PX = 31.5;              // ラクダの高さ（足もとから頭のてっぺんまで、CSS ピクセル）
 const CAMEL_SPEED_PX = 16;                 // 歩く速さ（CSS ピクセル/秒）
-const CAMEL_SPAN = 0.12;                   // 山頂から左右に歩く距離（画面の幅に対する割合）
+const CAMEL_EDGE = [0.1, 0.2];             // 現れる・消える位置（画面の端からの距離。画面の幅に対する割合の範囲）
 const CAMEL_FADE_SEC = 1.5;                // 現れる・消えるときのフェードの秒数
-const CAMEL_FOLLOW = 3;                    // 足もとの高さを追う速さ（1/秒）
-const CAMEL_MAX_TILT = 0.35;               // 斜面に合わせて傾ける角度の上限（ラジアン）
+const CAMEL_STRIDE_SEC = 1.3;              // 4 本の脚がひと回り動く周期（秒）
+const CAMEL_DUTY = 0.6;                    // 1 周期のうち脚が地面に着いている割合
+const CAMEL_STAND = 0.93;                  // 平らな所で立っているときの脚の伸び（脚の長さに対する割合）
+const CAMEL_LEG_STRETCH = [0.07, 0.3];     // 足を地面に合わせるとき、脚を [伸ばす, 縮める] 量の上限（脚の長さに対する割合）
+const CAMEL_FOLLOW = 2;                    // 胴の傾きを地面に合わせる速さ（1/秒）。遅くして、歩く姿を落ち着かせる
+const CAMEL_GROUND_FOLLOW = 3;             // 胴の高さを地面に合わせる速さ（1/秒）。遅くして、降り積もる砂で胴が震えないようにする
+const CAMEL_FOOT_FOLLOW = 4;               // 足の高さを地面に合わせる速さ（1/秒）
+const CAMEL_MAX_PITCH = 0.9;               // 斜面に合わせて傾ける角度の上限（ラジアン）
+const CAMEL_READ_SEC = 0.1;                // ラクダがいる間に砂の表面を読み出す間隔（秒）
 const CAMEL_COLOR = 0x1a120c;
 
 // 配色（docs/specs/sandpicture.md の「配色の定義」。この順番でローテーションする）。
@@ -410,7 +417,7 @@ const overlayCamera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
 
 // ---- 状態 ----
 let holeCount = BASE_HOLES;     // 落とし口の数（強度）
-let paletteIndex = -1;          // いまの配色（PALETTES の番号）
+let paletteIndex = randInt(PALETTES.length) - 1;   // いまの配色（PALETTES の番号）。最初の絵で 1 つ進むので、起動時の配色がランダムになる
 let W = 0, H = 0;               // 格子の大きさ（マス）
 let targets = [];               // 格子の描画先（交互に読み書きする 2 枚）
 let current = 0;                // いまの格子が入っている描画先の番号
@@ -577,7 +584,7 @@ function updatePicture(dt) {
   if (pouring) updateStreams(dt);
   checkWait -= dt;
   if (checkWait <= 0) {
-    checkWait = CHECK_SEC;
+    checkWait = camel ? CAMEL_READ_SEC : CHECK_SEC;   // ラクダの足もとの砂は動くので、ラクダがいる間はこまめに読み出す
     readSurface();
     if (pouring) {
       // ある程度まで積もったら、流すのをやめる
@@ -595,72 +602,137 @@ function updatePicture(dt) {
 }
 
 // ---- ラクダ ----
+// 形は「胴の中心を原点、前を +x、上を +y」の単位で決め、CAMEL_UNIT_PX 倍して映す。
+// 全体を斜面に合わせて傾け（重力は斜面に垂直とみなす）、脚は 1 本ずつ、足の下の砂の表面へ近づくよう膝を曲げて描く。
+// 着地の正確さより歩く姿の落ち着きを優先し、地面は前後にならして使い、脚の伸び縮みにも上限を設ける
+const CAMEL_MODEL_H = 84;                  // 足もとから頭のてっぺんまでの高さ（単位）
+const CAMEL_UNIT_PX = CAMEL_HEIGHT_PX / CAMEL_MODEL_H;   // 1 単位の CSS ピクセル
+const CAMEL_CANVAS = 200;                  // 絵の大きさ（単位）。胴を傾けても収まる大きさ
+const CAMEL_LEG = 47;                      // 脚の長さ（付け根から球節まで、単位）
+const CAMEL_HIP_Y = -6;                    // 脚の付け根の高さ（胴の中心から、単位）
+const CAMEL_STEP = 7;                      // 足を上げる高さ（単位）
+const CAMEL_PAD = 2.5;                     // 足の裏から球節（足の裏のすぐ上の関節）までの高さ（単位）
+const CAMEL_SMOOTH = 30;                   // 地面をならす前後の幅（片側、単位）。傾きもこの距離だけ前後の地面の差で測る
+// 脚: x（付け根の前後の位置、単位）, front（前脚か）, side（0: 手前・1: 奥）, upper（膝までの長さ、単位）。
+// ラクダは側対歩（同じ側の前脚と後ろ脚を揃えて出す）で歩くので、手前と奥で位相を半周ずらす。
+// 前脚の膝（手首）は脚の中ほど、後ろ脚のかかとは低い所にある
+const CAMEL_LEGS = [
+  { x: -21, front: false, side: 1, upper: 28 }, { x: 25, front: true, side: 1, upper: 23 },
+  { x: -24, front: false, side: 0, upper: 28 }, { x: 22, front: true, side: 0, upper: 23 },
+];
+
 const camelCanvas = document.createElement('canvas');
-camelCanvas.width = 128;
-camelCanvas.height = 96;
+camelCanvas.width = camelCanvas.height = CAMEL_CANVAS;
 const camelTexture = new THREE.CanvasTexture(camelCanvas);
 const camelMaterial = new THREE.MeshBasicMaterial({
   map: camelTexture, color: CAMEL_COLOR, transparent: true, depthTest: false, depthWrite: false,
 });
-// 原点が足もとの中央になるよう、四角形をずらしておく
-const camelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0), camelMaterial);
+// 原点が胴の中心（絵の中央）になる
+const camelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), camelMaterial);
 camelMesh.visible = false;
 overlayScene.add(camelMesh);
 
-// 右を向いたラクダのシルエットを描く。phase は脚の振りの位相
-function drawCamel(phase) {
+// 位置 x（CSS ピクセル）の砂の表面の高さ（CSS ピクセル）。列の中心のあいだを直線でつなぐ
+function groundPx(x) {
+  const u = x / CELL_W_PX - 0.5;
+  const i = Math.floor(u), f = u - i;
+  const a = surface[clamp(i, 0, W - 1)], b = surface[clamp(i + 1, 0, W - 1)];
+  return (a + (b - a) * f) * CELL_PX;
+}
+
+// 前後 CAMEL_SMOOTH をならした砂の表面の高さ（CSS ピクセル）。尖った山頂や粒のでこぼこで胴が揺れないようにする
+function smoothGroundPx(x) {
+  let sum = 0;
+  for (let i = -3; i <= 3; i++) sum += groundPx(x + CAMEL_SMOOTH * CAMEL_UNIT_PX * i / 3);
+  return sum / 7;
+}
+
+// 位置 x での、ならした斜面の傾き（前が高いと正、ラジアン）
+function camelSlope(x, dir) {
+  const d = CAMEL_SMOOTH * CAMEL_UNIT_PX;
+  return Math.atan2(smoothGroundPx(x + dir * d) - smoothGroundPx(x - dir * d), 2 * d);
+}
+
+// 脚の付け根 (hx, hy) から足 (fx, fy) までを、長さ upper と残りの 2 本の骨でつなぐ膝の位置（単位）。
+// bend が 1 なら膝を前へ、-1 なら後ろへ出す（前脚の手首は前、後ろ脚のかかとは後ろへ曲がる）
+function camelKnee(hx, hy, fx, fy, bend, upper) {
+  const lower = CAMEL_LEG - upper;
+  const dx = fx - hx, dy = fy - hy;
+  const d = clamp(Math.hypot(dx, dy), 1e-3, CAMEL_LEG);
+  const cos = clamp((upper * upper + d * d - lower * lower) / (2 * upper * d), -1, 1);
+  const angle = Math.atan2(dy, dx) + bend * Math.acos(cos);
+  return [hx + Math.cos(angle) * upper, hy + Math.sin(angle) * upper];
+}
+
+// 右を向いたぽっちゃりしたふたこぶラクダのシルエットを、斜面の傾き c.pitch だけ傾けて描く。
+// feet は脚ごとの足の位置（傾けた向きでの、胴の中心からの単位）
+function drawCamel(c, feet) {
   const g = camelCanvas.getContext('2d');
-  g.clearRect(0, 0, 128, 96);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, CAMEL_CANVAS, CAMEL_CANVAS);
+  g.setTransform(1, 0, 0, -1, CAMEL_CANVAS / 2, CAMEL_CANVAS / 2);   // 上を +y にする
+  g.rotate(c.pitch);
   g.fillStyle = g.strokeStyle = '#fff';
-  g.lineCap = 'round';
-  // 脚（後ろ脚 2 本・前脚 2 本。対角の脚を揃えて振る）
-  g.lineWidth = 5;
-  for (const [x, offset] of [[36, 0], [46, Math.PI], [82, Math.PI], [92, 0]]) {
-    const swing = Math.sin(phase + offset) * 7;
+  g.lineCap = g.lineJoin = 'round';
+  const line = (width, ...points) => {
+    g.lineWidth = width;
     g.beginPath();
-    g.moveTo(x, 52);
-    g.lineTo(x + swing * 0.5, 74);
-    g.lineTo(x + swing, 93);
+    for (let i = 0; i < points.length; i += 2) g.lineTo(points[i], points[i + 1]);
     g.stroke();
-  }
-  // 胴とこぶ
-  g.beginPath(); g.ellipse(64, 46, 34, 13, 0, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.ellipse(60, 32, 19, 15, 0, 0, Math.PI * 2); g.fill();
-  // 首と頭
-  g.lineWidth = 9;
-  g.beginPath(); g.moveTo(90, 46); g.quadraticCurveTo(100, 38, 104, 20); g.stroke();
-  g.beginPath(); g.ellipse(111, 18, 11, 6, 0.15, 0, Math.PI * 2); g.fill();
-  // 尾
-  g.lineWidth = 3;
-  g.beginPath(); g.moveTo(31, 42); g.lineTo(26, 60); g.stroke();
+  };
+  const blob = (x, y, rx, ry, angle = 0) => { g.beginPath(); g.ellipse(x, y, rx, ry, angle, 0, TAU); g.fill(); };
+  // 太さが w1 から w2 へ細くなる骨（両端は丸める）
+  const limb = (x1, y1, x2, y2, w1, w2) => {
+    const a = Math.atan2(y2 - y1, x2 - x1), nx = -Math.sin(a) / 2, ny = Math.cos(a) / 2;
+    g.beginPath();
+    g.moveTo(x1 + nx * w1, y1 + ny * w1); g.lineTo(x2 + nx * w2, y2 + ny * w2);
+    g.lineTo(x2 - nx * w2, y2 - ny * w2); g.lineTo(x1 - nx * w1, y1 - ny * w1);
+    g.fill();
+    blob(x1, y1, w1 / 2, w1 / 2);
+    blob(x2, y2, w2 / 2, w2 / 2);
+  };
+  // 脚。付け根は筋肉で太く、膝から下は細い。膝と球節にこぶを付け、大きく平たい足の裏を roll だけ傾ける。
+  // 肩と腰は、脚につられて少し前後に動く
+  CAMEL_LEGS.forEach((leg, i) => {
+    const { u, v, roll } = feet[i];
+    const hx = leg.x + (u - leg.x) * 0.12, hy = CAMEL_HIP_Y;
+    const ax = u, ay = v + CAMEL_PAD;   // 球節（足の裏のすぐ上の関節）
+    const [kx, ky] = camelKnee(hx, hy, ax, ay, leg.front ? 1 : -1, leg.upper);
+    limb(hx, hy + 6, kx, ky, leg.front ? 12 : 17, 5.6);
+    blob(kx, ky, 3.4, 3.4);   // 膝（後ろ脚はかかと）のこぶ
+    limb(kx, ky, ax, ay, 4.6, 3.6);
+    blob(ax, ay, 2.6, 2.6);
+    blob(ax + Math.cos(roll) * 2.2 + Math.sin(roll) * 1.4, ay + Math.sin(roll) * 2.2 - Math.cos(roll) * 1.4, 4.6, 1.9, roll);
+  });
+  // 胴と 2 つのこぶ
+  blob(0, -1, 34, 16);
+  blob(-14, 12, 12.5, 12, 0.15);
+  blob(10, 12, 12.5, 12, -0.15);
+  // 首は前へ低く出してから持ち上げる。左右の脚が着くたびに少し遅れて首を前後に振る
+  const nod = Math.sin(c.walk * TAU * 2 - 0.6);
+  const headX = 44 + nod * 2, headY = 23 - nod * 1.2;
+  g.lineWidth = 12;
+  g.beginPath(); g.moveTo(24, 2); g.quadraticCurveTo(40 + nod, 2, headX - 3, headY - 2); g.stroke();
+  blob(headX + 5, headY, 11, 7, -0.2);
+  line(2.5, headX + 1, headY + 4, headX - 1, headY + 8);   // 耳
+  // 尾はゆっくり揺らす
+  g.beginPath(); g.moveTo(-31, 2); g.quadraticCurveTo(-37, -4, -36 + Math.sin(c.walk * TAU + 1) * 2, -17); g.stroke();
   camelTexture.needsUpdate = true;
 }
 
-// 足もとの範囲 [x - half, x + half] で、いちばん高い砂の表面
-function groundAt(x, half) {
-  let top = 0;
-  for (let i = Math.max(0, Math.floor(x - half)); i <= Math.min(W - 1, Math.ceil(x + half)); i++) top = Math.max(top, surface[i]);
-  return top;
-}
-
-// いちばん高い山の稜線を歩かせる（C キーでも呼ぶ）。位置は格子のマス、大きさと速さは CSS ピクセル
+// 画面の片側の端寄りに現れ、山を越えながら反対側の端寄りまで歩かせる（C キーでも呼ぶ）。向きはランダム。
+// 位置と速さは CSS ピクセル
 function startCamel() {
   if (camel || isFading()) return;
   readSurface();
-  const height = CAMEL_HEIGHT_PX;
-  const width = height * camelCanvas.width / camelCanvas.height;
-  const cells = width / CELL_W_PX;   // ラクダの幅（マス）
-  let peak = Math.round(W / 2);
-  for (let x = Math.round(W * 0.1); x < W * 0.9; x++) if (surface[x] > surface[peak]) peak = x;
+  const center = W * CELL_W_PX / 2;
   const dir = randSign();
-  const span = W * CAMEL_SPAN;
-  const from = clamp(peak - dir * span, cells, W - cells);
-  const to = clamp(peak + dir * span, cells, W - cells);
-  const speed = CAMEL_SPEED_PX / CELL_W_PX;   // マス/秒
+  const from = center - dir * (center - W * CELL_W_PX * randIn(CAMEL_EDGE));
+  const to = center + dir * (center - W * CELL_W_PX * randIn(CAMEL_EDGE));
   camel = {
-    x: from, dir, width, height, cells, speed,
-    y: groundAt(from, cells * 0.35), tilt: 0, phase: 0, time: 0,
-    duration: Math.abs(to - from) / speed,
+    x: from, dir, slope: camelSlope(from, dir), foot: from, ground: smoothGroundPx(from), walk: 0, time: 0,
+    to,
+    feet: CAMEL_LEGS.map(() => 0),   // 脚ごとの足の高さの補正（単位）
   };
   camelMesh.visible = true;
 }
@@ -674,26 +746,63 @@ function updateCamel(dt) {
     }
     return;
   }
-  const c = camel;
-  c.time += dt;
-  if (c.time >= c.duration) {
+  const c = camel, s = CAMEL_UNIT_PX;
+  const left = (c.to - c.x) * c.dir;   // 消える位置までの横の距離（CSS ピクセル）
+  if (left <= 0) {
     hideCamel();
     return;
   }
-  c.x += c.dir * c.speed * dt;
-  c.phase += dt * CAMEL_SPEED_PX / (c.width * 0.18);
-  // 砂に埋もれないよう、足もとの高さを砂の表面へなめらかに追わせる
-  const follow = 1 - Math.exp(-CAMEL_FOLLOW * dt);
-  c.y += (groundAt(c.x, c.cells * 0.35) - c.y) * follow;
-  // 斜面の傾きは画面での傾き（マスの縦横の大きさを掛ける）
-  const rise = (groundAt(c.x + c.cells * 0.3, 1) - groundAt(c.x - c.cells * 0.3, 1)) * CELL_PX;
-  const slope = rise / (c.cells * 0.6 * CELL_W_PX);
-  c.tilt += (clamp(Math.atan(slope), -CAMEL_MAX_TILT, CAMEL_MAX_TILT) - c.tilt) * follow;
-  drawCamel(c.phase);
-  camelMaterial.opacity = clamp(Math.min(c.time, c.duration - c.time) / CAMEL_FADE_SEC, 0, 1);
-  camelMesh.position.set(c.x * CELL_W_PX, c.y * CELL_PX, 0);
-  camelMesh.scale.set(c.width * c.dir, c.height, 1);
-  camelMesh.rotation.z = c.tilt;
+  c.time += dt;
+  c.walk += dt / CAMEL_STRIDE_SEC;
+  // 斜面に沿って一定の速さで歩かせる（横に一定の速さで動かすと、急な坂で速まって見え、足も滑る）。
+  // 進みは傾きの上限で止める前の、地面そのものの傾きで決める
+  // 傾き c.slope は、降り積もる砂で揺れないようゆっくり追わせ、歩く速さと胴の傾きの両方に使う
+  c.slope += (camelSlope(c.x, c.dir) - c.slope) * (1 - Math.exp(-CAMEL_FOLLOW * dt));
+  c.pitch = clamp(c.slope, -CAMEL_MAX_PITCH, CAMEL_MAX_PITCH);
+  const step = CAMEL_SPEED_PX * Math.cos(c.slope) * dt;
+  c.x += c.dir * step;
+  const cos = Math.cos(c.pitch), sin = Math.sin(c.pitch);
+  // 胴は、足もとの地面から斜面に垂直に一定の高さだけ上げる。足を 1 本ずつ着くたびに、胴が少し上下する。
+  // c.x は胴の中心の横の位置。足もとの点から決めると、山頂で傾きが反転するときに胴が回り込んで速まって見える
+  const height = (CAMEL_LEG * CAMEL_STAND - CAMEL_HIP_Y + Math.cos(c.walk * TAU * 2) * 0.8) * s;
+  // 足もとの点 c.foot の地面の高さ c.ground。足もとが動いた分の高さの差（同じ砂の表面で測る）はそのまま足し、
+  // 砂が降り積もって変わった分だけをゆっくり追わせる。まとめてゆっくり追わせると、坂で遅れて浮いたり沈んだりする
+  const foot = c.x + c.dir * sin * height, ground = smoothGroundPx(foot);
+  c.ground += ground - smoothGroundPx(c.foot);
+  c.ground += (ground - c.ground) * (1 - Math.exp(-CAMEL_GROUND_FOLLOW * dt));
+  c.foot = foot;
+  const cx = c.x, cy = c.ground + cos * height;
+  // 足の前後の位置。地面に着いている間は、胴が進むぶん後ろへ下げて地面の上で止める。
+  // 浮いている間は、先に足を持ち上げて膝の下へたたみ、それから前へぶらりと振り出して伸ばしながら下ろす。
+  // 足の高さは、足の下の地面との差だけ脚を伸び縮みさせて合わせる（脚の長さの範囲に収め、なめらかに追わせる）
+  const reach = CAMEL_SPEED_PX * CAMEL_STRIDE_SEC * CAMEL_DUTY / s / 2;   // 胴の下での足の前後の振れ幅（単位）
+  const base = CAMEL_HIP_Y - CAMEL_LEG * CAMEL_STAND;                     // 平らな所での足の高さ（単位）
+  const ease = 1 - Math.exp(-CAMEL_FOOT_FOLLOW * dt);
+  // 足の裏は、着いている間の終わりにかかとから浮かせ、浮いている間は足先を下へ垂らす（roll、負で足先が下）
+  const smooth = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+  const feet = CAMEL_LEGS.map((leg, i) => {
+    const t = (c.walk + leg.side * 0.5) % 1;
+    let u = leg.x, lift = 0, roll;
+    if (t < CAMEL_DUTY) {
+      u += reach * (1 - 2 * t / CAMEL_DUTY);
+      roll = -0.5 * smooth((t / CAMEL_DUTY - 0.8) / 0.2);
+    } else {
+      // 先に膝を折って足を持ち上げ、振り子のように前へ運び、少し前へ伸ばしてから下ろす
+      const w = (t - CAMEL_DUTY) / (1 - CAMEL_DUTY);
+      const e = smooth((w - 0.15) / 0.85);
+      u += -reach * Math.cos(Math.PI * e) + reach * 0.25 * Math.sin(Math.PI * e) * e;
+      lift = Math.sin(Math.PI * Math.pow(w, 0.6)) * CAMEL_STEP;
+      roll = -0.5 * (1 - w) - Math.sin(Math.PI * w);
+    }
+    const x = cx + c.dir * (u * cos - base * sin) * s, y = cy + (u * sin + base * cos) * s;
+    const gap = clamp((groundPx(x) - y) * cos / s, -CAMEL_LEG * CAMEL_LEG_STRETCH[0], CAMEL_LEG * CAMEL_LEG_STRETCH[1]);
+    c.feet[i] += (gap - c.feet[i]) * ease;
+    return { u, v: base + c.feet[i] + lift, roll };
+  });
+  drawCamel(c, feet);
+  camelMaterial.opacity = clamp(Math.min(c.time, left / CAMEL_SPEED_PX) / CAMEL_FADE_SEC, 0, 1);
+  camelMesh.position.set(cx, cy, 0);
+  camelMesh.scale.set(CAMEL_CANVAS * s * c.dir, CAMEL_CANVAS * s, 1);
 }
 
 function hideCamel() {
