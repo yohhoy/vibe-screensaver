@@ -35,7 +35,7 @@ const SCENES = {
   waterfall: { names: 'SCENES', select: 'setScene(i)' },
   penguins: { names: 'SCENES', select: 'setScene(i)' },
 };
-const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond'];
+const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture'];
 
 const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプション]
 

@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sand Picture</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: 次の絵 / F・ダブルクリック: 全画面 / ↑↓: 落とし口の数</span>
+  <span class="touch-only">左右スワイプ: 次の絵 / 上下スワイプ: 落とし口の数</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, isFading, setupControls } = Common;
+
+// ---- 設定 ----
+const CELL_SIZE = 2.5;                     // 格子の 1 マスの大きさ（同じ面積の正方形の辺、CSS ピクセル）
+const CELL_ASPECT = 1.5;                   // 格子の 1 マスの横幅（高さに対する倍率）。横長にすると、格子の上の 45°〜63° の斜面が画面では寝て見える
+const CELL_PX = CELL_SIZE / Math.sqrt(CELL_ASPECT);   // 格子の 1 マスの高さ（CSS ピクセル）
+const CELL_W_PX = CELL_PX * CELL_ASPECT;   // 格子の 1 マスの横幅（CSS ピクセル）
+
+// 砂の動き
+const STEPS_PER_HEIGHT = 0.55;             // 1 秒あたりの格子の更新回数（格子の高さ 1 マスあたり）。画面の解像度によらず同じ速さで落ちるようにする
+const MAX_STEPS_PER_FRAME = 12;            // 1 フレームの更新回数の上限（重いフレームのあとに溜めない）
+const FALL_PROB = 0.95;                    // 1 回の更新で砂が動く確率。1 に近くして粒の速さをそろえる（確率で揺らぐと、粒が追いついて列になり、流れが途切れる）
+const GRAIN_SPEED_SPREAD = 0.04;           // 粒ごとの落ちる速さのばらつき（±割合）
+const TOPPLE_PROB = 1.0;                   // 下がふさがった砂が斜め下へ滑る確率
+const DRIFT_PROB = 0.008;                  // 液体の中を落ちる砂が斜め下へずれる確率（流れが下へ行くほど広がる）
+
+// 落とし口と地層
+const HOLE_WIDTH = [0.003, 0.006];         // 落とし口の幅（画面の幅に対する割合）
+const HOLE_MIN_CELLS = 1;                  // 落とし口の幅の下限（マス）
+const HOLE_MARGIN = 0.05;                  // 落とし口を置かない左右の端（画面の幅に対する割合）。位置が動いても入らない
+const EMIT_PROB = 0.76;                    // 落とし口の 1 マスから、1 回の更新で砂が出てくる確率（落とし口が EMIT_BASE_HOLES 個のとき）
+const EMIT_BASE_HOLES = 3;                 // EMIT_PROB の基準の落とし口の数
+const STRATUM_SEC = [3, 9];                // 1 つの層を流す秒数（落とし口ごと・層ごとに選ぶ）
+// 落とし口ごとの流れる量（EMIT_PROB に対する倍率）。ときどき目標を選び直し、なめらかに近づける。
+// すべての口から同じ量を流すと、どの山も同じ速さで育って人工的に見える
+const FLOW_CHANGE_SEC = [2, 7];            // 流れる量の目標を選び直す間隔（秒）
+const FLOW_RANGE = [0.4, 2.0];             // 流れる量の目標の範囲
+const FLOW_PAUSE_PROB = 0.15;              // 目標を選び直すとき、流れをほぼ止める確率
+const FLOW_PAUSE = 0.05;                   // 止まっている間の流れる量
+const FLOW_SMOOTH_SEC = 1.2;               // 流れる量が目標に近づく速さ（時定数、秒）
+// 落とし口の位置は、もとの位置から一定の幅の中をゆっくり往復させる（周期の違う 2 つの揺れを重ねる）。
+// 位置が動かないと、山が同じ所にまっすぐ育って人工的に見える
+const HOLE_DRIFT = 0.04;                   // もとの位置から動く幅（片側、画面の幅に対する割合）
+const HOLE_DRIFT_PERIOD = [[20, 40], [9, 17]];   // 2 つの揺れの周期の範囲（秒）
+const HOLE_DRIFT_MIX = [0.65, 0.35];       // 2 つの揺れの割合（合わせて 1）
+
+// 強度（落とし口の数）
+const BASE_HOLES = 4;
+const MIN_HOLES = 1;
+const MAX_HOLES = 8;
+
+// 描き終わりと次の絵
+const CHECK_SEC = 0.5;                     // 砂の量と表面を読み出す間隔（秒）
+const FILL_AMOUNT = 0.4;                   // 砂の量が画面の面積のこの割合に達したら、流すのをやめる
+const FILL_HEIGHT = 0.92;                  // 山の高さが画面の高さのこの割合に達したときも、流すのをやめる
+const WATCH_SEC = 30;                      // 流すのをやめてから次の絵に移るまでの秒数
+
+// ガラスと光
+const LIQUID_TOP_GAIN = 0.92;              // 液体の上端の明るさ（配色の液体の色に対する倍率）
+const LIQUID_BOTTOM_GAIN = 0.74;           // 液体の下端の明るさ（同じ）
+const EDGE_DARK = 0.05;                    // 画面の縁を暗くする強さ
+const EDGE_WIDTH = 0.12;                   // 縁を暗くする幅（画面の高さに対する割合）
+
+// 砂の見た目。実物の砂は粒が見分けられないほど細かいので、マスより細かいざらつきの面として描く
+const GRAIN_SHADE = 0.12;                  // マスごとの明るさのばらつき（幅）。大きいとマスの四角が見える
+const FINE_GRAIN = 0.16;                   // マスより細かいざらつきの強さ（幅）。粒と一緒に動く
+const FINE_GRAIN_DIV = 3;                  // マスの高さを何個のざらつきに分けるか
+const SAMPLE_JITTER = 0.1;                 // 読み出す位置を画素ごとにずらす幅（マス）。層の境目や輪郭の階段をくずす
+// 層の境目は、近くの 4 マスの砂の色をなめらかに混ぜてならす。マスの色をそのまま描くと、境目が格子の階段と
+// 散った粒の点になり、ごま塩のように見える
+const LAYER_BLEND = 0.8;                   // 近くの 4 マスの色を混ぜる割合（0: 混ぜない、1: すべて混ぜた色）
+// 落ちている砂は、粒を縦にぼかして足し合わせ、濃さの揺らぐひと続きの細い筋として描く。
+// 流れる砂の粒はまばらなので、1 粒ずつ描くと、筋ではなく点の列に見える
+const STREAM_BELOW = 6;                    // 流れの砂かを見分けるとき、下を何マス調べるか
+const STREAM_BELOW_LIQUID = 3;             // そのうち何マス以上が液体なら流れとみなすか
+const STREAM_REACH = 5;                    // 上下何マスまでの粒を足し合わせるか
+const STREAM_SIGMA = 2.2;                  // 縦のぼかしの幅（マス）
+const STREAM_HALF_WIDTH = 0.5;             // 筋の半分の幅（マスの高さに対する割合）
+const STREAM_SCATTER = 0.45;               // 筋を描くとき、読み出す位置を画素ごとに散らす幅（マス）。筋の輪郭がわずかに毛羽立ち、砂粒らしく見える
+const STREAM_OFFSET = 0.0;                 // 粒ごとに筋の位置を横にずらす幅（マス）
+const STREAM_GAIN = 0.7;                   // 足し合わせた濃さの倍率
+const STREAM_ALPHA = 0.85;                 // 筋の濃さの上限
+const SURFACE_LIGHT = 1.06;                // 山の表面（上が液体）の砂の明るさ（倍率）
+const INNER_DARK = 0.97;                   // 表面から 2 マスより内側の砂の明るさ（倍率）
+
+// ラクダ（隠し要素）
+const CAMEL_INTERVAL = [120, 60, 180];     // 出てくる間隔（秒）: [平均, 最小, 最大]
+const CAMEL_HEIGHT_PX = 36;                // ラクダの高さ（CSS ピクセル）
+const CAMEL_SPEED_PX = 16;                 // 歩く速さ（CSS ピクセル/秒）
+const CAMEL_SPAN = 0.12;                   // 山頂から左右に歩く距離（画面の幅に対する割合）
+const CAMEL_FADE_SEC = 1.5;                // 現れる・消えるときのフェードの秒数
+const CAMEL_FOLLOW = 3;                    // 足もとの高さを追う速さ（1/秒）
+const CAMEL_MAX_TILT = 0.35;               // 斜面に合わせて傾ける角度の上限（ラジアン）
+const CAMEL_COLOR = 0x1a120c;
+
+// 配色（docs/specs/sandpicture.md の「配色の定義」。この順番でローテーションする）。
+// 砂は 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 34〜53 の範囲で、大きいほど急な斜面で積もる。
+// 3 色の安息角を離しておくと、山の上に積もる層の厚さが色ごとに変わり、地層のように見える
+const PALETTES = [
+  { name: 'Desert', liquid: 0xe9dcbc, sand: [[0x3a2418, 50], [0xd0702a, 42], [0xf3ede2, 34]] },
+  { name: 'Ocean', liquid: 0xcfe2ec, sand: [[0x14254a, 50], [0x1f8a8a, 42], [0xf0f4f6, 34]] },
+  { name: 'Sunset', liquid: 0xf3dcd6, sand: [[0x4a2160, 50], [0xc0303f, 42], [0xe6b53a, 34]] },
+];
+const SAND_COLORS = 3;                     // 1 つの配色の砂の色の数
+
+// 描画
+const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
+
+// ---- ユーティリティ ----
+// 0xRRGGBB を sRGB のまま 0〜1 の Vector3 にする（ShaderMaterial は色空間を変換しないため）
+const hexToVec3 = (hex, gain = 1) => new THREE.Vector3(
+  ((hex >> 16) & 255) / 255 * gain, ((hex >> 8) & 255) / 255 * gain, (hex & 255) / 255 * gain);
+
+// 安息角（画面での角度、度）から、斜めに滑らない粒の割合を求める。格子の上では、割合 0 で傾き 1、
+// 1 で傾き 2 の斜面になる。マスが横長なので、画面での傾きはその 1 / CELL_ASPECT（1.5 倍なら約 34°〜53°）
+const stickyFraction = (angle) => clamp(Math.tan(THREE.MathUtils.degToRad(angle)) * CELL_ASPECT - 1, 0, 1);
+
+// ---- シェーダー ----
+const QUAD_VERTEX = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}`;
+
+// マスの中身: r = 種類（0: 液体、1〜: 砂の色の番号）、g = 粒の明るさの乱数、b = 粒の落ちる速さの乱数、
+// a = 粒の滑りにくさの乱数（色ごとのしきい値より小さい粒は斜めに滑らない）
+const SIM_FRAGMENT = /* glsl */ `
+uniform sampler2D uGrid;
+uniform vec4 uHoles[${MAX_HOLES}];   // 落とし口（x: 左端、y: 右端の次のマス、z: 出す砂の色（r に書く値）、w: 流れる量の倍率。使わない口は 0）
+uniform int uW, uH;
+uniform int uOffX, uOffY;     // 2×2 の組の区切りのずらし（Margolus 近傍）
+uniform int uSeed;
+uniform float uFall, uSpread, uTopple, uDrift;
+uniform float uEmit;          // 落とし口の 1 マスから砂が出てくる確率
+uniform float uSticky[${SAND_COLORS}];   // 色ごとの、斜めに滑らない粒の割合
+
+uint hash(uint x) {
+  x ^= x >> 16; x *= 0x7feb352du;
+  x ^= x >> 15; x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
+float rnd(uint h) { return float(h & 0xffffffu) / 16777216.0; }
+
+// 格子の外。壁として扱う
+bool outside(ivec2 p) {
+  return p.x < 0 || p.y < 0 || p.x >= uW || p.y >= uH;
+}
+
+// p の下（p - (0, 1) の位置）の砂が積もって止まっているか。p 自身は組の外で、底か砂なら止まっている
+bool resting(ivec2 p) {
+  return outside(p) || texelFetch(uGrid, p, 0).r > 0.002;
+}
+
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy) + ivec2(uOffX, uOffY);
+  ivec2 b = q / 2;
+  ivec2 base = b * 2 - ivec2(uOffX, uOffY);
+  int me = (q.x - b.x * 2) + (q.y - b.y * 2) * 2;   // 組の中の位置（0: 左下、1: 右下、2: 左上、3: 右上）
+
+  vec4 c[4];
+  int k[4];   // 0: 液体、1: 砂、2: 壁
+  uint h = hash(uint(b.x) * 1973u + uint(b.y) * 9277u + uint(uSeed) * 26699u);
+  for (int i = 0; i < 4; i++) {
+    ivec2 p = base + ivec2(i % 2, i / 2);
+    if (outside(p)) {
+      c[i] = vec4(0.0);
+      k[i] = 2;
+      continue;
+    }
+    c[i] = texelFetch(uGrid, p, 0);
+    k[i] = c[i].r > 0.002 ? 1 : 0;
+    // 上端の行の、落とし口の下の空いたマスに砂を出す。色は落とし口ごと
+    if (p.y != uH - 1 || k[i] != 0) continue;
+    vec4 hole = vec4(0.0);
+    for (int j = 0; j < ${MAX_HOLES}; j++) {
+      if (float(p.x) >= uHoles[j].x && float(p.x) < uHoles[j].y) hole = uHoles[j];
+    }
+    if (hole.z == 0.0) continue;
+    h = hash(h);
+    if (rnd(h) < uEmit * hole.w) {
+      uint g = hash(h), bb = hash(g), a = hash(bb);
+      c[i] = vec4(hole.z, rnd(g), rnd(bb), rnd(a));
+      k[i] = 1;
+    }
+  }
+
+  float r[5];
+  for (int i = 0; i < 5; i++) { h = hash(h); r[i] = rnd(h); }
+
+  // 左右の列のどちらを先に動かすかは組ごとに乱数で決め、偏りを出さない
+  bool leftFirst = r[4] < 0.5;
+  for (int n = 0; n < 2; n++) {
+    bool left = (n == 0) == leftFirst;
+    int top = left ? 2 : 3;
+    int below = left ? 0 : 1;
+    int diag = left ? 1 : 0;
+    if (k[top] != 1) continue;
+    float p = uFall * (1.0 - uSpread + 2.0 * uSpread * c[top].b);
+    if ((left ? r[0] : r[1]) >= p) continue;
+    float rd = left ? r[2] : r[3];
+    int dst = -1;
+    if (k[below] == 0) dst = (k[diag] == 0 && rd < uDrift) ? diag : below;
+    // 斜めに滑るのは、下の砂が積もって止まっているときだけ。落ちている砂どうしがぶつかって滑ると、流れの筋が横に広がる
+    else if (k[diag] == 0 && rd < uTopple && (k[below] == 2 || resting(base + ivec2(below, -1)))) {
+      // 滑りにくい粒は、斜め下が 1 マスの段差なら留まり、2 マス以上落ちていれば滑る。
+      // これで色ごとの斜面の角度が 45°〜約 63° に収まり、尖った柱が立たない
+      bool sticky = c[top].a < uSticky[int(c[top].r * 255.0 + 0.5) - 1];
+      ivec2 under = base + ivec2(diag, -1);
+      if (!sticky || (!outside(under) && texelFetch(uGrid, under, 0).r <= 0.002)) dst = diag;
+    }
+    if (dst >= 0) {
+      c[dst] = c[top]; k[dst] = 1;
+      c[top] = vec4(0.0); k[top] = 0;
+    }
+  }
+  gl_FragColor = c[me];
+}`;
+
+// 列ごとに、砂の表面の高さ（底から続く砂のマス数）と砂の量を数える。
+// 8 ビットの描画先なので、それぞれ上位・下位の 2 バイトに分けて書く
+const SURFACE_FRAGMENT = /* glsl */ `
+uniform sampler2D uGrid;
+uniform int uH;
+void main() {
+  int x = int(gl_FragCoord.x);
+  int height = 0, count = 0;
+  bool solid = true;
+  for (int y = 0; y < 8192; y++) {
+    if (y >= uH) break;
+    bool sand = texelFetch(uGrid, ivec2(x, y), 0).r > 0.002;
+    if (sand) count++;
+    if (solid && sand) height = y + 1; else solid = false;
+  }
+  gl_FragColor = vec4(float(height / 256), float(height % 256), float(count / 256), float(count % 256)) / 255.0;
+}`;
+
+const VIEW_FRAGMENT = /* glsl */ `
+uniform sampler2D uGrid;
+uniform int uW, uH;
+uniform vec3 uSand[${SAND_COLORS}];
+uniform vec3 uLiquidTop, uLiquidBottom;
+uniform float uAspect;
+varying vec2 vUv;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// 砂か（格子の外は液体とみなす）
+bool sandAt(ivec2 p) {
+  return p.x >= 0 && p.y >= 0 && p.x < uW && p.y < uH && texelFetch(uGrid, p, 0).r > 0.002;
+}
+
+// 宙を落ちている流れの砂か。下 ${STREAM_BELOW} マスのうち ${STREAM_BELOW_LIQUID} マス以上が液体なら、流れとみなす（格子の外は底）。
+// 斜面を転がる砂は、斜めに滑った直後に真下が液体になるが、その下は砂なので流れに入れない（縦の筋に見えないように）。
+// 流れの中で粒が縦に連なっても、下の半分ほどは液体なので流れに入る
+bool fallingAt(ivec2 p) {
+  if (!sandAt(p)) return false;
+  int liquid = 0;
+  for (int i = 1; i <= ${STREAM_BELOW}; i++) {
+    if (p.y - i < 0) break;
+    if (!sandAt(p - ivec2(0, i))) liquid++;
+  }
+  return liquid >= ${STREAM_BELOW_LIQUID};
+}
+
+// 積もった砂か（斜面を転がっている砂も含む）
+bool restingAt(ivec2 p) {
+  return sandAt(p) && !fallingAt(p);
+}
+
+// 積もった砂の色。マスごとの明るさのばらつき・マスより細かいざらつき・表面の明るさを付ける
+vec3 sandColor(vec3 base, vec4 c, ivec2 cell, vec2 gp) {
+  // マスより細かいざらつき。粒の乱数を種にするので、粒と一緒に動く
+  vec2 fine = floor(fract(gp) * vec2(${FINE_GRAIN_DIV * CELL_ASPECT}, ${FINE_GRAIN_DIV}.0));
+  float grain = hash12(fine + c.gb * 97.0);
+  vec3 sand = base * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (c.g - 0.5) + ${FINE_GRAIN.toFixed(3)} * (grain - 0.5));
+  // 山の表面をわずかに明るく、少し内側をわずかに暗くする
+  return sand * (!sandAt(cell + ivec2(0, 1)) ? ${SURFACE_LIGHT.toFixed(3)} : !sandAt(cell + ivec2(0, 2)) ? 1.0 : ${INNER_DARK.toFixed(3)});
+}
+
+// 層の境目をならした砂の色。近くの 4 マスの砂の色を、マスの中心からの距離で混ぜる（液体のマスは除く）
+vec3 layerColor(vec4 c, vec2 gp) {
+  vec3 own = uSand[int(c.r * 255.0 + 0.5) - 1];
+  vec2 bp = gp - 0.5;
+  ivec2 b0 = ivec2(floor(bp));
+  vec2 t = fract(bp);
+  vec3 sum = vec3(0.0);
+  float wsum = 0.0;
+  for (int i = 0; i < 4; i++) {
+    ivec2 o = ivec2(i % 2, i / 2);
+    ivec2 p = b0 + o;
+    if (!sandAt(p)) continue;
+    vec2 wt = mix(1.0 - t, t, vec2(o));
+    float w = wt.x * wt.y;
+    sum += w * uSand[int(texelFetch(uGrid, p, 0).r * 255.0 + 0.5) - 1];
+    wsum += w;
+  }
+  return wsum > 0.0 ? mix(own, sum / wsum, ${LAYER_BLEND.toFixed(3)}) : own;
+}
+
+void main() {
+  vec2 gs = vUv * vec2(uW, uH);   // 格子の座標
+  vec3 liquid = mix(uLiquidBottom, uLiquidTop, vUv.y);
+  vec3 col = liquid;
+
+  // 積もった砂。読み出す位置を画素ごとに少しずらし、層の境目や輪郭の階段をくずす
+  vec2 jitter = vec2(hash12(gl_FragCoord.xy), hash12(gl_FragCoord.yx + 17.0)) - 0.5;
+  vec2 gp = gs + jitter * ${SAMPLE_JITTER.toFixed(3)};
+  ivec2 cell = clamp(ivec2(floor(gp)), ivec2(0), ivec2(uW - 1, uH - 1));
+  vec2 f = fract(gp);
+  ivec2 down = cell - ivec2(0, 1);
+  if (restingAt(cell)) {
+    vec4 c = texelFetch(uGrid, cell, 0);
+    col = sandColor(layerColor(c, gp), c, cell, gp);
+  } else if (!sandAt(cell) && restingAt(down)
+             && ((restingAt(cell - ivec2(1, 0)) && f.y < 1.0 - f.x) || (restingAt(cell + ivec2(1, 0)) && f.y < f.x))) {
+    // 山の表面の階段をならす。下と横が積もった砂の液体のマスは、斜め半分を下の砂で埋め、階段の角どうしを斜めの線でつなぐ
+    vec4 c = texelFetch(uGrid, down, 0);
+    col = sandColor(layerColor(c, gp), c, down, gp);
+  }
+
+  // 落ちている砂。上下 STREAM_REACH マスの粒を、縦にぼかして足し合わせる。読み出す位置を画素ごとに散らす
+  vec2 scatter = vec2(hash12(gl_FragCoord.xy + 31.0), hash12(gl_FragCoord.yx + 53.0)) - 0.5;
+  vec2 gp0 = gs + scatter * ${STREAM_SCATTER.toFixed(3)};
+  ivec2 cell0 = clamp(ivec2(floor(gp0)), ivec2(0), ivec2(uW - 1, uH - 1));
+  float density = 0.0;
+  vec3 stream = vec3(0.0);
+  for (int k = -${STREAM_REACH}; k <= ${STREAM_REACH}; k++) {
+    ivec2 p = cell0 + ivec2(0, k);
+    if (!fallingAt(p)) continue;
+    vec4 g = texelFetch(uGrid, p, 0);
+    // 筋の横の位置は粒ごとにずらす。マスが横長なので、横の距離は CELL_ASPECT 倍して測る
+    float dx = (gp0.x - float(p.x) - 0.5 - (g.b - 0.5) * ${STREAM_OFFSET.toFixed(3)}) * ${CELL_ASPECT};
+    float dy = (gp0.y - float(p.y) - 0.5) / ${STREAM_SIGMA.toFixed(3)};
+    float w = (1.0 - smoothstep(${(STREAM_HALF_WIDTH * 0.3).toFixed(3)}, ${STREAM_HALF_WIDTH.toFixed(3)}, abs(dx))) * exp(-dy * dy);
+    density += w;
+    stream += w * uSand[int(g.r * 255.0 + 0.5) - 1] * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (g.g - 0.5));
+  }
+  if (density > 0.0) col = mix(col, stream / density, min(density * ${STREAM_GAIN.toFixed(3)}, ${STREAM_ALPHA.toFixed(3)}));
+  vec2 sv = vUv * vec2(uAspect, 1.0);
+  // 画面の縁をわずかに暗くする
+  float edge = min(min(sv.x, uAspect - sv.x), min(sv.y, 1.0 - sv.y));
+  col *= 1.0 - ${EDGE_DARK.toFixed(3)} * (1.0 - smoothstep(0.0, ${EDGE_WIDTH.toFixed(3)}, edge));
+  // 暗い階調の段差を隠すごく小さなノイズ
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.autoClear = false;
+renderer.setClearColor(0x000000, 0);   // 格子を 0（液体）で消すため
+document.body.appendChild(renderer.domElement);
+
+const quadGeometry = new THREE.PlaneGeometry(2, 2);
+const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+// 全画面の四角形 1 枚を描くだけのシーン
+function quadPass(fragmentShader, uniforms) {
+  const material = new THREE.ShaderMaterial({
+    vertexShader: QUAD_VERTEX, fragmentShader, uniforms, depthTest: false, depthWrite: false,
+  });
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(quadGeometry, material));
+  return { scene, uniforms };
+}
+const gridTargetOptions = {
+  minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false,
+};
+
+const simPass = quadPass(SIM_FRAGMENT, {
+  uGrid: { value: null },
+  uHoles: { value: Array.from({ length: MAX_HOLES }, () => new THREE.Vector4(0, 0, 0, 0)) },
+  uW: { value: 1 }, uH: { value: 1 }, uOffX: { value: 0 }, uOffY: { value: 0 }, uSeed: { value: 0 },
+  uFall: { value: FALL_PROB }, uSpread: { value: GRAIN_SPEED_SPREAD },
+  uTopple: { value: TOPPLE_PROB }, uDrift: { value: DRIFT_PROB },
+  uEmit: { value: 0 },
+  uSticky: { value: new Array(SAND_COLORS).fill(0) },
+});
+const surfacePass = quadPass(SURFACE_FRAGMENT, { uGrid: { value: null }, uH: { value: 1 } });
+const viewPass = quadPass(VIEW_FRAGMENT, {
+  uGrid: { value: null }, uW: { value: 1 }, uH: { value: 1 },
+  uSand: { value: Array.from({ length: SAND_COLORS }, () => new THREE.Vector3()) },
+  uLiquidTop: { value: new THREE.Vector3() }, uLiquidBottom: { value: new THREE.Vector3() },
+  uAspect: { value: 1 },
+});
+
+// ラクダを砂の上に重ねて描くシーン。座標は CSS ピクセル（マスが横長なので、格子のマスにすると形がゆがむ）
+const overlayScene = new THREE.Scene();
+const overlayCamera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
+
+// ---- 状態 ----
+let holeCount = BASE_HOLES;     // 落とし口の数（強度）
+let paletteIndex = -1;          // いまの配色（PALETTES の番号）
+let W = 0, H = 0;               // 格子の大きさ（マス）
+let targets = [];               // 格子の描画先（交互に読み書きする 2 枚）
+let current = 0;                // いまの格子が入っている描画先の番号
+let holes = [];                 // 落とし口 { home・x（もとの位置といまの位置）, width（マス）, color（いまの層の色）, time（層の残りの秒数）,
+                                //   flow（流れる量）, flowTarget（その目標）, flowTime（目標を選び直すまでの秒数）, drift（位置の揺れ） }
+let surfaceTarget = null;       // 列ごとの砂の表面の高さと量
+let surfaceBuffer = null;
+let surface = new Float32Array(0);   // 列ごとの砂の表面の高さ（マス）
+let stepCount = 0;              // 格子の更新回数（乱数の種と組のずらしに使う）
+let stepCarry = 0;              // 次のフレームへ持ち越す更新回数の端数
+let checkWait = 0;              // 次に砂の量と表面を読み出すまでの秒数
+let sandCount = 0;              // 砂の量（マス）
+let pouring = false;            // 落とし口から砂を流している間か
+let watchTime = 0;              // 流すのをやめてからの秒数
+let camelWait = randomInterval(CAMEL_INTERVAL);   // 次にラクダを出すまでの秒数
+let camel = null;               // 歩いているラクダ
+
+// ---- 砂と液体 ----
+// 画面の大きさに合わせて格子を作り直す。描いている途中の絵では呼ばない（次の絵から合わせる）
+function buildGrid() {
+  const w = Math.max(16, Math.round(innerWidth / CELL_W_PX));
+  const h = Math.max(16, Math.round(innerHeight / CELL_PX));
+  if (w !== W || h !== H) {
+    for (const t of targets) t.dispose();
+    surfaceTarget?.dispose();
+    W = w; H = h;
+    targets = [0, 1].map(() => new THREE.WebGLRenderTarget(W, H, gridTargetOptions));
+    surfaceTarget = new THREE.WebGLRenderTarget(W, 1, gridTargetOptions);
+    surfaceBuffer = new Uint8Array(W * 4);
+    surface = new Float32Array(W);
+  }
+  simPass.uniforms.uW.value = viewPass.uniforms.uW.value = W;
+  simPass.uniforms.uH.value = viewPass.uniforms.uH.value = surfacePass.uniforms.uH.value = H;
+  viewPass.uniforms.uAspect.value = W / H;
+  overlayCamera.right = W * CELL_W_PX;
+  overlayCamera.top = H * CELL_PX;
+  overlayCamera.updateProjectionMatrix();
+}
+
+// 格子を液体だけにする
+function clearGrid() {
+  current = 0;
+  renderer.setRenderTarget(targets[current]);
+  renderer.clear();
+  renderer.setRenderTarget(null);
+}
+
+// 落とし口を 1 つ足す。候補のうち、ほかの口からいちばん遠い所に開ける
+function addHole() {
+  const width = Math.max(HOLE_MIN_CELLS, Math.round(W * randIn(HOLE_WIDTH)));
+  const margin = Math.round(W * HOLE_MARGIN);
+  let best = null;
+  let bestGap = -1;
+  for (let i = 0; i < 40; i++) {
+    const x = margin + randInt(Math.max(1, W - 2 * margin - width));
+    const center = x + width / 2;
+    const gap = holes.reduce((g, h) => Math.min(g, Math.abs(h.x + h.width / 2 - center) - (h.width + width) / 2), Infinity);
+    if (gap > bestGap) { bestGap = gap; best = x; }
+  }
+  const flow = randomFlow();
+  const drift = HOLE_DRIFT_PERIOD.map((period) => ({ speed: TAU / randIn(period), phase: rand(0, TAU) }));
+  holes.push({
+    home: best, x: best, width, color: randInt(PALETTES[paletteIndex].sand.length), time: randIn(STRATUM_SEC),
+    flow, flowTarget: flow, flowTime: randIn(FLOW_CHANGE_SEC), drift,
+  });
+}
+
+function removeHole() {
+  holes.splice(randInt(holes.length), 1);
+}
+
+// 落とし口の数を holeCount に合わせ、テクスチャと 1 つの口から出る量を更新する
+function updateHoles() {
+  while (holes.length < holeCount) addHole();
+  while (holes.length > holeCount) removeHole();
+  writeHoles();
+  updateEmit();
+}
+
+// 1 つの口から出る量。落とし口が多いほど減らす。口の数に比例して流す量を増やすと、
+// 口が 1 つの絵は描き終わるまで長くかかりすぎ、8 つの絵はすぐ終わってしまう。流すのをやめた後は 0
+function updateEmit() {
+  simPass.uniforms.uEmit.value = pouring ? Math.min(1, EMIT_PROB * Math.sqrt(EMIT_BASE_HOLES / holes.length)) : 0;
+}
+
+// 流れる量の目標。ときどき流れをほぼ止める
+const randomFlow = () => (Math.random() < FLOW_PAUSE_PROB ? FLOW_PAUSE : randIn(FLOW_RANGE));
+
+// 落とし口の位置といまの層の色・流れる量をシェーダーに渡す
+function writeHoles() {
+  simPass.uniforms.uHoles.value.forEach((v, i) => {
+    const h = holes[i];
+    if (h) v.set(h.x, h.x + h.width, (h.color + 1) / 255, h.flow);
+    else v.set(0, 0, 0, 0);
+  });
+}
+
+// 格子を 1 回更新する
+function step() {
+  const u = simPass.uniforms;
+  u.uGrid.value = targets[current].texture;
+  u.uOffY.value = stepCount & 1;          // 縦のずらしは毎回変え、落ちている砂が毎回動けるようにする
+  u.uOffX.value = (stepCount >> 1) & 1;
+  u.uSeed.value = stepCount % 1000000007;
+  current = 1 - current;
+  renderer.setRenderTarget(targets[current]);
+  renderer.render(simPass.scene, quadCamera);
+  stepCount++;
+}
+
+function updateSand(dt) {
+  stepCarry = Math.min(stepCarry + STEPS_PER_HEIGHT * H * dt, MAX_STEPS_PER_FRAME);
+  for (; stepCarry >= 1; stepCarry--) step();
+  renderer.setRenderTarget(null);
+}
+
+// 列ごとの砂の表面の高さと、砂の量を読み出す
+function readSurface() {
+  surfacePass.uniforms.uGrid.value = targets[current].texture;
+  renderer.setRenderTarget(surfaceTarget);
+  renderer.render(surfacePass.scene, quadCamera);
+  renderer.setRenderTarget(null);
+  renderer.readRenderTargetPixels(surfaceTarget, 0, 0, W, 1, surfaceBuffer);
+  let count = 0;
+  for (let x = 0; x < W; x++) {
+    const o = x * 4;
+    surface[x] = surfaceBuffer[o] * 256 + surfaceBuffer[o + 1];
+    count += surfaceBuffer[o + 2] * 256 + surfaceBuffer[o + 3];
+  }
+  sandCount = count;
+}
+
+// ---- 地層と次の絵 ----
+// 落とし口ごとに、決めた秒数だけ流したら次の層に移る。色は前の層と同じにしない。
+// 口ごとに切り替えるので、山ごとに層の色の順番と厚さが変わる。
+// 流れる量も口ごとに、ときどき選び直した目標へなめらかに近づけ、位置もゆっくり動かす
+function updateStreams(dt) {
+  const count = PALETTES[paletteIndex].sand.length;
+  const follow = 1 - Math.exp(-dt / FLOW_SMOOTH_SEC);
+  for (const h of holes) {
+    h.time -= dt;
+    if (h.time <= 0) {
+      h.color = (h.color + 1 + randInt(count - 1)) % count;
+      h.time = randIn(STRATUM_SEC);
+    }
+    h.flowTime -= dt;
+    if (h.flowTime <= 0) {
+      h.flowTarget = randomFlow();
+      h.flowTime = randIn(FLOW_CHANGE_SEC);
+    }
+    h.flow += (h.flowTarget - h.flow) * follow;
+    let offset = 0;
+    h.drift.forEach((d, i) => {
+      d.phase = (d.phase + d.speed * dt) % TAU;
+      offset += HOLE_DRIFT_MIX[i] * Math.sin(d.phase);
+    });
+    // 動いても、左右の端の HOLE_MARGIN には入れない
+    h.x = clamp(h.home + offset * HOLE_DRIFT * W, W * HOLE_MARGIN, W * (1 - HOLE_MARGIN) - h.width);
+  }
+  writeHoles();
+}
+
+function updatePicture(dt) {
+  if (pouring) updateStreams(dt);
+  checkWait -= dt;
+  if (checkWait <= 0) {
+    checkWait = CHECK_SEC;
+    readSurface();
+    if (pouring) {
+      // ある程度まで積もったら、流すのをやめる
+      if (sandCount >= FILL_AMOUNT * W * H || Math.max(...surface) >= FILL_HEIGHT * H) {
+        pouring = false;
+        watchTime = 0;
+        updateEmit();
+      }
+    }
+  }
+  if (!pouring) {
+    watchTime += dt;
+    if (watchTime >= WATCH_SEC && !isFading()) fadeAndRun(newPicture);
+  }
+}
+
+// ---- ラクダ ----
+const camelCanvas = document.createElement('canvas');
+camelCanvas.width = 128;
+camelCanvas.height = 96;
+const camelTexture = new THREE.CanvasTexture(camelCanvas);
+const camelMaterial = new THREE.MeshBasicMaterial({
+  map: camelTexture, color: CAMEL_COLOR, transparent: true, depthTest: false, depthWrite: false,
+});
+// 原点が足もとの中央になるよう、四角形をずらしておく
+const camelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0), camelMaterial);
+camelMesh.visible = false;
+overlayScene.add(camelMesh);
+
+// 右を向いたラクダのシルエットを描く。phase は脚の振りの位相
+function drawCamel(phase) {
+  const g = camelCanvas.getContext('2d');
+  g.clearRect(0, 0, 128, 96);
+  g.fillStyle = g.strokeStyle = '#fff';
+  g.lineCap = 'round';
+  // 脚（後ろ脚 2 本・前脚 2 本。対角の脚を揃えて振る）
+  g.lineWidth = 5;
+  for (const [x, offset] of [[36, 0], [46, Math.PI], [82, Math.PI], [92, 0]]) {
+    const swing = Math.sin(phase + offset) * 7;
+    g.beginPath();
+    g.moveTo(x, 52);
+    g.lineTo(x + swing * 0.5, 74);
+    g.lineTo(x + swing, 93);
+    g.stroke();
+  }
+  // 胴とこぶ
+  g.beginPath(); g.ellipse(64, 46, 34, 13, 0, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(60, 32, 19, 15, 0, 0, Math.PI * 2); g.fill();
+  // 首と頭
+  g.lineWidth = 9;
+  g.beginPath(); g.moveTo(90, 46); g.quadraticCurveTo(100, 38, 104, 20); g.stroke();
+  g.beginPath(); g.ellipse(111, 18, 11, 6, 0.15, 0, Math.PI * 2); g.fill();
+  // 尾
+  g.lineWidth = 3;
+  g.beginPath(); g.moveTo(31, 42); g.lineTo(26, 60); g.stroke();
+  camelTexture.needsUpdate = true;
+}
+
+// 足もとの範囲 [x - half, x + half] で、いちばん高い砂の表面
+function groundAt(x, half) {
+  let top = 0;
+  for (let i = Math.max(0, Math.floor(x - half)); i <= Math.min(W - 1, Math.ceil(x + half)); i++) top = Math.max(top, surface[i]);
+  return top;
+}
+
+// いちばん高い山の稜線を歩かせる（C キーでも呼ぶ）。位置は格子のマス、大きさと速さは CSS ピクセル
+function startCamel() {
+  if (camel || isFading()) return;
+  readSurface();
+  const height = CAMEL_HEIGHT_PX;
+  const width = height * camelCanvas.width / camelCanvas.height;
+  const cells = width / CELL_W_PX;   // ラクダの幅（マス）
+  let peak = Math.round(W / 2);
+  for (let x = Math.round(W * 0.1); x < W * 0.9; x++) if (surface[x] > surface[peak]) peak = x;
+  const dir = randSign();
+  const span = W * CAMEL_SPAN;
+  const from = clamp(peak - dir * span, cells, W - cells);
+  const to = clamp(peak + dir * span, cells, W - cells);
+  const speed = CAMEL_SPEED_PX / CELL_W_PX;   // マス/秒
+  camel = {
+    x: from, dir, width, height, cells, speed,
+    y: groundAt(from, cells * 0.35), tilt: 0, phase: 0, time: 0,
+    duration: Math.abs(to - from) / speed,
+  };
+  camelMesh.visible = true;
+}
+
+function updateCamel(dt) {
+  if (!camel) {
+    camelWait -= dt;
+    if (camelWait <= 0) {
+      camelWait = randomInterval(CAMEL_INTERVAL);
+      startCamel();
+    }
+    return;
+  }
+  const c = camel;
+  c.time += dt;
+  if (c.time >= c.duration) {
+    hideCamel();
+    return;
+  }
+  c.x += c.dir * c.speed * dt;
+  c.phase += dt * CAMEL_SPEED_PX / (c.width * 0.18);
+  // 砂に埋もれないよう、足もとの高さを砂の表面へなめらかに追わせる
+  const follow = 1 - Math.exp(-CAMEL_FOLLOW * dt);
+  c.y += (groundAt(c.x, c.cells * 0.35) - c.y) * follow;
+  // 斜面の傾きは画面での傾き（マスの縦横の大きさを掛ける）
+  const rise = (groundAt(c.x + c.cells * 0.3, 1) - groundAt(c.x - c.cells * 0.3, 1)) * CELL_PX;
+  const slope = rise / (c.cells * 0.6 * CELL_W_PX);
+  c.tilt += (clamp(Math.atan(slope), -CAMEL_MAX_TILT, CAMEL_MAX_TILT) - c.tilt) * follow;
+  drawCamel(c.phase);
+  camelMaterial.opacity = clamp(Math.min(c.time, c.duration - c.time) / CAMEL_FADE_SEC, 0, 1);
+  camelMesh.position.set(c.x * CELL_W_PX, c.y * CELL_PX, 0);
+  camelMesh.scale.set(c.width * c.dir, c.height, 1);
+  camelMesh.rotation.z = c.tilt;
+}
+
+function hideCamel() {
+  camel = null;
+  camelMesh.visible = false;
+}
+
+// ---- シーン切替 ----
+// 格子を画面に合わせて空にし、配色を次に進め、落とし口を選び直す
+function newPicture() {
+  buildGrid();
+  clearGrid();
+  paletteIndex = (paletteIndex + 1) % PALETTES.length;
+  const palette = PALETTES[paletteIndex];
+  palette.sand.forEach(([hex, angle], i) => {
+    viewPass.uniforms.uSand.value[i].copy(hexToVec3(hex));
+    simPass.uniforms.uSticky.value[i] = stickyFraction(angle);
+  });
+  viewPass.uniforms.uLiquidTop.value.copy(hexToVec3(palette.liquid, LIQUID_TOP_GAIN));
+  viewPass.uniforms.uLiquidBottom.value.copy(hexToVec3(palette.liquid, LIQUID_BOTTOM_GAIN));
+  holes = [];
+  pouring = true;
+  watchTime = 0;
+  updateHoles();
+  sandCount = 0;
+  surface.fill(0);
+  stepCarry = 0;
+  checkWait = CHECK_SEC;
+  hideCamel();
+}
+
+const nextPicture = () => fadeAndRun(newPicture);
+
+// ---- 強度 ----
+function setHoleCount(value) {
+  holeCount = clamp(value, MIN_HOLES, MAX_HOLES);
+  updateHoles();   // 描いている途中の絵にもすぐ反映する
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  if (!isFading()) {   // 暗転中は止めておく
+    updateSand(dt);
+    updatePicture(dt);
+    updateCamel(dt);
+  }
+  viewPass.uniforms.uGrid.value = targets[current].texture;
+  renderer.setRenderTarget(null);
+  renderer.render(viewPass.scene, quadCamera);
+  if (camel) renderer.render(overlayScene, overlayCamera);
+}
+
+// ---- 入力・UI ----
+setupControls({
+  changeScene: nextPicture,
+  intensity: {
+    up: () => setHoleCount(holeCount + 1),
+    down: () => setHoleCount(holeCount - 1),
+    level: () => (holeCount - MIN_HOLES) / (MAX_HOLES - MIN_HOLES),
+  },
+  keys: {
+    KeyC: startCamel,               // 隠しコマンド（操作ガイドには出さない）
+  },
+  // 描いている途中の絵は格子を作り直さずに引き伸ばして映す（次の絵から画面に合わせる）
+  onResize() {
+    renderer.setSize(innerWidth, innerHeight);
+  },
+});
+
+// ---- 開始 ----
+newPicture();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

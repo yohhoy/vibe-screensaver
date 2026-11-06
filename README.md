@@ -138,6 +138,21 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [サンドピクチャー](https://yohhoy.github.io/vibe-screensaver/sandpicture.html)
+
+[<img src="docs/images/sandpicture.jpg" width="480" alt="サンドピクチャー">](https://yohhoy.github.io/vibe-screensaver/sandpicture.html)
+
+画面の上から色砂が液体の中を細い筋になって降り、地層のような帯を重ねて山並みを描いていきます。ある程度まで積もると、次の絵に移ります。
+
+シーン切替: 次の絵 / 強度: 砂の落ちてくる口の数
+
+<details>
+<summary>隠し要素（ネタバレ注意）</summary>
+
+ときどき山の稜線をラクダが歩きます。**C** キーですぐに呼び出せます。
+
+</details>
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

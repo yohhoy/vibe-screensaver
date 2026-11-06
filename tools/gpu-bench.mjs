@@ -43,6 +43,7 @@ const PAGES = [
   { page: 'lavalamp' },
   { page: 'penguins', scenes: 'SCENES', select: 'setScene(i)' },
   { page: 'diamond' },
+  { page: 'sandpicture' },
 ];
 
 // ---- ページに差し込む処理 ----
