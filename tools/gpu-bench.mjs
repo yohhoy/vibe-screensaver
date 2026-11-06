@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// 全作品の GPU 負荷を、シーン別に測る。結果の見方と手順は docs/performance.md。
+// 作品の GPU 負荷を、シーン別に測る。結果の見方と手順は docs/performance.md。
 //
-//   node tools/gpu-bench.mjs [--rounds 3] [--frames 450] [--only drone,ripple] [--conditions FHD,Retina] [--json 出力先] [--shots 出力先]
+//   node tools/gpu-bench.mjs --all                            # 全作品・全シーン
+//   node tools/gpu-bench.mjs --only sandpicture --warmup 90   # 作品を絞り、作品の時間を 90 秒進めてから測る
+//   node tools/gpu-bench.mjs --only sandpicture --base HEAD   # HEAD の版と作業ツリーの版を交互に測り、差を出す
 //
+// 引数なしでは測らず、オプションの一覧を出す。
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、計測用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）と Google Chrome だけ。
 import { spawn } from 'node:child_process';
-import { readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
+import { copyFile, readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,10 +21,13 @@ const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/M
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SEED = 12345;              // Math.random を置き換える乱数の種
 const STEP_MS = 1000 / 30;       // 1 コマで進める時間（ms）
-const WARMUP_FRAMES = 30;        // シェーダーのコンパイルなどを避けるため、結果に入れない最初のコマ数
+const SETTLE_FRAMES = 30;        // 計測と同じ手順で描くが、結果に入れない最初のコマ数。シェーダーのコンパイルを済ませ、
+                                 // GPU のクロックを揃える。--warmup（計測を挟まずに作品の時間を進める秒数）とは別
 const OVERHEAD_FRAMES = 60;      // 読み戻しだけの時間を測るコマ数
 const PAGE_TIMEOUT_MS = 180000;  // 1 回の計測の上限
 const LOAD_ITERATIONS = 300;     // 基準負荷のシェーダーの繰り返し回数（M3 の最速のクロックで約 5.5ms）
+const REFERENCE_TOLERANCE = 0.05;   // --base で比べるとき、基準負荷の差がこれを超えたら時間を比べない（docs/performance.md の「比べ方」）
+const TIME_SIGNIFICANCE = 0.10;     // --base で比べるとき、時間の差がこれを超えたら意味のある差とみなす（同上）
 const SPIN_WORKERS = 1;          // CPU を回し続ける Worker の数。これが無いと GPU のクロックが最速に揃わない
 
 // 測る解像度。devicePixelRatio は各作品の MAX_PIXEL_RATIO.pc で頭打ちになる
@@ -103,15 +110,24 @@ const PRELUDE = `<script>
     const q = new URLSearchParams(location.search);
     const sceneIndex = Number(q.get('scene'));
     const frames = Number(q.get('frames'));
-    const warmup = Number(q.get('warmup'));
+    const settle = Number(q.get('settle'));     // 結果に入れない最初のコマ数（SETTLE_FRAMES）
+    const advance = Number(q.get('advance'));   // 計測の前に進めておくコマ数（--warmup の秒数から求める）
     const overheadFrames = Number(q.get('overhead'));
     const stepMs = Number(q.get('step'));
     if (select) select(sceneIndex);
     const gl = renderer.getContext();
     const px = new Uint8Array(4);
+    const readback = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // 1 画素読み、GPU の完了を待つ
+    // 計測の前に、作品の時間を進めておく（--warmup）。砂が積もる sandpicture のように、時間とともに重くなる作品の
+    // 後半を測るため。基準負荷も時間の計測も挟まずに進めるので、計測より速く進む。
+    // 描画の命令が溜まりすぎないよう、30 コマごとに GPU の完了を待つ
+    for (let i = 0; i < advance; i++) {
+      virtualNow += stepMs;
+      tick(virtualNow);
+      if (i % 30 === 29) readback();
+    }
     const info = renderer.info;
     info.autoReset = false;
-    const readback = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const total = [], wait = [], calls = [], triangles = [], gpuTime = [], reference = [];
     const referenceLoad = createReferenceLoad(1280, 720, Number(q.get('loadIter')));
     const overhead = [];
@@ -142,7 +158,7 @@ const PRELUDE = `<script>
       return n / (w * h);
     };
     const loop = () => {
-      if (frame < warmup + frames) {
+      if (frame < settle + frames) {
         virtualNow += stepMs;
         info.reset();
         const r0 = realNow();
@@ -156,14 +172,14 @@ const PRELUDE = `<script>
         const t1 = realNow();
         if (query) {
           gl.endQuery(timer.TIME_ELAPSED_EXT);
-          query.measured = frame >= warmup;
+          query.measured = frame >= settle;
           pendingQueries.push(query);
         }
         readback();                       // GPU の完了を待つ
         const t2 = realNow();
         collectQueries();
-        if (frame === warmup + frames - 1) contentRatio = measureContent();
-        if (frame >= warmup) {
+        if (frame === settle + frames - 1) contentRatio = measureContent();
+        if (frame >= settle) {
           reference.push(r1 - r0);
           total.push(t2 - t0);
           wait.push(t2 - t1);
@@ -232,13 +248,14 @@ function instrument(html, def) {
 // ---- HTTP サーバー ----
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg' };
 
-function serve() {
+// root のファイルを配信する。作品の HTML には計測の処理を差し込む
+function serve(root) {
   const server = createServer(async (req, res) => {
     const name = path.basename(new URL(req.url, 'http://x').pathname);
     if (name === 'favicon.ico') { res.writeHead(204); res.end(); return; }
     if (name === '__spin.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end('for (;;);'); return; }
     try {
-      let body = await readFile(path.join(ROOT, name));
+      let body = await readFile(path.join(root, name));
       const def = PAGES.find((p) => `${p.page}.html` === name);
       if (def) body = instrument(body.toString(), def);
       res.writeHead(200, { 'content-type': MIME[path.extname(name)] ?? 'application/octet-stream' });
@@ -317,6 +334,31 @@ async function launchChrome() {
   return { chrome, wsUrl, userDataDir };
 }
 
+// ---- 比べる版を取り出す ----
+function run(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${command} が失敗した (${code})\n${err}`))));
+  });
+}
+
+// --base の版を dir の下に取り出し、その場所を返す。作業ツリーのファイルには触らない。
+// git のコミットならその版を、作品の HTML のパスなら HEAD の版にその HTML を重ねる（video-compare.mjs と同じ）
+async function checkoutBase(base, page, dir) {
+  const file = path.resolve(base);
+  const isFile = existsSync(file) && statSync(file).isFile();
+  const archive = path.join(dir, 'base.tar');
+  const root = path.join(dir, 'base');
+  await mkdir(root, { recursive: true });
+  await run('git', ['-C', ROOT, 'archive', '-o', archive, isFile ? 'HEAD' : base]);
+  await run('tar', ['-xf', archive, '-C', root]);
+  if (isFile) await copyFile(file, path.join(root, `${page}.html`));
+  return root;
+}
+
 // ---- 計測 ----
 async function waitForResult(cdp) {
   const deadline = Date.now() + PAGE_TIMEOUT_MS;
@@ -330,7 +372,7 @@ async function waitForResult(cdp) {
   throw new Error('時間切れ');
 }
 
-async function measure(browser, origin, def, sceneIndex, condition, opts) {
+async function measure(browser, origin, def, sceneIndex, condition, version, opts) {
   const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
   const pageInfo = await (await fetch(`${opts.httpBase}/json/list`)).json();
   const target = pageInfo.find((t) => t.id === targetId);
@@ -342,13 +384,14 @@ async function measure(browser, origin, def, sceneIndex, condition, opts) {
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: condition.width, height: condition.height, deviceScaleFactor: condition.dpr, mobile: false,
     });
-    const q = new URLSearchParams({ seed: SEED, scene: sceneIndex, frames: opts.frames, warmup: WARMUP_FRAMES, overhead: OVERHEAD_FRAMES, step: STEP_MS, loadIter: LOAD_ITERATIONS, spin: SPIN_WORKERS });
+    const advance = Math.round(opts.warmup * 1000 / STEP_MS);   // --warmup の秒数を、進めておくコマ数にする
+    const q = new URLSearchParams({ seed: SEED, scene: sceneIndex, frames: opts.frames, settle: SETTLE_FRAMES, advance, overhead: OVERHEAD_FRAMES, step: STEP_MS, loadIter: LOAD_ITERATIONS, spin: SPIN_WORKERS });
     await cdp.send('Page.navigate', { url: `${origin}/${def.page}.html?${q}` });
     const r = await waitForResult(cdp);
     if (opts.shots) {
       // 描いた絵に中身があることを、人が確かめるための画像
       const shot = await cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 70 });
-      const name = `${def.page}-${sceneIndex}-${condition.name}.jpg`;
+      const name = `${def.page}-${sceneIndex}-${condition.name}${version ? `-${version}` : ''}.jpg`;
       await writeFile(path.join(opts.shots, name), Buffer.from(shot.data, 'base64'));
     }
     return r;
@@ -393,26 +436,129 @@ function toMarkdown(rows) {
   return lines.join('\n');
 }
 
+// --base で比べたときの一覧。行ごとに変更前（base）と変更後（作業ツリー）の時間と差を並べ、
+// docs/performance.md の「比べ方」の目安で判定する
+function toCompareMarkdown(baseRows, rows) {
+  const pct = (before, after) => `${after >= before ? '+' : '−'}${(Math.abs(after / before - 1) * 100).toFixed(1)}%`;
+  const lines = [
+    '| 条件 | 作品 | シーン | GPU タイマー (ms) | 差 | コマ全体 (ms) | 差 | 基準負荷の差 | 描画命令・三角形 | 判定 |',
+    '|---|---|---|---:|---:|---:|---:|---:|---|---|',
+  ];
+  for (const a of rows) {
+    const b = baseRows.find((x) => x.page === a.page && x.sceneIndex === a.sceneIndex && x.condition === a.condition);
+    const refDiff = Math.abs(a.reference / b.reference - 1);
+    const gpuDiff = Math.abs(a.gpu_ms / b.gpu_ms - 1);
+    const content = a.calls === b.calls && a.triangles === b.triangles ? '同じ' : `${b.calls}→${a.calls}・${b.triangles}→${a.triangles}`;
+    const verdict = refDiff > REFERENCE_TOLERANCE ? '比べない（測り直す）' : gpuDiff > TIME_SIGNIFICANCE ? '差あり' : '差なし';
+    lines.push(`| ${a.condition} | ${a.page} | ${a.scene ?? '—'} | ${b.gpu_ms.toFixed(2)} → ${a.gpu_ms.toFixed(2)} | ${pct(b.gpu_ms, a.gpu_ms)} | ${b.total.toFixed(1)} → ${a.total.toFixed(1)} | ${pct(b.total, a.total)} | ${pct(b.reference, a.reference)} | ${content} | ${verdict} |`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+// 引数なしや、引数の誤りのときに出すオプションの一覧
+const USAGE = `使い方: node tools/gpu-bench.mjs (--all | --only 作品名,…) [オプション]
+
+作品名: ${PAGES.map((p) => p.page).join(' ')}
+  --all              全作品・全シーンを測る（約 9 分）
+  --only a,b         測る作品を絞る
+  --rounds N         全シーンを何周するか（既定 3）
+  --frames N         1 回に測るコマ数（既定 450。1 コマは作品の中の時間で 1/30 秒）
+  --warmup S         測る前に作品の時間を進めておく秒数（既定 0。時間とともに重くなる作品の後半を測る）
+  --base 版          比べる版（git のコミットか、作品の HTML のパス）。その版と作業ツリーの版を交互に測り、差の一覧を出す
+  --conditions a,b   測る条件（${CONDITIONS.map((c) => c.name).join(',')}。既定は全部）
+  --json PATH        全項目を JSON に書き出す
+  --shots DIR        各シーンの最後のコマを画像に書き出す`;
+
+// 引数の誤り。スタックトレースを出さず、理由とオプションの一覧だけを出す
+class UsageError extends Error {}
+
+// 名前の並び（a,b）を読み、知らない名前があれば止める
+function parseNames(v, known, label) {
+  const names = v.split(',');
+  const unknown = names.filter((name) => !known.includes(name));
+  if (unknown.length) throw new UsageError(`不明な${label}: ${unknown.join(', ')}`);
+  return names;
+}
+
+function parseNumber(k, v, min) {
+  const n = Number(v);
+  if (!(n >= min)) throw new UsageError(`${k} は ${min} 以上の数にする`);
+  return n;
+}
+
 function parseArgs(argv) {
-  const opts = { rounds: 3, frames: 450, only: null, conditions: null, json: null, shots: null, };
-  for (let i = 0; i < argv.length; i += 2) {
-    const [k, v] = [argv[i], argv[i + 1]];
-    if (k === '--rounds') opts.rounds = Number(v);
-    else if (k === '--frames') opts.frames = Number(v);
-    else if (k === '--only') opts.only = v.split(',');
-    else if (k === '--conditions') opts.conditions = v.split(',');
+  // 引数なしでは測らない（うっかり全作品の計測を始めないため）。全作品は --all で測る
+  if (!argv.length) throw new UsageError('');
+  const opts = { all: false, rounds: 3, frames: 450, warmup: 0, base: null, only: null, conditions: null, json: null, shots: null };
+  for (let i = 0; i < argv.length; i++) {
+    const k = argv[i];
+    if (k === '--all') { opts.all = true; continue; }   // 値を取らないのは --all だけ
+    const v = argv[++i];
+    if (v === undefined) throw new UsageError(`${k} の値が無い`);
+    if (k === '--rounds') opts.rounds = parseNumber(k, v, 1);
+    else if (k === '--frames') opts.frames = parseNumber(k, v, 1);
+    else if (k === '--warmup') opts.warmup = parseNumber(k, v, 0);
+    else if (k === '--base') opts.base = v;
+    else if (k === '--only') opts.only = parseNames(v, PAGES.map((p) => p.page), '作品名');
+    else if (k === '--conditions') opts.conditions = parseNames(v, CONDITIONS.map((c) => c.name), '条件');
     else if (k === '--json') opts.json = v;
     else if (k === '--shots') opts.shots = v;
-    else throw new Error(`不明な引数: ${k}`);
+    else throw new UsageError(`不明な引数: ${k}`);
   }
+  if (opts.all && opts.only) throw new UsageError('--all と --only は一緒に使えない');
+  if (!opts.all && !opts.only) throw new UsageError('--all か --only で測る作品を選ぶ');
+  const baseIsFile = opts.base && existsSync(path.resolve(opts.base)) && statSync(path.resolve(opts.base)).isFile();
+  if (baseIsFile && opts.only?.length !== 1) throw new UsageError('--base に HTML のパスを渡すときは、--only で作品を 1 つだけ選ぶ');
   return opts;
+}
+
+// 1 つの行（作品・シーン・条件）の、周ごとの結果をまとめる。時間は周ごとの中央値の中央値と、その最小〜最大
+function summarize(page, sceneIndex, condition, list) {
+  const pick = (get) => list.map(get);
+  const totals = pick((r) => r.totalMedian);
+  const gpus = pick((r) => r.gpuMedian);
+  const first = list[0];
+  return {
+    page, sceneIndex, scene: first.scene, condition,
+    buffer: first.buffer, dpr: first.dpr, touch: first.touch, gpu: first.gpu,
+    rounds: list.length,
+    total: median(totals), totalMin: Math.min(...totals), totalMax: Math.max(...totals),
+    totalP95: median(pick((r) => r.totalP95)),
+    wait: median(pick((r) => r.waitMedian)),
+    overhead: median(pick((r) => r.overheadMedian)),
+    calls: median(pick((r) => r.callsMedian)), callsMax: Math.max(...pick((r) => r.callsMax)),
+    triangles: median(pick((r) => r.trianglesMedian)), trianglesMax: Math.max(...pick((r) => r.trianglesMax)),
+    contentRatio: Math.min(...pick((r) => r.contentRatio)),
+    reference: median(pick((r) => r.referenceMedian)),
+    referenceMax: Math.max(...pick((r) => r.referenceMedian)),
+    gpu_ms: median(gpus), gpuMin: Math.min(...gpus), gpuMax: Math.max(...gpus),
+    gpuP95: median(pick((r) => r.gpuP95)),
+    gpuSamples: first.gpuSamples, disjoint: first.disjoint,
+  };
 }
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.shots) await mkdir(opts.shots, { recursive: true });
-  const server = await serve();
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const servers = [];
+  const listen = async (root) => {
+    const server = await serve(root);
+    servers.push(server);
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  // 測る版。--base があれば、その版と作業ツリーの版をシーンごとに交互に測り、時間による揺れが片方に偏らないようにする
+  const tempDir = opts.base ? await mkdtemp(path.join(tmpdir(), 'gpu-bench-base-')) : null;
+  let baseRoot;
+  try {
+    if (opts.base) baseRoot = await checkoutBase(opts.base, opts.only?.[0], tempDir);
+  } catch (e) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw e;
+  }
+  const versions = opts.base
+    ? [{ label: 'base', origin: await listen(baseRoot) }, { label: 'work', origin: await listen(ROOT) }]
+    : [{ label: null, origin: await listen(ROOT) }];
   const { chrome, wsUrl, userDataDir } = await launchChrome();
   opts.httpBase = `http://${new URL(wsUrl).host}`;
   const browser = await Cdp.connect(wsUrl);
@@ -422,56 +568,45 @@ async function main() {
   try {
     // シーンの数は最初の 1 回で分かる（for の条件は毎回読み直す）。温度などの揺れが特定のシーンに偏らないよう、全シーンを順に回す
     const sceneCounts = new Map();
-    const samples = new Map();   // "作品/番号/条件" -> 結果の配列
+    const samples = new Map();   // "版/作品/番号/条件" -> 結果の配列
     for (let round = 0; round < opts.rounds; round++) {
       for (const condition of conditions) {
         for (const def of pages) {
           for (let i = 0; i < (sceneCounts.get(def.page) ?? 1); i++) {
-            const r = await measure(browser, origin, def, i, condition, opts);
-            sceneCounts.set(def.page, r.sceneCount);
-            const key = `${def.page}/${i}/${condition.name}`;
-            if (!samples.has(key)) samples.set(key, []);
-            samples.get(key).push(r);
-            console.error(`[${round + 1}/${opts.rounds}] ${condition.name} ${def.page} ${r.scene ?? ''} gpu=${r.gpuMedian?.toFixed(2)} (p95 ${r.gpuP95?.toFixed(2)}, n=${r.gpuSamples}, disjoint=${r.disjoint}) total=${r.totalMedian.toFixed(1)} wait=${r.waitMedian.toFixed(1)} ref=${r.referenceMedian?.toFixed(2)} calls=${r.callsMedian} tris=${r.trianglesMedian} ${r.buffer.join('x')}`);
+            for (const { label, origin } of versions) {
+              const r = await measure(browser, origin, def, i, condition, label, opts);
+              sceneCounts.set(def.page, r.sceneCount);
+              const key = `${label}/${def.page}/${i}/${condition.name}`;
+              if (!samples.has(key)) samples.set(key, []);
+              samples.get(key).push(r);
+              console.error(`[${round + 1}/${opts.rounds}]${label ? ` ${label}` : ''} ${condition.name} ${def.page} ${r.scene ?? ''} gpu=${r.gpuMedian?.toFixed(2)} (p95 ${r.gpuP95?.toFixed(2)}, n=${r.gpuSamples}, disjoint=${r.disjoint}) total=${r.totalMedian.toFixed(1)} wait=${r.waitMedian.toFixed(1)} ref=${r.referenceMedian?.toFixed(2)} calls=${r.callsMedian} tris=${r.trianglesMedian} ${r.buffer.join('x')}`);
+            }
           }
         }
       }
     }
-    const rows = [];
-    for (const [key, list] of samples) {
-      const [page, scene, condition] = key.split('/');
-      const totals = list.map((r) => r.totalMedian);
-      rows.push({
-        page, sceneIndex: Number(scene), scene: list[0].scene, condition,
-        buffer: list[0].buffer, dpr: list[0].dpr, touch: list[0].touch, gpu: list[0].gpu,
-        rounds: list.length,
-        total: median(totals), totalMin: Math.min(...totals), totalMax: Math.max(...totals),
-        totalP95: median(list.map((r) => r.totalP95)),
-        wait: median(list.map((r) => r.waitMedian)),
-        overhead: median(list.map((r) => r.overheadMedian)),
-        calls: median(list.map((r) => r.callsMedian)), callsMax: Math.max(...list.map((r) => r.callsMax)),
-        triangles: median(list.map((r) => r.trianglesMedian)), trianglesMax: Math.max(...list.map((r) => r.trianglesMax)),
-        contentRatio: Math.min(...list.map((r) => r.contentRatio)),
-        reference: median(list.map((r) => r.referenceMedian)),
-        referenceMax: Math.max(...list.map((r) => r.referenceMedian)),
-        gpu_ms: median(list.map((r) => r.gpuMedian)),
-        gpuMin: Math.min(...list.map((r) => r.gpuMedian)),
-        gpuMax: Math.max(...list.map((r) => r.gpuMedian)),
-        gpuP95: median(list.map((r) => r.gpuP95)),
-        gpuSamples: list[0].gpuSamples, disjoint: list[0].disjoint,
-      });
-    }
-    const output = JSON.stringify({ date: new Date().toISOString(), seed: SEED, frames: opts.frames, rounds: opts.rounds, rows }, null, 2);
+    const rowsOf = (version) => [...samples].filter(([key]) => key.startsWith(`${version}/`)).map(([key, list]) => {
+      const [, page, scene, condition] = key.split('/');
+      return summarize(page, Number(scene), condition, list);
+    });
+    const rows = rowsOf(versions.at(-1).label);
+    const baseRows = opts.base ? rowsOf('base') : undefined;
+    const output = JSON.stringify({ date: new Date().toISOString(), seed: SEED, frames: opts.frames, warmup: opts.warmup, rounds: opts.rounds, base: opts.base ?? undefined, baseRows, rows }, null, 2);
     if (opts.json) await writeFile(opts.json, output);
-    console.log(toMarkdown(rows));
+    console.log(opts.base ? toCompareMarkdown(baseRows, rows) : toMarkdown(rows));
   } finally {
     browser.ws.close();
     chrome.removeAllListeners('exit');
     chrome.kill();
-    server.close();
+    for (const server of servers) server.close();
     await new Promise((r) => setTimeout(r, 500));
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  if (e instanceof UsageError) console.error(e.message ? `${e.message}\n\n${USAGE}` : USAGE);
+  else console.error(e);
+  process.exit(1);
+});

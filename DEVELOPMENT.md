@@ -22,10 +22,10 @@
 | index.html | 作品一覧 |
 | docs/specs/ | 作品ごとの仕様 |
 | docs/images/ | README 用のサムネイル |
-| docs/video.md | 動画の書き出しツールの使い方 |
-| docs/performance.md | GPU 負荷の基準値 |
+| docs/video.md | 動画の書き出しと、変更前後の比較のツールの使い方 |
+| docs/performance.md | GPU 負荷の基準値と、測り方・比べ方 |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
-| tools/gpu-bench.mjs | 全作品の GPU 負荷をシーン別に測るスクリプト（[docs/performance.md](docs/performance.md)） |
+| tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
@@ -137,6 +137,7 @@ setupControls({
 - 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
+- 見た目のための乱数を足すときは、既存の乱数を引く順番を変えない（既存の乱数を全部引いたあとに引くか、`Math.random` を使わない別の乱数にする）。`Math.random` を引く回数や順番が変わると、そのあとの乱数の列がすべてずれ、配置などが変わって、video-compare で同じ絵どうしを比べられなくなる。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
 - 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
 - GPU の負荷を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
