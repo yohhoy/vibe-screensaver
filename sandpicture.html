@@ -25,12 +25,12 @@ const { TAU, clamp, rand, randIn, randInt, randSign, randomInterval, IS_TOUCH, f
 
 // ---- 設定 ----
 const CELL_SIZE = 2.5;                     // 格子の 1 マスの大きさ（同じ面積の正方形の辺、CSS ピクセル）
-const CELL_ASPECT = 1.5;                   // 格子の 1 マスの横幅（高さに対する倍率）。横長にすると、格子の上の 45°〜63° の斜面が画面では寝て見える
+const CELL_ASPECT = 1.5;                   // 格子の 1 マスの横幅（高さに対する倍率）。横長にすると、格子の上の 27°〜63° の斜面が画面では寝て見える
 const CELL_PX = CELL_SIZE / Math.sqrt(CELL_ASPECT);   // 格子の 1 マスの高さ（CSS ピクセル）
 const CELL_W_PX = CELL_PX * CELL_ASPECT;   // 格子の 1 マスの横幅（CSS ピクセル）
 
 // 砂の動き
-const STEPS_PER_HEIGHT = 0.55;             // 1 秒あたりの格子の更新回数（格子の高さ 1 マスあたり）。画面の解像度によらず同じ速さで落ちるようにする
+const STEPS_PER_HEIGHT = 0.35;             // 1 秒あたりの格子の更新回数（格子の高さ 1 マスあたり）。画面の解像度によらず同じ速さで落ちるようにする
 const MAX_STEPS_PER_FRAME = 12;            // 1 フレームの更新回数の上限（重いフレームのあとに溜めない）
 const FALL_PROB = 0.95;                    // 1 回の更新で砂が動く確率。1 に近くして粒の速さをそろえる（確率で揺らぐと、粒が追いついて列になり、流れが途切れる）
 const GRAIN_SPEED_SPREAD = 0.04;           // 粒ごとの落ちる速さのばらつき（±割合）
@@ -43,13 +43,20 @@ const HOLE_MIN_CELLS = 1;                  // 落とし口の幅の下限（マ�
 const HOLE_MARGIN = 0.05;                  // 落とし口を置かない左右の端（画面の幅に対する割合）。位置が動いても入らない
 const EMIT_PROB = 0.76;                    // 落とし口の 1 マスから、1 回の更新で砂が出てくる確率（落とし口が EMIT_BASE_HOLES 個のとき）
 const EMIT_BASE_HOLES = 3;                 // EMIT_PROB の基準の落とし口の数
-const STRATUM_SEC = [3, 9];                // 1 つの層を流す秒数（落とし口ごと・層ごとに選ぶ）
+const STRATUM_SEC = [4, 12];               // 1 つの層を流す秒数（落とし口ごと・層ごとに選ぶ）
+// 同じ色の砂でも、層ごとと層の中で濃淡を変える。実物の色砂も袋ごとに色味が少し違い、層の中にも濃淡の
+// グラデーションができる。3 色をそのまま塗ると、平らな色の切り絵のように見える
+const TONE_RANGE = 0.2;                    // 濃淡の幅（明るさの倍率の幅。0.2 なら 0.9〜1.1 倍）
+const TONE_STEPS = 64;                     // 濃淡の段階の数（マスの r に色の番号と合わせて書くので、SAND_COLORS × TONE_STEPS ≦ 255）
+const TONE_CHANGE_SEC = [1, 3];            // 層の中で濃淡の目標を選び直す間隔（秒）
+const TONE_DRIFT = 0.35;                   // 層の中で濃淡が動く幅（TONE_RANGE の全幅に対する割合、片側）
+const TONE_SMOOTH_SEC = 1.5;               // 濃淡が目標に近づく速さ（時定数、秒）
 // 落とし口ごとの流れる量（EMIT_PROB に対する倍率）。ときどき目標を選び直し、なめらかに近づける。
 // すべての口から同じ量を流すと、どの山も同じ速さで育って人工的に見える
 const FLOW_CHANGE_SEC = [2, 7];            // 流れる量の目標を選び直す間隔（秒）
 const FLOW_RANGE = [0.4, 2.0];             // 流れる量の目標の範囲
-const FLOW_PAUSE_PROB = 0.15;              // 目標を選び直すとき、流れをほぼ止める確率
-const FLOW_PAUSE = 0.05;                   // 止まっている間の流れる量
+const FLOW_LOW_PROB = 0.15;                // 目標を選び直すとき、流れを減らす確率
+const FLOW_LOW = 0.25;                     // 減らしている間の流れる量。止めはしない
 const FLOW_SMOOTH_SEC = 1.2;               // 流れる量が目標に近づく速さ（時定数、秒）
 // 落とし口の位置は、もとの位置から一定の幅の中をゆっくり往復させる（周期の違う 2 つの揺れを重ねる）。
 // 位置が動かないと、山が同じ所にまっすぐ育って人工的に見える
@@ -65,12 +72,12 @@ const MAX_HOLES = 8;
 // 描き終わりと次の絵
 const CHECK_SEC = 0.5;                     // 砂の量と表面を読み出す間隔（秒）
 const FILL_AMOUNT = 0.4;                   // 砂の量が画面の面積のこの割合に達したら、流すのをやめる
-const FILL_HEIGHT = 0.92;                  // 山の高さが画面の高さのこの割合に達したときも、流すのをやめる
+const FILL_HEIGHT = 0.8;                   // 山の高さが画面の高さのこの割合に達したときも、流すのをやめる
 const WATCH_SEC = 30;                      // 流すのをやめてから次の絵に移るまでの秒数
 
 // ガラスと光
-const LIQUID_TOP_GAIN = 0.92;              // 液体の上端の明るさ（シーンの液体の色に対する倍率）
-const LIQUID_BOTTOM_GAIN = 0.74;           // 液体の下端の明るさ（同じ）
+const LIQUID_TOP_GAIN = 1.0;               // 液体の上端の明るさ（シーンの液体の色に対する倍率）
+const LIQUID_BOTTOM_GAIN = 0.82;           // 液体の下端の明るさ（同じ）
 const EDGE_DARK = 0.05;                    // 画面の縁を暗くする強さ
 const EDGE_WIDTH = 0.12;                   // 縁を暗くする幅（画面の高さに対する割合）
 
@@ -95,6 +102,19 @@ const STREAM_GAIN = 0.7;                   // 足し合わせた濃さの倍率
 const STREAM_ALPHA = 0.85;                 // 筋の濃さの上限
 const SURFACE_LIGHT = 1.06;                // 山の表面（上が液体）の砂の明るさ（倍率）
 const INNER_DARK = 0.97;                   // 表面から 2 マスより内側の砂の明るさ（倍率）
+// 砂の厚み。砂は 2 枚のガラスの間に厚みを持って積もる。少し上から見下ろしたように、手前の稜線の上に、
+// 奥のガラスまで続く砂の上面を帯にして描く。上面は斜面の向きで明るさを変え、奥ほど液体越しにかすませる
+const TOP_DEPTH = 3;                       // 上面の帯の高さ（マス）。ガラスの間の厚みが見える分
+const TOP_DEPTH_VARY = 0.3;                // 帯の高さを横の位置で変える幅（割合、片側）。奥の縁が直線にならないように
+const TOP_DEPTH_SCALE = 24;                // 帯の高さが変わる横の間隔（マス）
+const TOP_LIGHT_DIR = [-0.5, 1];           // 上面に当たる光の向き（画面の [横, 縦]。左上から）
+const TOP_COLOR_SCATTER = 5;               // 上面の色を読む列を、画素ごとに横へ散らす幅（マス）
+const TOP_SLOPE_REACH = 3;                 // 上面の斜面の向きを求めるとき、前後何列離れた所の高さを見るか
+const TOP_SHADE = [0.64, 1.04];            // 上面の明るさの範囲（光に背を向けた斜面、光に向いた斜面。砂の色に対する倍率）
+const TOP_FOG = 0.4;                       // 上面の奥の縁で、液体の色に溶ける割合（手前の縁は 0）
+const TOP_EDGE_LIGHT = 1.1;                // 手前の角（上面と手前の面の境目）の明るさ（倍率）
+const TOP_EDGE_WIDTH = 0.8;                // 手前の角を明るくする幅（マス）
+const FLOOR_GAIN = 0.62;                   // 床（容器の底の上面）の明るさ（液体の色に対する倍率）。砂の無い所で、上面の帯の代わりに見える
 
 // ラクダ（隠し要素）
 const CAMEL_INTERVAL = [120, 60, 180];     // 出てくる間隔（秒）: [平均, 最小, 最大]
@@ -114,12 +134,12 @@ const CAMEL_READ_SEC = 0.1;                // ラクダがいる間に砂の表�
 const CAMEL_COLOR = 0x1a120c;
 
 // シーン（docs/specs/sandpicture.md の「シーンの定義」。この順番でローテーションする）。
-// 砂は 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 34〜53 の範囲で、大きいほど急な斜面で積もる。
+// 砂は 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 18〜53 の範囲で、大きいほど急な斜面で積もる。
 // 3 色の安息角を離しておくと、山の上に積もる層の厚さが色ごとに変わり、地層のように見える
 const SCENES = [
-  { name: 'Desert', liquid: 0xe9dcbc, sand: [[0x3a2418, 50], [0xd0702a, 42], [0xf3ede2, 34]] },
-  { name: 'Ocean', liquid: 0xcfe2ec, sand: [[0x14254a, 50], [0x1f8a8a, 42], [0xf0f4f6, 34]] },
-  { name: 'Sunset', liquid: 0xf3dcd6, sand: [[0x4a2160, 50], [0xc0303f, 42], [0xe6b53a, 34]] },
+  { name: 'Desert', liquid: 0xe9dcbc, sand: [[0x3a2418, 45], [0xd0702a, 32], [0xf3ede2, 18]] },
+  { name: 'Ocean', liquid: 0xcfe2ec, sand: [[0x14254a, 45], [0x1f8a8a, 32], [0xf0f4f6, 18]] },
+  { name: 'Sunset', liquid: 0xf3dcd6, sand: [[0x4a2160, 45], [0xc0303f, 32], [0xe6b53a, 18]] },
 ];
 const SAND_COLORS = 3;                     // 1 つのシーンの砂の色の数
 
@@ -133,7 +153,11 @@ const hexToVec3 = (hex, gain = 1) => new THREE.Vector3(
 
 // 安息角（画面での角度、度）から、斜めに滑らない粒の割合を求める。格子の上では、割合 0 で傾き 1、
 // 1 で傾き 2 の斜面になる。マスが横長なので、画面での傾きはその 1 / CELL_ASPECT（1.5 倍なら約 34°〜53°）
-const stickyFraction = (angle) => clamp(Math.tan(THREE.MathUtils.degToRad(angle)) * CELL_ASPECT - 1, 0, 1);
+const gridSlope = (angle) => Math.tan(THREE.MathUtils.degToRad(angle)) * CELL_ASPECT;
+const stickyFraction = (angle) => clamp(gridSlope(angle) - 1, 0, 1);
+// 格子の上で傾き 1 より緩い斜面にするため、段のふちで横へ動く粒の割合を求める。割合 0 で傾き 1、
+// 1 で傾き 0.5 の斜面になる（1.5 倍なら画面で約 34°〜18°）
+const flatFraction = (angle) => clamp(2 * (1 - gridSlope(angle)), 0, 1);
 
 // ---- シェーダー ----
 const QUAD_VERTEX = /* glsl */ `
@@ -143,17 +167,18 @@ void main() {
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }`;
 
-// マスの中身: r = 種類（0: 液体、1〜: 砂の色の番号）、g = 粒の明るさの乱数、b = 粒の落ちる速さの乱数、
-// a = 粒の滑りにくさの乱数（色ごとのしきい値より小さい粒は斜めに滑らない）
+// マスの中身: r = 種類（0: 液体、1〜: 砂。1 を引いた値の SAND_COLORS で割った余りが色の番号、商が濃淡の段階）、g = 粒の明るさの乱数、b = 粒の落ちる速さの乱数、
+// a = 粒の滑りにくさの乱数（色ごとのしきい値より小さい粒は、斜めに滑らない・段のふちで横へ動く）
 const SIM_FRAGMENT = /* glsl */ `
 uniform sampler2D uGrid;
-uniform vec4 uHoles[${MAX_HOLES}];   // 落とし口（x: 左端、y: 右端の次のマス、z: 出す砂の色（r に書く値）、w: 流れる量の倍率。使わない口は 0）
+uniform vec4 uHoles[${MAX_HOLES}];   // 落とし口（x: 左端、y: 右端の次のマス、z: 出す砂の種類（r に書く値）、w: 流れる量の倍率。使わない口は 0）
 uniform int uW, uH;
 uniform int uOffX, uOffY;     // 2×2 の組の区切りのずらし（Margolus 近傍）
 uniform int uSeed;
 uniform float uFall, uSpread, uTopple, uDrift;
 uniform float uEmit;          // 落とし口の 1 マスから砂が出てくる確率
 uniform float uSticky[${SAND_COLORS}];   // 色ごとの、斜めに滑らない粒の割合
+uniform float uFlat[${SAND_COLORS}];     // 色ごとの、段のふちで横へ動く粒の割合
 
 uint hash(uint x) {
   x ^= x >> 16; x *= 0x7feb352du;
@@ -166,6 +191,16 @@ float rnd(uint h) { return float(h & 0xffffffu) / 16777216.0; }
 // 格子の外。壁として扱う
 bool outside(ivec2 p) {
   return p.x < 0 || p.y < 0 || p.x >= uW || p.y >= uH;
+}
+
+// 格子の中の空いたマスか（組の外を読むだけのときに使う）
+bool emptyAt(ivec2 p) {
+  return !outside(p) && texelFetch(uGrid, p, 0).r <= 0.002;
+}
+
+// マスの r から、砂の色の番号を求める
+int colorOf(float r) {
+  return (int(r * 255.0 + 0.5) - 1) % ${SAND_COLORS};
 }
 
 // p の下（p - (0, 1) の位置）の砂が積もって止まっているか。p 自身は組の外で、底か砂なら止まっている
@@ -211,24 +246,32 @@ void main() {
 
   // 左右の列のどちらを先に動かすかは組ごとに乱数で決め、偏りを出さない
   bool leftFirst = r[4] < 0.5;
+  int moved = -1;   // この更新で横へ動いた粒のマス（1 回の更新で 2 度動かさない）
   for (int n = 0; n < 2; n++) {
     bool left = (n == 0) == leftFirst;
     int top = left ? 2 : 3;
     int below = left ? 0 : 1;
     int diag = left ? 1 : 0;
-    if (k[top] != 1) continue;
+    int side = left ? 3 : 2;
+    if (k[top] != 1 || top == moved) continue;
     float p = uFall * (1.0 - uSpread + 2.0 * uSpread * c[top].b);
     if ((left ? r[0] : r[1]) >= p) continue;
     float rd = left ? r[2] : r[3];
     int dst = -1;
     if (k[below] == 0) dst = (k[diag] == 0 && rd < uDrift) ? diag : below;
-    // 斜めに滑るのは、下の砂が積もって止まっているときだけ。落ちている砂どうしがぶつかって滑ると、流れの筋が横に広がる
-    else if (k[diag] == 0 && rd < uTopple && (k[below] == 2 || resting(base + ivec2(below, -1)))) {
-      // 滑りにくい粒は、斜め下が 1 マスの段差なら留まり、2 マス以上落ちていれば滑る。
-      // これで色ごとの斜面の角度が 45°〜約 63° に収まり、尖った柱が立たない
-      bool sticky = c[top].a < uSticky[int(c[top].r * 255.0 + 0.5) - 1];
-      ivec2 under = base + ivec2(diag, -1);
-      if (!sticky || (!outside(under) && texelFetch(uGrid, under, 0).r <= 0.002)) dst = diag;
+    // 斜めや横へ動くのは、下の砂が積もって止まっているときだけ。落ちている砂どうしがぶつかって滑ると、流れの筋が横に広がる
+    else if (rd < uTopple && (k[below] == 2 || resting(base + ivec2(below, -1)))) {
+      int color = colorOf(c[top].r);
+      if (k[diag] == 0) {
+        // 滑りにくい粒は、斜め下が 1 マスの段差なら留まり、2 マス以上落ちていれば滑る。
+        // これで色ごとの斜面の角度が 45°〜約 63° に収まり、尖った柱が立たない
+        if (c[top].a >= uSticky[color] || emptyAt(base + ivec2(diag, -1))) dst = diag;
+      } else if (k[side] == 0 && c[top].a < uFlat[color] && emptyAt(base + ivec2(left ? 2 : -1, 0))) {
+        // 45° より緩い斜面。斜め下もふさがっていても、横が空いていて、その 1 マス先（組の外、読むだけ）に段があれば、
+        // 横へ 1 マス動く。次の更新で段から斜め下へ滑るので、2 マス進んで 1 段下がる斜面（傾き 0.5）まで作れる
+        dst = side;
+        moved = side;
+      }
     }
     if (dst >= 0) {
       c[dst] = c[top]; k[dst] = 1;
@@ -262,6 +305,9 @@ uniform int uW, uH;
 uniform vec3 uSand[${SAND_COLORS}];
 uniform vec3 uLiquidTop, uLiquidBottom;
 uniform float uAspect;
+uniform sampler2D uSurface;   // 列ごとの砂の表面の高さ（SURFACE_FRAGMENT の出力）
+uniform float uTopSeed;       // 上面の帯の高さの揺れの種（絵ごとに変える）
+uniform vec3 uFloor;          // 床の色
 varying vec2 vUv;
 
 float hash12(vec2 p) {
@@ -270,9 +316,28 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+// 列 x の砂の表面の高さ（マス）。格子の外は端の列
+float surfaceAt(int x) {
+  vec4 t = texelFetch(uSurface, ivec2(clamp(x, 0, uW - 1), 0), 0) * 255.0;
+  return floor(t.r + 0.5) * 256.0 + floor(t.g + 0.5);
+}
+
+// 横の位置 u（列の中心を整数とする）の砂の表面の高さ（マス）。列の中心のあいだを直線でつなぐ
+float surfaceLerp(float u) {
+  int i = int(floor(u));
+  return mix(surfaceAt(i), surfaceAt(i + 1), fract(u));
+}
+
 // 砂か（格子の外は液体とみなす）
 bool sandAt(ivec2 p) {
   return p.x >= 0 && p.y >= 0 && p.x < uW && p.y < uH && texelFetch(uGrid, p, 0).r > 0.002;
+}
+
+// マスの r から、砂の色（濃淡を付けた色）を求める
+vec3 baseColor(float r) {
+  int v = int(r * 255.0 + 0.5) - 1;
+  float tone = float(v / ${SAND_COLORS}) / ${TONE_STEPS - 1}.0 - 0.5;
+  return uSand[v % ${SAND_COLORS}] * (1.0 + ${TONE_RANGE.toFixed(3)} * tone);
 }
 
 // 宙を落ちている流れの砂か。下 ${STREAM_BELOW} マスのうち ${STREAM_BELOW_LIQUID} マス以上が液体なら、流れとみなす（格子の外は底）。
@@ -305,7 +370,7 @@ vec3 sandColor(vec3 base, vec4 c, ivec2 cell, vec2 gp) {
 
 // 層の境目をならした砂の色。近くの 4 マスの砂の色を、マスの中心からの距離で混ぜる（液体のマスは除く）
 vec3 layerColor(vec4 c, vec2 gp) {
-  vec3 own = uSand[int(c.r * 255.0 + 0.5) - 1];
+  vec3 own = baseColor(c.r);
   vec2 bp = gp - 0.5;
   ivec2 b0 = ivec2(floor(bp));
   vec2 t = fract(bp);
@@ -317,10 +382,50 @@ vec3 layerColor(vec4 c, vec2 gp) {
     if (!sandAt(p)) continue;
     vec2 wt = mix(1.0 - t, t, vec2(o));
     float w = wt.x * wt.y;
-    sum += w * uSand[int(texelFetch(uGrid, p, 0).r * 255.0 + 0.5) - 1];
+    sum += w * baseColor(texelFetch(uGrid, p, 0).r);
     wsum += w;
   }
   return wsum > 0.0 ? mix(own, sum / wsum, ${LAYER_BLEND.toFixed(3)}) : own;
+}
+
+// 砂と床の上面（ガラスの間の厚み）。列の表面の高さを横になめらかにつなぎ、その上 TOP_DEPTH マスを上面の帯にする
+// （砂の無い列は床の上面）。帯の外なら col をそのまま返す
+vec3 topSurface(vec3 col, vec2 gs, vec2 gp) {
+  float u = gs.x - 0.5;
+  float hs = surfaceLerp(u);
+  // 帯の高さは横の位置でゆるやかに変え、奥の縁を直線にしない。床の奥の縁はまっすぐ
+  float tx = gs.x / ${TOP_DEPTH_SCALE}.0;
+  float ti = floor(tx);
+  float wave = mix(hash12(vec2(ti, uTopSeed)), hash12(vec2(ti + 1.0, uTopSeed)), smoothstep(0.0, 1.0, fract(tx)));
+  float depth = ${TOP_DEPTH}.0 * (1.0 + ${TOP_DEPTH_VARY.toFixed(3)} * (2.0 * wave - 1.0) * min(hs, 1.0));
+  float d = gp.y - hs;   // 手前の稜線からの高さ（マス）
+  if (d <= 0.0 || d >= depth) return col;
+
+  // 上面の色は、画素ごとに横へ散らした列の、いちばん上の砂の色にする。列ごとに表面の層の厚さや
+  // 転がる粒の色が違うので、1 列ずつの色にすると縦の筋が並ぶ。散らすと、ざらついた砂の面になる
+  int sx = clamp(int(floor(gs.x + (hash12(gl_FragCoord.xy + 101.0) - 0.5) * ${TOP_COLOR_SCATTER.toFixed(3)})), 0, uW - 1);
+  float sh = surfaceAt(sx);
+  if (sh < 1.0) {   // 散らした先が砂の無い列なら、自分の列の色にする（山の裾に床の色の点が混じらないように）
+    sx = clamp(int(gs.x), 0, uW - 1);
+    sh = surfaceAt(sx);
+  }
+  vec3 topColor = uFloor;
+  float grain = 0.0;
+  float topR = sh >= 1.0 ? texelFetch(uGrid, ivec2(sx, int(sh) - 1), 0).r : 0.0;
+  // 暗転中に格子を空にした直後は、表面の高さが古いまま残るので、マスが空なら床にする
+  if (hs > 0.0 && topR > 0.002) {
+    topColor = baseColor(topR);
+    vec2 fine = floor(gp * vec2(${FINE_GRAIN_DIV * CELL_ASPECT}, ${FINE_GRAIN_DIV}.0));
+    grain = ${FINE_GRAIN.toFixed(3)} * (hash12(fine) - 0.5);
+  }
+  // 斜面の向き。表面の高さは 1 マスずつの階段なので、前後 ${TOP_SLOPE_REACH} 列離れた所の高さから求め、列ごとに飛ばないようにする。
+  // マスが横長なので、画面での傾きは格子の上の 1 / CELL_ASPECT
+  float slope = (surfaceLerp(u + ${TOP_SLOPE_REACH}.0) - surfaceLerp(u - ${TOP_SLOPE_REACH}.0)) / ${(2 * TOP_SLOPE_REACH * CELL_ASPECT).toFixed(3)};
+  float lit = max(dot(normalize(vec2(-slope, 1.0)), normalize(vec2(${TOP_LIGHT_DIR.map((v) => v.toFixed(3)).join(', ')}))), 0.0);
+  vec3 top = topColor * mix(${TOP_SHADE[0].toFixed(3)}, ${TOP_SHADE[1].toFixed(3)}, lit) * (1.0 + grain)
+             * mix(${TOP_EDGE_LIGHT.toFixed(3)}, 1.0, smoothstep(0.0, ${TOP_EDGE_WIDTH.toFixed(3)}, d));
+  // 奥ほど液体越しにかすませる
+  return mix(top, col, ${TOP_FOG.toFixed(3)} * d / depth);
 }
 
 void main() {
@@ -337,11 +442,14 @@ void main() {
   if (restingAt(cell)) {
     vec4 c = texelFetch(uGrid, cell, 0);
     col = sandColor(layerColor(c, gp), c, cell, gp);
-  } else if (!sandAt(cell) && restingAt(down)
-             && ((restingAt(cell - ivec2(1, 0)) && f.y < 1.0 - f.x) || (restingAt(cell + ivec2(1, 0)) && f.y < f.x))) {
-    // 山の表面の階段をならす。下と横が積もった砂の液体のマスは、斜め半分を下の砂で埋め、階段の角どうしを斜めの線でつなぐ
-    vec4 c = texelFetch(uGrid, down, 0);
-    col = sandColor(layerColor(c, gp), c, down, gp);
+  } else if (!sandAt(cell)) {
+    if (restingAt(down) && ((restingAt(cell - ivec2(1, 0)) && f.y < 1.0 - f.x) || (restingAt(cell + ivec2(1, 0)) && f.y < f.x))) {
+      // 山の表面の階段をならす。下と横が積もった砂の液体のマスは、斜め半分を下の砂で埋め、階段の角どうしを斜めの線でつなぐ
+      vec4 c = texelFetch(uGrid, down, 0);
+      col = sandColor(layerColor(c, gp), c, down, gp);
+    } else {
+      col = topSurface(col, gs, gp);
+    }
   }
 
   // 落ちている砂。上下 STREAM_REACH マスの粒を、縦にぼかして足し合わせる。読み出す位置を画素ごとに散らす
@@ -359,7 +467,7 @@ void main() {
     float dy = (gp0.y - float(p.y) - 0.5) / ${STREAM_SIGMA.toFixed(3)};
     float w = (1.0 - smoothstep(${(STREAM_HALF_WIDTH * 0.3).toFixed(3)}, ${STREAM_HALF_WIDTH.toFixed(3)}, abs(dx))) * exp(-dy * dy);
     density += w;
-    stream += w * uSand[int(g.r * 255.0 + 0.5) - 1] * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (g.g - 0.5));
+    stream += w * baseColor(g.r) * (1.0 + ${GRAIN_SHADE.toFixed(3)} * (g.g - 0.5));
   }
   if (density > 0.0) col = mix(col, stream / density, min(density * ${STREAM_GAIN.toFixed(3)}, ${STREAM_ALPHA.toFixed(3)}));
   vec2 sv = vUv * vec2(uAspect, 1.0);
@@ -402,13 +510,14 @@ const simPass = quadPass(SIM_FRAGMENT, {
   uTopple: { value: TOPPLE_PROB }, uDrift: { value: DRIFT_PROB },
   uEmit: { value: 0 },
   uSticky: { value: new Array(SAND_COLORS).fill(0) },
+  uFlat: { value: new Array(SAND_COLORS).fill(0) },
 });
 const surfacePass = quadPass(SURFACE_FRAGMENT, { uGrid: { value: null }, uH: { value: 1 } });
 const viewPass = quadPass(VIEW_FRAGMENT, {
   uGrid: { value: null }, uW: { value: 1 }, uH: { value: 1 },
   uSand: { value: Array.from({ length: SAND_COLORS }, () => new THREE.Vector3()) },
   uLiquidTop: { value: new THREE.Vector3() }, uLiquidBottom: { value: new THREE.Vector3() },
-  uAspect: { value: 1 },
+  uAspect: { value: 1 }, uSurface: { value: null }, uTopSeed: { value: 0 }, uFloor: { value: new THREE.Vector3() },
 });
 
 // ラクダを砂の上に重ねて描くシーン。座標は CSS ピクセル（マスが横長なので、格子のマスにすると形がゆがむ）
@@ -422,6 +531,7 @@ let W = 0, H = 0;               // 格子の大きさ（マス）
 let targets = [];               // 格子の描画先（交互に読み書きする 2 枚）
 let current = 0;                // いまの格子が入っている描画先の番号
 let holes = [];                 // 落とし口 { home・x（もとの位置といまの位置）, width（マス）, color（いまの層の色）, time（層の残りの秒数）,
+                                //   tone・toneBase・toneTarget・toneTime（濃淡、層の始まりの濃淡、濃淡の目標、目標を選び直すまでの秒数）,
                                 //   flow（流れる量）, flowTarget（その目標）, flowTime（目標を選び直すまでの秒数）, drift（位置の揺れ） }
 let surfaceTarget = null;       // 列ごとの砂の表面の高さと量
 let surfaceBuffer = null;
@@ -481,6 +591,7 @@ function addHole() {
   const drift = HOLE_DRIFT_PERIOD.map((period) => ({ speed: TAU / randIn(period), phase: rand(0, TAU) }));
   holes.push({
     home: best, x: best, width, color: randInt(SCENES[sceneIndex].sand.length), time: randIn(STRATUM_SEC),
+    ...newStratumTone(),
     flow, flowTarget: flow, flowTime: randIn(FLOW_CHANGE_SEC), drift,
   });
 }
@@ -503,14 +614,20 @@ function updateEmit() {
   simPass.uniforms.uEmit.value = pouring ? Math.min(1, EMIT_PROB * Math.sqrt(EMIT_BASE_HOLES / holes.length)) : 0;
 }
 
-// 流れる量の目標。ときどき流れをほぼ止める
-const randomFlow = () => (Math.random() < FLOW_PAUSE_PROB ? FLOW_PAUSE : randIn(FLOW_RANGE));
+// 流れる量の目標。ときどき流れを減らす
+const randomFlow = () => (Math.random() < FLOW_LOW_PROB ? FLOW_LOW : randIn(FLOW_RANGE));
+
+// 層の始まりの濃淡（0〜1）。層ごとに選ぶ
+function newStratumTone() {
+  const tone = Math.random();
+  return { tone, toneBase: tone, toneTarget: tone, toneTime: randIn(TONE_CHANGE_SEC) };
+}
 
 // 落とし口の位置といまの層の色・流れる量をシェーダーに渡す
 function writeHoles() {
   simPass.uniforms.uHoles.value.forEach((v, i) => {
     const h = holes[i];
-    if (h) v.set(h.x, h.x + h.width, (h.color + 1) / 255, h.flow);
+    if (h) v.set(h.x, h.x + h.width, (h.color + SAND_COLORS * Math.round(h.tone * (TONE_STEPS - 1)) + 1) / 255, h.flow);
     else v.set(0, 0, 0, 0);
   });
 }
@@ -534,12 +651,16 @@ function updateSand(dt) {
   renderer.setRenderTarget(null);
 }
 
-// 列ごとの砂の表面の高さと、砂の量を読み出す
-function readSurface() {
+// 列ごとの砂の表面の高さと砂の量を数える。砂の上面を描くのに使うので、毎フレーム数える
+function countSurface() {
   surfacePass.uniforms.uGrid.value = targets[current].texture;
   renderer.setRenderTarget(surfaceTarget);
   renderer.render(surfacePass.scene, quadCamera);
   renderer.setRenderTarget(null);
+}
+
+// 数えた砂の表面の高さと、砂の量を読み出す
+function readSurface() {
   renderer.readRenderTargetPixels(surfaceTarget, 0, 0, W, 1, surfaceBuffer);
   let count = 0;
   for (let x = 0; x < W; x++) {
@@ -562,7 +683,15 @@ function updateStreams(dt) {
     if (h.time <= 0) {
       h.color = (h.color + 1 + randInt(count - 1)) % count;
       h.time = randIn(STRATUM_SEC);
+      Object.assign(h, newStratumTone());
     }
+    // 層の中の濃淡は、層の始まりの濃淡のまわりをゆっくり動かす
+    h.toneTime -= dt;
+    if (h.toneTime <= 0) {
+      h.toneTarget = clamp(h.toneBase + rand(-TONE_DRIFT, TONE_DRIFT), 0, 1);
+      h.toneTime = randIn(TONE_CHANGE_SEC);
+    }
+    h.tone += (h.toneTarget - h.tone) * (1 - Math.exp(-dt / TONE_SMOOTH_SEC));
     h.flowTime -= dt;
     if (h.flowTime <= 0) {
       h.flowTarget = randomFlow();
@@ -632,12 +761,13 @@ const camelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), camelMaterial);
 camelMesh.visible = false;
 overlayScene.add(camelMesh);
 
-// 位置 x（CSS ピクセル）の砂の表面の高さ（CSS ピクセル）。列の中心のあいだを直線でつなぐ
+// 位置 x（CSS ピクセル）の砂の表面の高さ（CSS ピクセル）。列の中心のあいだを直線でつなぐ。
+// ラクダはガラスの間の奥行きの中ほどを歩くので、砂の上面の帯の半分だけ上にする
 function groundPx(x) {
   const u = x / CELL_W_PX - 0.5;
   const i = Math.floor(u), f = u - i;
   const a = surface[clamp(i, 0, W - 1)], b = surface[clamp(i + 1, 0, W - 1)];
-  return (a + (b - a) * f) * CELL_PX;
+  return (a + (b - a) * f + TOP_DEPTH / 2) * CELL_PX;
 }
 
 // 前後 CAMEL_SMOOTH をならした砂の表面の高さ（CSS ピクセル）。尖った山頂や粒のでこぼこで胴が揺れないようにする
@@ -820,9 +950,12 @@ function setScene(index) {
   s.sand.forEach(([hex, angle], i) => {
     viewPass.uniforms.uSand.value[i].copy(hexToVec3(hex));
     simPass.uniforms.uSticky.value[i] = stickyFraction(angle);
+    simPass.uniforms.uFlat.value[i] = flatFraction(angle);
   });
   viewPass.uniforms.uLiquidTop.value.copy(hexToVec3(s.liquid, LIQUID_TOP_GAIN));
   viewPass.uniforms.uLiquidBottom.value.copy(hexToVec3(s.liquid, LIQUID_BOTTOM_GAIN));
+  viewPass.uniforms.uFloor.value.copy(hexToVec3(s.liquid, FLOOR_GAIN));
+  viewPass.uniforms.uTopSeed.value = rand(0, 1000);
   holes = [];
   pouring = true;
   watchTime = 0;
@@ -850,10 +983,12 @@ function tick(now) {
   last = now;
   if (!isFading()) {   // 暗転中は止めておく
     updateSand(dt);
+    countSurface();
     updatePicture(dt);
     updateCamel(dt);
   }
   viewPass.uniforms.uGrid.value = targets[current].texture;
+  viewPass.uniforms.uSurface.value = surfaceTarget.texture;
   renderer.setRenderTarget(null);
   renderer.render(viewPass.scene, quadCamera);
   if (camel) renderer.render(overlayScene, overlayCamera);
