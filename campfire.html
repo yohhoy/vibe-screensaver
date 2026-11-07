@@ -26,7 +26,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 炎・火の粉・おき火の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
@@ -252,7 +252,11 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(srgb(HORIZON), FOG_DENSITY);
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.05, SKY_RADIUS * 1.5);
 
-const composer = new EffectComposer(renderer);
+// 色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer) }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(
   new THREE.Vector2(innerWidth, innerHeight), BLOOM.strength, BLOOM.radius, BLOOM.threshold));

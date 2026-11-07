@@ -27,7 +27,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray, emit, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray, emit, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 座標: 滝壺の水面が y = 0、滝の中心が x = 0。カメラは +z の側から -z の向きに滝を見る。長さの単位はメートルのつもり
@@ -577,11 +577,11 @@ const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.
 camera.position.set(...CAM_POS);
 camera.lookAt(0, CAM_TARGET_Y, 0);
 
+// 全画面の描画先の色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
 // マルチサンプルにするのはシーンを描く描画先だけ。後段のブルームと合成までマルチサンプルにすると、全画面の処理がとても重くなる
-const sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
-  type: THREE.HalfFloatType,
-  samples: renderer.getPixelRatio() < MSAA_OFF_PIXEL_RATIO ? MSAA_SAMPLES : 0,
-});
+const sceneSamples = renderer.getPixelRatio() < MSAA_OFF_PIXEL_RATIO ? MSAA_SAMPLES : 0;
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, sceneSamples), samples: sceneSamples });
 function updateSceneTargetSize() {
   const pr = renderer.getPixelRatio();
   sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
@@ -589,7 +589,7 @@ function updateSceneTargetSize() {
 updateSceneTargetSize();
 
 const composer = new EffectComposer(renderer,
-  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false }));
 composer.setPixelRatio(renderer.getPixelRatio());
 composer.setSize(innerWidth, innerHeight);
 const scenePass = new TexturePass(sceneTarget.texture);

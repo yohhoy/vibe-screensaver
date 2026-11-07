@@ -26,7 +26,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randInt, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // トンネル形状
@@ -208,7 +208,11 @@ scene.fog = new THREE.FogExp2(0x000000, 0.02);   // トンネルの霧とおお�
 scene.add(new THREE.AmbientLight(0xffffff, 1.2));
 camera.add(new THREE.PointLight(0xffffff, 3, 0, 0));
 
-const composer = new EffectComposer(renderer);
+// 色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer) }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.8, 0.5, 0.25));
 const zoomBlur = new ShaderPass(ZoomBlurShader);

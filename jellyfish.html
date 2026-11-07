@@ -25,7 +25,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randExp, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randExp, randomInterval, IS_TOUCH, fadeAndRun, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // すべて光る線で描く。線の色は光の強さそのままの値（1 を超えるとブルームで強く光る）。背景の色だけは画面に出る値 (0..1)
@@ -175,8 +175,9 @@ const camera = new THREE.PerspectiveCamera(VIEW_FOV, innerWidth / innerHeight, 0
 camera.position.set(0, VIEW_CENTER_Y, CAM_DIST);
 
 // 線のぎざぎざを抑えるため、ブルーム用の描画先をマルチサンプルにする
-const composer = new EffectComposer(renderer,
-  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA_SAMPLES }));
+// 色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES }));
 composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(
