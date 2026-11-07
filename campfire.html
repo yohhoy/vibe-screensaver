@@ -29,23 +29,23 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
-// 炎・火の粉・おき火の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
+// 炎・火の粉の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
 
 // カメラ（焚き火のまわりをゆっくり回る）
-const CAM_DIST = [4.5, 6.5];      // 焚き火からの距離の範囲（ゆっくり寄ったり離れたりする）
+const CAM_DIST = 5.5;             // 焚き火からの距離（一定。回っても画面上の大きさが変わらない）
 const CAM_HEIGHT = 1.3;           // 地面からの高さ
 const CAM_TARGET_Y = 1.1;         // 見る点の高さ
 const CAM_FOV = 45;
 const ORBIT_PERIOD = 240;         // 1 周する秒数
-const ZOOM_PERIOD = 70;           // 寄って離れる周期（秒）
 
 // 火の強さ（倍率）
 const BASE_FIRE = 1;
 const MIN_FIRE = 0.3;
-const MAX_FIRE = 2;
+const MAX_FIRE = 2.0;
 const FIRE_STEP = 1.25;           // ↑↓ 1回あたりの倍率
 // 火の強さによる変化。それぞれ「強さ ^ 指数」倍にする
-const FIRE_HEIGHT_EXP = 0.7;      // 炎の背の高さ（強さ 2 で約 1.6 倍）
+const FIRE_HEIGHT_EXP = 0.55;     // 炎の背の高さ（強さ 2 で約 1.5 倍）
+const FIRE_WIDTH_EXP = 0.4;       // 炎の根もとの広さ（強さ 2 で約 1.3 倍。背だけ伸ばすと細い柱になり、竜巻に見える）
 const FIRE_SIZE_EXP = 0.15;       // 炎の粒の大きさ（大きくしすぎると、炎が太い柱になる）
 const FIRE_TONGUE_EXP = 0.85;     // 炎の舌の数（強さ 2 で 5 → 9 本）
 const FIRE_LIGHT_EXP = 0.7;       // 明かりの強さ（強さ 2 で約 1.6 倍。比例させると周りが明るくなりすぎる）
@@ -54,17 +54,20 @@ const FIRE_LIGHT_EXP = 0.7;       // 明かりの強さ（強さ 2 で約 1.6 �
 const MAX_FLAMES = 1200;
 const FLAME_RATE = 220;           // 1 秒に生まれる粒の数（火の強さ 1 のとき）
 const FLAME_LIFE = [0.5, 1.0];    // 粒が消えるまでの秒数の範囲
-const FLAME_BASE_RADIUS = 0.3;    // 炎の舌の根もとがさまよう範囲の半径
+const FLAME_BASE_RADIUS = 0.3;    // 炎の舌の根もとがさまよう範囲の半径（火の強さ 1 のとき。強いほど広がる）
 const FLAME_RISE = 1.3;           // 上る速さ
 const FLAME_BUOYANCY = 1.0;       // 上るにつれて加速する強さ
 const FLAME_PULL = 1.6;           // 上るにつれて中心へ寄る強さ（炎の先が細くなる）
+const FLAME_LEAN = 0.6;           // 炎の先が風（SMOKE_WIND）の向きへ傾く強さ（高さの 2 乗に比例）
 const FLAME_SWAY = 0.12;          // 炎が揺らぐ幅（高いところほど大きく揺れる）
 const FLAME_TONGUES = 5;          // 炎の舌の数（火の強さ 1 のとき。同じ舌の粒はまとまって揺れる）
 const TONGUE_SPREAD = 0.07;       // 舌の太さ（粒が散らばる幅）
 const FLAME_SIZE = 0.42;          // 粒の大きさ
 const FLAME_OPACITY = 0.3;        // 粒の不透明度（火の強さ 1 のとき）
-const FLAME_COLORS = [            // 生まれてから消えるまでの色
-  [1.5, 1.0, 0.45], [1.5, 0.75, 0.2], [1.4, 0.5, 0.1], [1.1, 0.25, 0.04], [0.3, 0.04, 0.0],
+const LOW_FLAME_SHARE = 0.3;      // 炎の粒のうち、下に渡した薪から出る低い炎の割合
+const LOW_FLAME_SPAN = 0.4;       // 低い炎が出る範囲（薪の全長に対する割合。薪の中央から。端からは出さない）
+const FLAME_COLORS = [            // 生まれてから消えるまでの色（芯は黄白色でなく、黄みの強い橙。重なって白く飛ばないように）
+  [1.5, 0.72, 0.15], [1.5, 0.55, 0.1], [1.35, 0.36, 0.06], [1.0, 0.18, 0.03], [0.3, 0.04, 0.0],
 ];
 
 // 火の粉
@@ -98,22 +101,20 @@ const SMOKE_LIFE = 7;             // 消えるまでの秒数
 const SMOKE_START = 1.1;          // 煙が出始める高さ（火の強さ 1 のときの炎の先。炎の背の高さに合わせて変える）
 const SMOKE_RISE = 0.35;          // 上る速さ
 const SMOKE_WIND = [0.12, 0.04];  // 横へ流れる速さ (x, z)
-const SMOKE_SIZE = [0.5, 2.4];    // 生まれたとき / 消えるときの大きさ
-const SMOKE_OPACITY = 0.07;       // 不透明度
-const SMOKE_COLOR = [0.05, 0.05, 0.06];   // 遠くの煙の色
+const SMOKE_SIZE = [0.4, 1.7];    // 生まれたとき / 消えるときの大きさ（火の強さ 1 のとき。強いほど根もとの広がりに合わせて大きくなる）
+const SMOKE_OPACITY = 0.14;       // 不透明度（暗い夜空でも、淡い灰色の煙として見える程度）
+const SMOKE_VARIATION = { tone: [0.6, 1.3], size: [0.8, 1.25] };   // 粒ごとの濃さと大きさのばらつき（倍率の範囲。帯の単調さをなくす）
+const SMOKE_COLOR = [0.3, 0.31, 0.34];   // 遠くの煙の色（淡い灰色。暗いと煙に見えない）
 const SMOKE_LIT = [0.4, 0.16, 0.05];      // 炎に照らされた根もとの煙の色
-
-// おき火（薪の下で赤く光る炭）
-const COAL_COUNT = 70;
-const COAL_RADIUS = 0.42;         // 散らばる半径
-const COAL_SIZE = 0.06;
-const COAL_COLOR = [1.6, 0.35, 0.05];
 
 // 炎の明かり
 const FIRE_LIGHT_COLOR = 0xff9a4a;  // 明かりの色
 const FIRE_LIGHT_INTENSITY = 16;  // 火の強さ 1 のときの明るさ
 const FIRE_LIGHT_DECAY = 1.5;     // 距離による減衰（2 が現実どおり。小さいほど遠くの木まで照らす）
 const FIRE_LIGHT_HEIGHT = 1.1;    // 光源の高さ（火の強さ 1 のとき。炎の背に合わせて変える）
+const BASE_LIGHT_COLOR = 0xff3a10;   // 薪の根もとを照らす補助光の色（影なし）
+const BASE_LIGHT_INTENSITY = 4;   // 補助光の明るさ（火の強さ 1 のとき）
+const BASE_LIGHT_HEIGHT = 0.2;    // 補助光の高さ
 const FLICKER = 0.18;             // 明るさの揺らぎの幅
 const SHADOW_MAP_SIZE = 1024;     // 影のテクスチャの大きさ
 
@@ -122,9 +123,21 @@ const STONE_COUNT = 14;
 const STONE_RING = 0.78;          // 石を並べる半径
 const STONE_SIZE = 0.14;          // 石の大きさ（半径）
 const STONE_DETAIL = 1;           // 石の形の細かさ（正二十面体の分割数。0 で 20 面、1 で 80 面、2 で 320 面）
+const STONE_SMOOTH = 0.5;         // 石の陰影の滑らかさ (0..1)。0 で面ごとのフラット、1 で完全に滑らか。大きいとポリゴン感が減るが、角が丸く見える
 const STONE_ROUGHNESS = 0.5;      // 石の形の凸凹の強さ
 const STONE_COLOR = [0.5, 0.49, 0.47];   // 石の色（石の模様をかける）
 const LOG_COLOR = [0.42, 0.29, 0.19];    // 薪の色（樹皮の模様をかける）
+// 下に渡した 2 本の薪（中心線の両端 [x, y, z] と半径）。低い炎の根もとにもなる
+const BASE_LOGS = [
+  { from: [-0.5, 0.06, -0.2], to: [0.5, 0.06, 0.15], radius: 0.09 },
+  { from: [-0.15, 0.06, 0.5], to: [0.2, 0.06, -0.5], radius: 0.085 },
+];
+// 斜めに組む 5 本の、根もとの向き（度）。下に渡した 2 本の薪の端（約 17・107・202・292 度）を、なるべく避けて置く。
+// 5 本をできるだけ均等に置きつつ、端とのぶつかりを浅い食い込み（薪の半径の半分ほど）までに収めた
+const LEAN_LOG_ANGLES = [36, 126, 182, 238, 312];
+const LEAN_LOG_JITTER = 4;        // 向きのばらつき（度）。大きいと下の薪とぶつかる
+const LOG_BURN = 3;             // 下に渡した薪の中ほどの発光の倍率（燃えている薪に見せる）
+const LOG_EMISSIVE = [0.55, 0.11, 0.02];   // 薪が内側から赤く光る色（樹皮の明るい所ほど光る。明るさは明かりに合わせて変える。光る場所は薪ごとの濃淡で決める）
 const TEXTURE_BUMP = 0.6;         // 薪と石の模様で付ける凹凸の強さ
 
 // 地面
@@ -154,14 +167,15 @@ const BUSH_TIP_COLOR = [0.38, 0.48, 0.2];  // 葉先の色
 
 // 夜空
 const ZENITH = [0.05, 0.07, 0.26];      // 天頂はほのかな群青色
-const HORIZON = [0.08, 0.11, 0.18];     // 地平線の空の色（霧の色にも使う）
-const FOG_DENSITY = 0.03;         // 遠くを霞ませる霧の濃さ
+const HORIZON = [0.1, 0.14, 0.22];      // 地平線の空の色（霧の色にも使う）
+const FOG_DENSITY = 0.026;          // 遠くを霞ませる霧の濃さ
 const STAR_COUNT = 1800;
 const STAR_BRIGHTNESS = [0.6, 3];  // 星の明るさの範囲（暗い星ほど多い。1 を超えるとブルームでにじむ）
+const STAR_TWINKLE = { share: 0.3, depth: 0.5, freq: [1.2, 4] };   // またたく星の割合 (0..1)、明るさが下がる深さ (0..1。1 で消える)、またたく速さの範囲（rad/s）
 const STAR_SIZE = 4;              // 星の大きさ（画素。ブルームで四角くにじまないよう、ふちのぼけた丸にする。見た目はこれより小さい）
 // 夜空のほのかな明かり（空の色、地面の色、強さ）
-const AMBIENT = { sky: [0.25, 0.32, 0.5], ground: [0.08, 0.06, 0.05], intensity: 0.5 };
-const MOONLIGHT = { color: [0.55, 0.65, 0.9], intensity: 1.0, dir: [-0.5, 0.7, -0.4] };   // 背景の木の形が見えるよう、斜め上からの弱い寒色の光
+const AMBIENT = { sky: [0.25, 0.32, 0.5], ground: [0.08, 0.06, 0.05], intensity: 0.65 };
+const MOONLIGHT = { color: [0.55, 0.65, 0.9], intensity: 1.25, dir: [-0.5, 0.7, -0.4] };   // 背景の木の形が見えるよう、斜め上からの弱い寒色の光
 
 // 描画
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
@@ -269,7 +283,7 @@ const moonlight = new THREE.DirectionalLight(srgb(MOONLIGHT.color), MOONLIGHT.in
 moonlight.position.set(...MOONLIGHT.dir);
 scene.add(moonlight);
 
-// 炎の明かり。揺らぐので影も揺れる。点光源の影は 6 方向に描くので重い。影を落とすのは石だけにする
+// 炎の明かり。揺らぐので影も揺れる。点光源の影は 6 方向に描くので重い。影を落とすのは石だけ、受けるのは石の影が落ちる土だけにする
 const fireLight = new THREE.PointLight(FIRE_LIGHT_COLOR, FIRE_LIGHT_INTENSITY, 0, FIRE_LIGHT_DECAY);
 fireLight.castShadow = true;
 fireLight.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
@@ -277,6 +291,10 @@ fireLight.shadow.camera.near = 0.1;
 fireLight.shadow.camera.far = 80;
 fireLight.shadow.bias = -0.002;
 scene.add(fireLight);
+// 薪の根もとと石の内側を赤く照らす補助光。影は落とさない
+const baseLight = new THREE.PointLight(BASE_LIGHT_COLOR, BASE_LIGHT_INTENSITY, 2.5, 2);
+baseLight.position.set(0, BASE_LIGHT_HEIGHT, 0);
+scene.add(baseLight);
 
 // ---- 状態 ----
 let fire = BASE_FIRE;      // 火の強さ
@@ -286,7 +304,7 @@ let crackleWait = randomInterval(CRACKLE_INTERVAL);   // 次にはぜるまで�
 let lightLevel = 1;        // いまの明かりの強さ（火の強さ 1 で 1 前後）
 const flicker = { value: 1, target: 1, timer: 0 };     // 明かりの揺らぎ
 // 火の強さから決まる倍率（setFire で求める）
-const fireScale = { height: 1, speed: 1, size: 1, tongues: FLAME_TONGUES, opacity: FLAME_OPACITY, light: 1 };
+const fireScale = { height: 1, width: 1, speed: 1, size: 1, tongues: FLAME_TONGUES, opacity: FLAME_OPACITY, light: 1 };
 
 // ---- テクスチャ ----
 // canvas に描くテクスチャ。draw(context, 一辺の画素数) で描く
@@ -307,7 +325,7 @@ function repeatTexture(n, draw) {
   return texture;
 }
 
-// ふちのぼけた白い円（星、おき火の照り返し）
+// ふちのぼけた白い円（星、焚き火の照り返し）
 const softDotTexture = canvasTexture(64, (g, n) => {
   const r = n / 2;
   const grad = g.createRadialGradient(r, r, 0, r, r, r);
@@ -411,6 +429,8 @@ const sky = new THREE.Mesh(
   new THREE.ShaderMaterial({ ...SkyShader, side: THREE.BackSide, depthWrite: false }));
 sky.renderOrder = -1;
 scene.add(sky);
+let starColors;   // 星の色（またたかせるとき、もとの色から計算する）
+const twinklers = [];   // またたく星 { i, phase, freq }
 {
   const positions = new Float32Array(STAR_COUNT * 3);
   const colors = new Float32Array(STAR_COUNT * 3);
@@ -422,15 +442,26 @@ scene.add(sky);
     dir.multiplyScalar(SKY_RADIUS * 0.9).toArray(positions, i * 3);
     const b = STAR_BRIGHTNESS[0] + Math.pow(Math.random(), 3) * (STAR_BRIGHTNESS[1] - STAR_BRIGHTNESS[0]);   // 暗い星を多く
     colors.set([b, b, b * rand(0.9, 1.1)], i * 3);
+    if (Math.random() < STAR_TWINKLE.share) twinklers.push({ i, phase: rand(0, TAU), freq: randIn(STAR_TWINKLE.freq) });
   }
   const geometry = new THREE.BufferGeometry()
     .setAttribute('position', new THREE.BufferAttribute(positions, 3))
     .setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  starColors = { array: colors, base: colors.slice(), geometry };
   sky.add(new THREE.Points(geometry, new THREE.PointsMaterial({
     size: STAR_SIZE * renderer.getPixelRatio(), sizeAttenuation: false, vertexColors: true, fog: false,
     map: softDotTexture,   // 四角い点だとブルームで四角くにじむので、丸くぼかす
     transparent: true, depthWrite: false,
   })));
+}
+
+function updateStars() {
+  const { array, base, geometry } = starColors;
+  for (const t of twinklers) {
+    const k = 1 - STAR_TWINKLE.depth * (0.5 + 0.5 * Math.sin(t.phase + time * t.freq));
+    for (let c = 0; c < 3; c++) array[t.i * 3 + c] = base[t.i * 3 + c] * k;
+  }
+  geometry.attributes.color.needsUpdate = true;
 }
 
 // ---- 地面 ----
@@ -453,7 +484,6 @@ scene.add(sky);
   const ground = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
     color: srgb(GRASS_COLOR), map, vertexColors: true, roughness: 1,
   }));
-  ground.receiveShadow = true;
   scene.add(ground);
 }
 
@@ -466,7 +496,7 @@ scene.add(sky);
       polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,   // 地面とちらつかないように
     }));
   soil.position.y = 0.005;
-  soil.renderOrder = -1;   // おき火の照り返しより先に描く
+  soil.renderOrder = -1;   // 焚き火の照り返しより先に描く
   soil.receiveShadow = true;
   scene.add(soil);
 }
@@ -568,52 +598,102 @@ function stoneGeometry() {
     v.y = Math.max(v.y, STONE_BOTTOM);
     pos.setXYZ(i, v.x, v.y, v.z);
   }
+  // 法線は、位置が同じ頂点の面法線を平均した滑らかなものと、もとの面法線（フラット）を STONE_SMOOTH で混ぜる
   geometry.computeVertexNormals();
+  const normal = geometry.attributes.normal;
+  const flat = normal.array.slice();
+  const key = (i) => `${pos.getX(i).toFixed(4)},${pos.getY(i).toFixed(4)},${pos.getZ(i).toFixed(4)}`;
+  const sums = new Map();
+  for (let i = 0; i < pos.count; i++) {
+    const sum = sums.get(key(i)) ?? [0, 0, 0];
+    for (let c = 0; c < 3; c++) sum[c] += flat[i * 3 + c];
+    sums.set(key(i), sum);
+  }
+  for (let i = 0; i < pos.count; i++) {
+    const [sx, sy, sz] = sums.get(key(i));
+    const len = Math.hypot(sx, sy, sz) || 1;
+    v.set(
+      sx / len * STONE_SMOOTH + flat[i * 3] * (1 - STONE_SMOOTH),
+      sy / len * STONE_SMOOTH + flat[i * 3 + 1] * (1 - STONE_SMOOTH),
+      sz / len * STONE_SMOOTH + flat[i * 3 + 2] * (1 - STONE_SMOOTH)).normalize();
+    normal.setXYZ(i, v.x, v.y, v.z);
+  }
   return geometry;
 }
 {
   const stoneMap = stoneTexture();
   const material = new THREE.MeshStandardMaterial({
-    color: srgb(STONE_COLOR), flatShading: true, roughness: 0.95,
-    map: stoneMap, bumpMap: stoneMap, bumpScale: TEXTURE_BUMP,
+    color: srgb(STONE_COLOR), roughness: 0.95,
+    map: stoneMap, bumpMap: stoneMap, bumpScale: TEXTURE_BUMP, vertexColors: true,
   });
-  // 石ごとに形が違うので、1 個ずつ別のメッシュにする
+  // 石ごとに形が違うが、描画命令（影は 6 方向）を減らすため、1 つのメッシュに結合する。石ごとの明るさは頂点色で付ける
+  const geometries = [];
+  const placer = new THREE.Object3D();
   for (let i = 0; i < STONE_COUNT; i++) {
     const [x, z] = polar(STONE_RING + rand(-0.04, 0.04), (i + rand(-0.2, 0.2)) / STONE_COUNT * TAU);
-    const stone = new THREE.Mesh(stoneGeometry(), material.clone());
-    stone.material.color.multiplyScalar(rand(0.7, 1.1));
+    const geometry = stoneGeometry();
+    const shade = rand(0.7, 1.1);
+    geometry.setAttribute('color', new THREE.BufferAttribute(
+      new Float32Array(geometry.attributes.position.count * 3).fill(shade), 3));
     const size = STONE_SIZE * rand(0.85, 1.2);
-    stone.scale.set(size * rand(0.9, 1.3), size * rand(0.6, 0.85), size * rand(0.8, 1.1));
-    stone.position.set(x, -STONE_BOTTOM * stone.scale.y - 0.01, z);   // 底を地面に少し埋める
-    stone.rotation.set(rand(-0.15, 0.15), rand(0, TAU), rand(-0.15, 0.15));
-    stone.castShadow = true;
-    scene.add(stone);
+    placer.scale.set(size * rand(0.9, 1.3), size * rand(0.6, 0.85), size * rand(0.8, 1.1));
+    placer.position.set(x, -STONE_BOTTOM * placer.scale.y - 0.01, z);   // 底を地面に少し埋める
+    placer.rotation.set(rand(-0.15, 0.15), rand(0, TAU), rand(-0.15, 0.15));
+    placer.updateMatrix();
+    geometries.push(geometry.applyMatrix4(placer.matrix));
   }
+  const stones = new THREE.Mesh(mergeGeometries(geometries), material);
+  stones.castShadow = true;
+  scene.add(stones);
 }
 
 // 薪。円すい形に組んだ 5 本と、下に渡した 2 本
+const logGlows = [];   // [材質, 発光の倍率]。発光の強さを明かりに合わせて変える
 {
   const barkMap = barkTexture();
-  const material = new THREE.MeshStandardMaterial({
-    color: srgb(LOG_COLOR), roughness: 0.9, map: barkMap, bumpMap: barkMap, bumpScale: TEXTURE_BUMP,
-  });
+  // 光り方は、樹皮の模様に長さ方向の明暗（canvas の上 = 薪の先端側）をかけたもの
+  const glowMap = (stops) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.drawImage(barkMap.image, 0, 0);
+    g.globalCompositeOperation = 'multiply';
+    const grad = g.createLinearGradient(0, 0, 0, 128);
+    stops.forEach(([t, v]) => grad.addColorStop(t, gray(v)));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    const texture = new THREE.CanvasTexture(c);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  };
+  const logMaterial = (glow, boost) => {
+    const m = new THREE.MeshStandardMaterial({
+      color: srgb(LOG_COLOR), roughness: 0.9, map: barkMap, bumpMap: barkMap, bumpScale: TEXTURE_BUMP,
+      emissive: srgb(LOG_EMISSIVE), emissiveMap: glow, emissiveIntensity: 0,
+    });
+    logGlows.push([m, boost]);
+    return m;
+  };
+  // 斜めの薪は炎の中に入る先端ほど強く、下に渡した薪は炎の真下の中ほどが、薪自体が燃えているように強く光る
+  const tipMaterial = logMaterial(glowMap([[0, 255], [0.5, 110], [1, 30]]), 1);
+  const midMaterial = logMaterial(glowMap([[0, 20], [0.5, 255], [1, 20]]), LOG_BURN);
   const addLog = (from, to, radius) => {
+    const material = from.y === to.y ? midMaterial : tipMaterial;
     const dir = new THREE.Vector3().subVectors(to, from);
     const log = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, dir.length(), 8), material);
     log.position.addVectors(from, to).multiplyScalar(0.5);
     log.quaternion.setFromUnitVectors(THREE.Object3D.DEFAULT_UP, dir.normalize());
     scene.add(log);
   };
-  for (let i = 0; i < 5; i++) {
-    const a = (i + rand(-0.15, 0.15)) / 5 * TAU;
+  for (const angle of LEAN_LOG_ANGLES) {
+    const a = (angle + rand(-LEAN_LOG_JITTER, LEAN_LOG_JITTER)) / 360 * TAU;
     const [bx, bz] = polar(0.48, a), [tx, tz] = polar(0.06, a + 0.4);
     addLog(new THREE.Vector3(bx, 0.02, bz), new THREE.Vector3(tx, 0.62, tz), rand(0.05, 0.07));
   }
-  addLog(new THREE.Vector3(-0.5, 0.06, -0.2), new THREE.Vector3(0.5, 0.06, 0.15), 0.07);
-  addLog(new THREE.Vector3(-0.15, 0.06, 0.5), new THREE.Vector3(0.2, 0.06, -0.5), 0.065);
+  for (const { from, to, radius } of BASE_LOGS) addLog(new THREE.Vector3(...from), new THREE.Vector3(...to), radius);
 }
 
-// おき火に照らされた地面
+// 薪の火に照らされた地面
 const glowDisc = new THREE.Mesh(
   new THREE.PlaneGeometry(1.8, 1.8).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({
@@ -680,7 +760,6 @@ function flushParticles(sys, n) {
 
 const smoke = createParticles(MAX_SMOKE, { blending: THREE.NormalBlending, order: 1 });
 const flames = createParticles(MAX_FLAMES, { order: 2 });
-const coals = createParticles(COAL_COUNT, { order: 2 });
 const embers = createParticles(MAX_EMBERS, { minSize: 1.5, order: 3 });
 
 // ---- 炎 ----
@@ -693,11 +772,27 @@ const tongues = Array.from({ length: Math.ceil(FLAME_TONGUES * Math.pow(MAX_FIRE
 function updateTongues(dt) {
   for (const g of tongues) {
     g.angle += g.speed * dt;
-    g.radius = FLAME_BASE_RADIUS * (0.35 + 0.3 * Math.sin(time * 0.7 + g.seed));
+    g.radius = FLAME_BASE_RADIUS * fireScale.width * (0.35 + 0.3 * Math.sin(time * 0.7 + g.seed));
   }
 }
 
+// 下に渡した薪の上面から出る低い炎。背は低く、ゆっくり上る（薪の山の下の方が燃えて見えるように）
+function spawnLowFlame() {
+  const f = fireScale;
+  const { from, to, radius } = BASE_LOGS[randInt(BASE_LOGS.length)];
+  const t = 0.5 + rand(-0.5, 0.5) * LOW_FLAME_SPAN;
+  return {
+    x: from[0] + (to[0] - from[0]) * t, y: from[1] + radius * rand(0.5, 1.2), z: from[2] + (to[2] - from[2]) * t,
+    vy: FLAME_RISE * f.speed * rand(0.3, 0.5),
+    age: 0, life: randIn(FLAME_LIFE) * f.speed * 0.7,
+    size: FLAME_SIZE * rand(0.5, 0.8) * f.size,
+    opacity: f.opacity,
+    seed: rand(0, TAU),
+  };
+}
+
 function spawnFlame() {
+  if (rand(0, 1) < LOW_FLAME_SHARE) return spawnLowFlame();
   const f = fireScale;
   const g = tongues[randInt(f.tongues)];
   const [x, z] = polar(g.radius, g.angle);
@@ -715,7 +810,8 @@ function updateFlames(dt) {
   updateTongues(dt);
   emit(flames, FLAME_RATE * fire, dt, spawnFlame);
 
-  const pull = Math.exp(-FLAME_PULL * dt);
+  // 寿命が長いほど弱くして、強くしても炎の先の細り方の比率を変えない
+  const pull = Math.exp(-FLAME_PULL / fireScale.speed * dt);
   for (const p of flames.list) {
     p.age += dt;
     p.vy += FLAME_BUOYANCY * dt;
@@ -728,10 +824,13 @@ function updateFlames(dt) {
     const t = p.age / p.life;
     // 高いところほど大きく揺らぐ。高さで位相をずらして、炎の舌がうねるように
     const sway = FLAME_SWAY * p.y;
+    // うねりの位相は背の高さで割る（割らないと、強いほど波の数が増えて、らせん状の竜巻に見える）
+    const wy = p.y / fireScale.height;
+    const lean = FLAME_LEAN * p.y * p.y;
     writeParticle(flames, k,
-      p.x + sway * (Math.sin(time * 2.7 + p.y * 2.5) + 0.6 * Math.sin(time * 6.1 + p.y * 5 + p.seed)),
+      p.x + lean * SMOKE_WIND[0] + sway * (Math.sin(time * 2.7 + wy * 2.5) + 0.6 * Math.sin(time * 6.1 + wy * 5 + p.seed)),
       p.y,
-      p.z + sway * (Math.sin(time * 2.1 + p.y * 3.1 + 1) + 0.6 * Math.sin(time * 5.3 + p.y * 4 + p.seed)),
+      p.z + lean * SMOKE_WIND[1] + sway * (Math.sin(time * 2.1 + wy * 3.1 + 1) + 0.6 * Math.sin(time * 5.3 + wy * 4 + p.seed)),
       p.opacity * smoothstep(t, 0, 0.25) * (1 - smoothstep(t, 0.6, 1)),
       p.size * (1 - 0.5 * t));
     gradient(FLAME_COLORS, t, flames.color, k * 4);
@@ -805,8 +904,9 @@ const smokeLit = srgb(SMOKE_LIT).toArray();
 
 function updateSmoke(dt) {
   emit(smoke, SMOKE_RATE * fire, dt, () => ({
-    x: rand(-0.15, 0.15), y: SMOKE_START * fireScale.height, z: rand(-0.15, 0.15),
+    x: rand(-0.15, 0.15) * fireScale.width, y: SMOKE_START * fireScale.height, z: rand(-0.15, 0.15) * fireScale.width,
     age: 0, life: SMOKE_LIFE * rand(0.8, 1.2), seed: rand(0, TAU),
+    tone: randIn(SMOKE_VARIATION.tone), scale: randIn(SMOKE_VARIATION.size),
   }));
   for (const p of smoke.list) {
     p.age += dt;
@@ -818,28 +918,12 @@ function updateSmoke(dt) {
   smoke.list.forEach((p, k) => {
     const t = p.age / p.life;
     writeParticle(smoke, k, p.x, p.y, p.z,
-      SMOKE_OPACITY * Math.sin(Math.PI * t), SMOKE_SIZE[0] + (SMOKE_SIZE[1] - SMOKE_SIZE[0]) * t);
+      SMOKE_OPACITY * p.tone * Math.sin(Math.PI * t),
+      (SMOKE_SIZE[0] + (SMOKE_SIZE[1] - SMOKE_SIZE[0]) * t) * p.scale * fireScale.width);
     const lit = Math.max(0, 1 - t * 3) * lightLevel;   // 根もとほど炎の色に照らされる
     for (let c = 0; c < 3; c++) smoke.color[k * 4 + c] = smokeColor[c] + smokeLit[c] * lit;
   });
   flushParticles(smoke, smoke.list.length);
-}
-
-// ---- おき火 ----
-// 位置・色・大きさは変わらないので最初に書き込み、毎フレームは明るさ（不透明度）だけ変える
-const coalList = Array.from({ length: COAL_COUNT }, (_, i) => {
-  const [x, z] = polar(COAL_RADIUS * Math.sqrt(Math.random()), rand(0, TAU));
-  writeParticle(coals, i, x, rand(0.02, 0.08), z, 0, COAL_SIZE);
-  coals.color.set(COAL_COLOR, i * 4);
-  return { phase: rand(0, TAU), freq: rand(0.5, 2) };
-});
-
-function updateCoals() {
-  coalList.forEach((p, i) => {
-    const b = (0.5 + 0.5 * Math.sin(p.phase + time * p.freq)) * Math.min(lightLevel, 1.5);
-    coals.color[i * 4 + 3] = 0.3 + 0.7 * b;
-  });
-  flushParticles(coals, COAL_COUNT);
 }
 
 // ---- 明かり ----
@@ -859,6 +943,10 @@ function updateLight(dt) {
     0.06 * Math.sin(time * 3.1),
     FIRE_LIGHT_HEIGHT * (0.6 + 0.4 * fireScale.height) + 0.05 * Math.sin(time * 5.3),
     0.06 * Math.sin(time * 2.3 + 1));
+  baseLight.intensity = BASE_LIGHT_INTENSITY * lightLevel;
+  // 下に渡した薪は、ゆっくり脈打つ（ほかの揺らぎより遅く、燃え続ける熱に見せる）
+  const burn = 1 + 0.15 * Math.sin(time * 1.3);
+  for (const [m, boost] of logGlows) m.emissiveIntensity = Math.min(lightLevel, 1.5) * (boost > 1 ? boost * burn : 1);
   glowDisc.material.opacity = Math.min(1, 0.6 * lightLevel);
 }
 
@@ -882,9 +970,7 @@ function updateCrackle(dt) {
 // ---- カメラ ----
 function updateCamera() {
   const a = time * TAU / ORBIT_PERIOD;
-  const k = 0.5 - 0.5 * Math.cos(time * TAU / ZOOM_PERIOD);
-  const d = CAM_DIST[0] + (CAM_DIST[1] - CAM_DIST[0]) * k;
-  camera.position.set(Math.sin(a) * d, CAM_HEIGHT + 0.08 * Math.sin(time * 0.3), Math.cos(a) * d);
+  camera.position.set(Math.sin(a) * CAM_DIST, CAM_HEIGHT + 0.08 * Math.sin(time * 0.3), Math.cos(a) * CAM_DIST);
   camera.lookAt(0, CAM_TARGET_Y, 0);
   sky.position.copy(camera.position);
 }
@@ -895,12 +981,13 @@ function setFire(value) {
   fire = clamp(value, MIN_FIRE, MAX_FIRE);
   const f = fireScale;
   f.height = Math.pow(fire, FIRE_HEIGHT_EXP);
+  f.width = Math.pow(fire, FIRE_WIDTH_EXP);
   f.speed = Math.sqrt(f.height);   // 背の高さは、上る速さと寿命に半分ずつ配る
   f.size = Math.pow(fire, FIRE_SIZE_EXP);
   f.tongues = clamp(Math.round(FLAME_TONGUES * Math.pow(fire, FIRE_TONGUE_EXP)), 2, tongues.length);
-  // 粒の数は強さに比例し、寿命は speed 倍、炎の見かけの面積は height 倍（すその幅は変えない）。
-  // 重なりの明るさが強さ 1 のときと同じになるよう、1 粒の不透明度を下げる
-  f.opacity = Math.min(FLAME_OPACITY * f.speed / (fire * f.size * f.size), 0.8);
+  // 粒の数は強さに比例し、寿命は speed 倍、炎の見かけの面積は height 倍（根もとが広がるぶんは、白く飛ばさないよう半分だけ戻す）。
+  // 重なりの明るさが強さ 1 のときとほぼ同じになるよう、1 粒の不透明度を下げる
+  f.opacity = Math.min(FLAME_OPACITY * f.speed * Math.sqrt(f.width) / (fire * f.size * f.size), 0.8);
   f.light = Math.pow(fire, FIRE_LIGHT_EXP);
 }
 
@@ -911,7 +998,7 @@ function step(dt) {
   updateFlames(dt);
   updateEmbers(dt);
   updateSmoke(dt);
-  updateCoals();
+  updateStars();
   updateCrackle(dt);
   updateCamera();
 }
