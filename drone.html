@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="hud">
-  Course: <span id="course-name"></span><br>
+  Scene: <span id="scene-name"></span><br>
   <span class="pc-only">Space: 次のコース / F・ダブルクリック: 全画面 / ↑↓: 速度</span>
   <span class="touch-only">左右スワイプ: 次のコース / 上下スワイプ: 速度</span>
 </div>
@@ -106,7 +106,7 @@ const BLOOM = { strength: 0.7, radius: 0.45, threshold: 0.1 };
 // - rings: 輪を置くコース上の位置 0..1 の配列（省略すると RING_INTERVAL ごと）
 // - hue: 街の色相、ringHue: 輪の虹色の始まりの色相
 // - city: 街のパラメータ。waterZ（海）、bridge（吊り橋）、landmark（電波塔）は任意
-const COURSES = [
+const SCENES = [
   {
     name: 'Downtown',             // 大通りを低空で抜け、超高層ビルの谷間を急上昇して急降下
     seed: 11,
@@ -281,7 +281,7 @@ function updatePointScale() {
 // ---- 状態 ----
 let speed = BASE_SPEED;
 let velocity = BASE_SPEED;        // 坂で増減した実際の速度
-let courseIndex = 0;
+let sceneIndex = 0;
 let course;                       // createCourse() の戻り値
 let droneDist = 0;                // コース上の距離
 let bank = 0;
@@ -828,14 +828,14 @@ function disposeCourse(c) {
   scene.remove(c.group);
 }
 
-const courseNameEl = document.getElementById('course-name');
+const sceneNameEl = document.getElementById('scene-name');
 
-function loadCourse(index) {
-  courseIndex = (index + COURSES.length) % COURSES.length;
+function setScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
   if (course) disposeCourse(course);
-  course = createCourse(COURSES[courseIndex]);
+  course = createCourse(SCENES[sceneIndex]);
   scene.add(course.group);
-  courseNameEl.textContent = course.def.name;
+  sceneNameEl.textContent = course.def.name;
 
   droneDist = 0;
   velocity = speed;
@@ -847,7 +847,7 @@ function loadCourse(index) {
 }
 
 // ---- シーン切替 ----
-const nextCourse = () => fadeAndRun(() => loadCourse(courseIndex + 1));
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
 
 // ---- 強度 ----
 function setSpeed(value) {
@@ -873,7 +873,7 @@ function tick(now) {
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
   // シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
-  changeScene: nextCourse,
+  changeScene: nextScene,
   // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
   intensity: {
     up: () => setSpeed(speed * SPEED_STEP),
@@ -892,7 +892,7 @@ setupControls({
 // ---- 開始 ----
 updatePointScale();
 setSpeed(BASE_SPEED);
-loadCourse(randInt(COURSES.length));
+setScene(randInt(SCENES.length));
 renderer.setAnimationLoop(tick);
 </script>
 </body>

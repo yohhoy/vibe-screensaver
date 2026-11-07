@@ -30,7 +30,7 @@ const THUMB_WIDTH = 320;          // 確認用の画像の 1 コマの幅（px�
 // 作品ごとのシーンの定義。select はシーンを番号で選ぶ式で、i が番号。
 // 無い作品は場面を選べないので、1 場面だけ撮る
 const SCENES = {
-  drone: { names: 'COURSES', select: 'loadCourse(i)' },
+  drone: { names: 'SCENES', select: 'setScene(i)' },
   ripple: { names: 'SCENES', select: 'setScene(i)' },
   waterfall: { names: 'SCENES', select: 'setScene(i)' },
   penguins: { names: 'SCENES', select: 'setScene(i)' },

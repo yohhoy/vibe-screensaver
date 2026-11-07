@@ -134,7 +134,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 
 ### 作品ごとの注意
 
-- `COURSES` がある drone と、`SCENES` がある ripple・waterfall・penguins はシーン別に測る。ほかの作品は固定の乱数で 1 行だけ測る。
+- `SCENES` がある drone・ripple・waterfall・penguins はシーン別に測る。ほかの作品は固定の乱数で 1 行だけ測る。
 - tube の `THEMES` と aurora の `AURORA_PRESETS` は配色の定義なので、シーンとして分けない。
 - waterfall と diamond は倍率が高いと `MSAA` を切る（`MSAA_OFF_PIXEL_RATIO`）。waterfall は画素が増える Retina の方が軽い。
 - pipes はパイプが伸びるにつれて重くなる（描画命令は 15 秒の間に最大 2772 まで増える）。表の値は途中の中央値。

@@ -45,7 +45,7 @@ const CONDITIONS = [
 const PAGES = [
   { page: 'pipes' },
   { page: 'tube' },
-  { page: 'drone', scenes: 'COURSES', select: 'loadCourse(i)' },
+  { page: 'drone', scenes: 'SCENES', select: 'setScene(i)' },
   { page: 'ripple', scenes: 'SCENES', select: 'setScene(i)' },
   { page: 'campfire' },
   { page: 'jellyfish' },
