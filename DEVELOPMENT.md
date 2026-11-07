@@ -25,7 +25,7 @@
 | docs/video.md | 動画の書き出しと、変更前後の比較のツールの使い方 |
 | docs/performance.md | GPU 負荷の基準値と、測り方・比べ方 |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
-| tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる（[docs/performance.md](docs/performance.md)） |
+| tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
