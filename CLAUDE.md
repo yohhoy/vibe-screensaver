@@ -20,7 +20,7 @@ DEVELOPMENT.md は自動では読み込まない。作業に応じて必要な�
 
 ## 動画の書き出し
 
-SNS 投稿用などの動画は `node tools/video-export.mjs` で作る。先に [docs/video.md](docs/video.md) を読む（使い方と確認のしかた）。
+SNS 投稿用などの動画・静止画（PNG）は `node tools/video-export.mjs` で作る。先に [docs/video.md](docs/video.md) を読む（使い方と確認のしかた）。
 
 ## Git
 

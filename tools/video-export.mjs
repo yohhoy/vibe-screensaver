@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// 作品を 1 コマずつ描き出して、投稿用の動画（H.264）を作る。使い方と例は docs/video.md。
+// 作品を 1 コマずつ描き出して、投稿用の動画（H.264）か静止画（PNG）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--out 出力先.mp4]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--out 出力先.mp4|出力先.png]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
 import { spawn } from 'node:child_process';
-import { readFile, rename, rm, stat } from 'node:fs/promises';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -32,14 +32,16 @@ const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプショ�
 作品名: ${PAGES.join(' ')}
   --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）。番号ごとに 1 場面撮る
   --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。番号ごとに 1 場面撮る
-  --seconds S     1 場面の長さ（秒。既定 5）
+  --seconds S     1 場面の長さ（秒。既定 5。静止画では収録を始めてから撮るまでの秒数で、既定 0）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
-  --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し）
+  --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し。静止画では使わない）
   --seed N        乱数の種（既定 1）
   --hidden H      隠し要素（${Object.keys(HIDDEN).join('・')} のみ）。auto は作品に任せる（既定）、off は出さない、
                   秒の並び（例 2,8.5）は自然には出さず、動画のその時刻に呼び出す
   --at "秒:式"    動画の時刻に式を実行する。作品のスクリプトの変数を使える。複数指定できる
-  --out PATH      出力先（既定 <作品名>.mp4）。確認用の画像を <出力先>.thumbs.jpg に作る`;
+  --size WxH      静止画の大きさ（既定 1280x720。.png のときだけ）
+  --out PATH      出力先（既定 <作品名>.mp4）。.png なら、各場面の最後のコマを PNG にする（場面が複数なら <名前>-1.png のように番号を付ける）。
+                  動画では確認用の画像を <出力先>.thumbs.jpg に作る`;
 
 // ---- ページに差し込む処理 ----
 // <body> の直後に置く。common.js のあと、作品のモジュールの前に実行される
@@ -90,7 +92,7 @@ ${SEEDED_RANDOM}
 
     const results = [];
     let frame = 0;
-    for (const scene of plan.scenes) {
+    for (const [sceneIndex, scene] of plan.scenes.entries()) {
       if (scene !== null) {
         if (scene >= names.length) throw new Error('番号は 0〜' + (names.length - 1) + ': ' + names.join(', '));
         select(scene);
@@ -98,6 +100,7 @@ ${SEEDED_RANDOM}
       for (let i = 0; i < plan.warmupFrames; i++) {
         advance();
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // 命令を溜めすぎないよう、GPU の完了を待つ
+        if (i % 300 === 299) await post('/__alive');                 // 長い準備の間も、止まっていないと伝える
       }
       let level = 0;
       for (let i = 0; i < plan.sceneFrames; i++, frame++) {
@@ -105,14 +108,15 @@ ${SEEDED_RANDOM}
         for (const f of plan.summonFrames) if (f === frame) summon();
         advance();
         if (i === plan.sceneFrames >> 1) level = brightness();
+        if (plan.still && i < plan.sceneFrames - 1) continue;   // 静止画は最後のコマだけ撮る
         const fade = plan.fadeFrames ? Math.min(1, i / plan.fadeFrames, (plan.sceneFrames - 1 - i) / plan.fadeFrames) : 1;
         ctx.globalAlpha = 1;
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.globalAlpha = fade;
         ctx.drawImage(source, 0, 0);
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', plan.jpegQuality));
-        await post('/__frame?n=' + frame, blob);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, plan.still ? 'image/png' : 'image/jpeg', plan.jpegQuality));
+        await post(plan.still ? '/__still?n=' + sceneIndex : '/__frame?n=' + frame, blob);
       }
       results.push({ name: scene !== null ? names[scene] : null, level });
     }
@@ -192,8 +196,9 @@ function parseOptions() {
     options: {
       scenes: { type: 'string' },
       presets: { type: 'string' },
-      seconds: { type: 'string', default: '5' },
+      seconds: { type: 'string' },
       warmup: { type: 'string', default: '3' },
+      size: { type: 'string' },
       fade: { type: 'string', default: '0.5' },
       seed: { type: 'string', default: '1' },
       hidden: { type: 'string', default: 'auto' },
@@ -206,10 +211,18 @@ function parseOptions() {
   if (values.scenes && CHOICES[page]?.option !== 'scenes') throw new Error(`${page} にシーンの定義は無い。--scenes は ${pagesWith('scenes')} だけで使える`);
   if (values.presets && CHOICES[page]?.option !== 'presets') throw new Error(`${page} に配色の定義は無い。--presets は ${pagesWith('presets')} だけで使える`);
 
-  const seconds = Number(values.seconds);
-  const fade = Number(values.fade);
+  // 出力先が .png なら静止画（各場面の最後のコマを PNG にする）
+  const out = path.resolve(values.out ?? `${page}.mp4`);
+  const still = /\.png$/i.test(out);
+  if (!still && !/\.mp4$/i.test(out)) throw new Error(`--out は .mp4（動画）か .png（静止画）: ${out}`);
+  if (!still && values.size) throw new Error('--size は静止画（.png）だけで使える。動画は 1280x720 に固定している');
+  const size = values.size?.match(/^(\d+)x(\d+)$/);
+  if (values.size && !(size && Number(size[1]) >= 16 && Number(size[2]) >= 16)) throw new Error(`--size は「幅x高さ」で書く（例 1920x1080）: ${values.size}`);
+
+  const seconds = Number(values.seconds ?? (still ? 0 : 5));
+  const fade = still ? 0 : Number(values.fade);
   const warmup = Number(values.warmup);
-  if (!(seconds > 0) || !(warmup >= 0) || !(fade >= 0)) throw new Error(USAGE);
+  if (!(seconds >= 0) || (!still && !(seconds > 0)) || !(warmup >= 0) || !(fade >= 0)) throw new Error(USAGE);
   if (fade * 2 > seconds) throw new Error('--fade は --seconds の半分以下にする');
 
   // null は場面を選ばず、起動時の場面のまま撮る
@@ -219,7 +232,7 @@ function parseOptions() {
     if (!Number.isInteger(n) || n < 0) throw new Error(`--${option} の番号が正しくない: ${v}`);
     return n;
   }) ?? [null];
-  const sceneFrames = Math.round(seconds * FPS);
+  const sceneFrames = Math.max(1, Math.round(seconds * FPS));   // 静止画は 0 秒でも 1 コマ撮る
   const totalFrames = scenes.length * sceneFrames;
   // 隠し要素: auto（作品に任せる）・off（出さない）・秒の並び（その時刻に呼び出す）
   const hiddenTimes = ['auto', 'off'].includes(values.hidden) ? [] : values.hidden.split(',').map(Number);
@@ -235,9 +248,10 @@ function parseOptions() {
     page,
     hidden: { mode: values.hidden === 'auto' ? 'auto' : 'off' },
     seed: values.seed,
-    out: path.resolve(values.out ?? `${page}.mp4`),
+    out,
     plan: {
-      width: WIDTH, height: HEIGHT, fps: FPS, jpegQuality: JPEG_QUALITY,
+      width: size ? Number(size[1]) : WIDTH, height: size ? Number(size[2]) : HEIGHT, fps: FPS, jpegQuality: JPEG_QUALITY,
+      still,
       scenes, sceneFrames, at,
       summonFrames: hiddenTimes.map((t) => Math.round(t * FPS)),
       warmupFrames: Math.round(warmup * FPS),
@@ -251,7 +265,9 @@ async function main() {
   const { page, hidden, seed, out, plan, totalFrames } = parseOptions();
   const partial = `${out}.part`;
   const thumbs = `${out.replace(/\.mp4$/, '')}.thumbs.jpg`;
-  const { encoder, finished } = startEncoder(partial);
+  // 静止画は ffmpeg を使わず、ページが送ってきた PNG をそのまま書く
+  const { encoder, finished } = plan.still ? { encoder: null, finished: Promise.resolve() } : startEncoder(partial);
+  const stills = new Map();   // 場面の番号 → PNG
 
   let settle;
   const done = new Promise((resolve, reject) => { settle = { resolve, reject }; });
@@ -266,12 +282,21 @@ async function main() {
     const reply = (code, type, body) => { res.writeHead(code, type ? { 'content-type': type } : {}); res.end(body); };
     if (name === 'favicon.ico') return reply(204);
     if (name === '__plan') return reply(200, 'application/json', JSON.stringify(plan));
-    if (name === '__frame' || name === '__done') {
+    if (name === '__alive') {
+      lastFrameAt = Date.now();
+      return reply(200);
+    }
+    if (name === '__frame' || name === '__done' || name === '__still') {
       const chunks = [];
       for await (const c of req) chunks.push(c);
       const body = Buffer.concat(chunks);
       if (name === '__done') {
         settle.resolve(JSON.parse(body));
+        return reply(200);
+      }
+      if (name === '__still') {
+        lastFrameAt = Date.now();
+        stills.set(Number(url.searchParams.get('n')), body);
         return reply(200);
       }
       // 送り直されたコマは書かない。ffmpeg が受け取ってから返すと、ページが先走らずメモリも溜まらない
@@ -311,28 +336,38 @@ async function main() {
     await cdp.send('Log.enable');
     await cdp.send('Page.enable');
     // --window-size は当てにならず、高さが奇数になると H.264 で失敗する。大きさはここで固定する
-    await cdp.send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: plan.width, height: plan.height, deviceScaleFactor: 1, mobile: false });
     await cdp.send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${page}.html?seed=${encodeURIComponent(seed)}` });
 
     const results = await done;
-    encoder.stdin.end();
-    await finished;
-    await verify(partial, totalFrames);
-    await rename(partial, out);
-    await makeThumbs(out, thumbs, totalFrames);
-
+    // リポジトリの中なら短く出す
+    const shown = (file) => { const r = path.relative(process.cwd(), file); return r.startsWith('..') ? file : r; };
+    const names = results.map((r) => r.name).filter(Boolean).join(' / ');
+    if (plan.still) {
+      // 場面が複数なら <名前>-1.png のように番号を付ける
+      const files = results.map((_, i) => (results.length === 1 ? out : out.replace(/\.png$/i, `-${i + 1}.png`)));
+      for (const [i, file] of files.entries()) {
+        if (!stills.has(i)) throw new Error(`場面 ${i + 1} の静止画が届かなかった`);
+        await writeFile(file, stills.get(i));
+        const { size } = await stat(file);
+        console.log(`${shown(file)}: ${plan.width}x${plan.height} PNG ${(size / 1e6).toFixed(1)}MB${results[i].name ? ` [${results[i].name}]` : ''}`);
+      }
+    } else {
+      encoder.stdin.end();
+      await finished;
+      await verify(partial, totalFrames);
+      await rename(partial, out);
+      await makeThumbs(out, thumbs, totalFrames);
+      const { size } = await stat(out);
+      console.log(`${shown(out)}: ${WIDTH}x${HEIGHT} ${FPS}fps ${(totalFrames / FPS).toFixed(1)}秒 ${totalFrames}コマ ${(size / 1e6).toFixed(1)}MB${names ? ` [${names}]` : ''}`);
+      console.log(`確認用の画像: ${shown(thumbs)}`);
+    }
     for (const [i, r] of results.entries()) {
       if (r.level < BLANK_LEVEL) console.error(`警告: 場面 ${i + 1}${r.name ? `（${r.name}）` : ''} の中ほどのコマが真っ暗（最大 ${r.level}）`);
     }
-    const names = results.map((r) => r.name).filter(Boolean).join(' / ');
-    const { size } = await stat(out);
-    // リポジトリの中なら短く出す
-    const shown = (file) => { const r = path.relative(process.cwd(), file); return r.startsWith('..') ? file : r; };
-    console.log(`${shown(out)}: ${WIDTH}x${HEIGHT} ${FPS}fps ${(totalFrames / FPS).toFixed(1)}秒 ${totalFrames}コマ ${(size / 1e6).toFixed(1)}MB${names ? ` [${names}]` : ''}`);
-    console.log(`確認用の画像: ${shown(thumbs)}`);
   } catch (e) {
     // 止まるのを待ってから消す。先に消すと、ffmpeg が作り直して残ることがある
-    encoder.kill('SIGKILL');
+    encoder?.kill('SIGKILL');
     await finished.catch(() => {});
     await rm(partial, { force: true });
     throw e;

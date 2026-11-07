@@ -1,12 +1,26 @@
 # 動画の書き出し
 
-SNS 投稿用などの動画は、`tools/video-export.mjs` で作る。画面を録画せずに 1 コマずつ描き出すので、コマ落ちせず、同じ種からは同じ映像ができる。形式は 1280×720・30fps の H.264 に固定している。
+SNS 投稿用などの動画と静止画は、`tools/video-export.mjs` で作る。画面を録画せずに 1 コマずつ描き出すので、コマ落ちせず、同じ種からは同じ映像ができる。形式は 1280×720・30fps の H.264 に固定している。
 
 ```sh
 node tools/video-export.mjs waterfall --scenes 0,1,2 --seconds 5 --out out.mp4
 ```
 
 依存は Node.js（22 以降）、Google Chrome、ffmpeg（ffprobe を含む）。作品の HTML は変更しない。オプションの一覧は、引数なしで実行すると出る。
+
+## 静止画
+
+`--out` を `.png` にすると、動画の代わりに静止画（PNG）を作る。各場面の最後のコマを、JPEG を通さずにそのまま書く。
+
+```sh
+node tools/video-export.mjs sandpicture --presets 0 --hidden off --warmup 190 --size 1920x1080 --out desert.png
+```
+
+- `--warmup` が準備の長さ（絵を進める秒数）で、そのあとに `--seconds`（既定 0）だけ進めた最後のコマを撮る。砂が積もりきるまで待つ作品などは、`--warmup` を長くする。
+- `--size 幅x高さ` で大きさを決める（既定 1280x720）。動画は 1280x720 に固定で、`--size` は使えない。
+- 場面が複数なら、`desert-1.png`・`desert-2.png` のように番号を付ける。
+- `--fade` は使わない。`--scenes`・`--presets`・`--hidden`・`--at`・`--seed` は動画と同じに使える。
+- 動画の確認用の画像（`.thumbs.jpg`）は作らない。画像を開くときは、縮小した 1〜2 枚にする。
 
 ## 場面の指定
 

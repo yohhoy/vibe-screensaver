@@ -28,9 +28,9 @@
 | docs/performance.md | GPU 負荷の基準値と、測り方・比べ方 |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
 | tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
-| tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
+| tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
-| tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧を持たせたときに直す |
+| tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
 | tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
 
@@ -143,6 +143,7 @@ setupControls({
 - 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。隠し要素（sandpicture のラクダ、aurora のサンタなど）は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。作品の変数で出ないようにしてから撮る（`video-export.mjs` なら `--hidden off`）。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
+- 隠し要素を持たせるときは、出現の処理を作品のトップレベルの `function start○○()`（蜘蛛なら `startSpider`）にし、待ち時間が切れたときの自然な出現も、隠しキー（C）も、この関数を呼ぶ。状態は `spider`（出ていれば値、無ければ `null`）と `spiderWait`（次に出るまでの秒数）のように、節の中に置く。そのうえで `tools/pages.mjs` の `HIDDEN` に関数名を足す。`video-export.mjs` の `--hidden` は、この関数を差し替えて出現を止め、呼び出す時刻を決める（[docs/video.md](docs/video.md)）。作品の内側に閉じ込めた処理（クロージャの中の待ち時間など）では、外から止められない。
 - 見た目のための乱数を足すときは、既存の乱数を引く順番を変えない（既存の乱数を全部引いたあとに引くか、`Math.random` を使わない別の乱数にする）。`Math.random` を引く回数や順番が変わると、そのあとの乱数の列がすべてずれ、配置などが変わって、video-compare で同じ絵どうしを比べられなくなる。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
 - 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
@@ -156,3 +157,5 @@ setupControls({
 - three.js は UUID を作るのに `Math.random` を使う。テクスチャや材質を作る順番を変えると乱数の列がずれ、コードが正しくても画像が変わる。比べるときは、変更前のコードも作る順番を揃える。
 - `setAnimationLoop` を止めて 1 回だけ描くと、撮影した画像が空白になることがある。同じコマを描き続けて撮る。
 - 空白の画像どうしでも差は 0 になる。差だけでなく、画像に中身があることも確かめる。
+- 状態の初期値で乱数を引くと、コースや配置を作る乱数より先に引くことになり、乱数の列がずれる。変更前に別の場所（シーン切替のたびに呼ぶ関数など）で引いていたなら、初期値は `0` などにして、引く場所と順番を変えない（tube.html の `hatchWait` は、`loadCourse` から呼ぶ `hideHatch` で決める）。他作品の `randomInterval` で初期化する書き方に揃えるのは、見た目が変わってよいときだけにする。
+- 隠し要素は、自然に出るまで待つと比べる映像に出ないことがある。`--at` で呼び出して、出ている場面も比べる。
