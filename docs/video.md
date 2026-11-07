@@ -10,7 +10,9 @@ node tools/video-export.mjs waterfall --scenes 0,1,2 --seconds 5 --out out.mp4
 
 ## 場面の指定
 
-シーンの定義がある drone・ripple・waterfall・penguins・sandpicture は、`--scenes` に場面の番号を並べる。範囲外の番号を渡すと、エラーに場面の名前の一覧が出る。省くと、起動時に乱数で選ばれた場面だけを撮る（どの場面になるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+シーンの定義（`SCENES`）がある drone・ripple・waterfall・penguins は `--scenes` にシーンの番号を、配色の定義（`COLOR_PRESETS`）がある tube・aurora・lavalamp・sandpicture は `--presets` に配色の番号を並べる。番号ごとに 1 場面ずつ撮る。範囲外の番号を渡すと、エラーに名前の一覧が出る（名前の無い tube・lavalamp の配色は `#0` のような番号）。省くと、作品が起動時に選んだシーン・配色のまま 1 場面だけを撮る（どれになるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+
+`--presets` で選ぶとき、tube・aurora・lavalamp は配色だけを替える（コース・幕・小物などは起動時のまま）。sandpicture は配色を替えて、新しい絵から撮る。
 
 各場面の前に `--warmup` の秒数だけ進めてから収録を始める。起動直後は絵が揃っていない作品（パイプが伸びていない pipes など）では長めにする。
 
@@ -42,7 +44,8 @@ node tools/video-export.mjs aurora --seconds 15 --warmup 0 --at "1:startSanta()"
 node tools/video-compare.mjs waterfall --scenes 0,2 --case "少ない:setWater(0.13)" --case "標準:setWater(1)" --open
 ```
 
-- `--base` で比べる版を選ぶ。git のコミット（既定は `HEAD`）か、控えておいた作品の HTML のパスを渡す。HTML のパスなら、`common.js` などは `HEAD` のものを使う。
+- `--base` で比べる版を選ぶ。git のコミット（既定は `HEAD`）か、控えておいた作品の HTML のパスを渡す。HTML のパスなら、`common.js` などは `HEAD` のものを使う。撮影の処理（video-export.mjs・common.mjs・pages.mjs）は、どちらの版にも作業ツリーのものを使う。
+- `--scenes`・`--presets` は video-export と同じ。比べる版にその一覧（`SCENES`・`COLOR_PRESETS`）が無いと、撮影がエラーで止まる。
 - `--case "名前:式"` で列を足す。収録の最初に式を実行するので、強度などの条件を作品ごとの式で渡せる（式は `--at` と同じく作品のスクリプトの中で評価する）。省くと 1 列だけ撮る。
 - フェードは入れない。読み込みの失敗（`net::ERR_`）で撮影が止まったら、自動で撮り直す。
 - 動画は横 1920px までに収める。

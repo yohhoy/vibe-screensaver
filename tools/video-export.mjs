@@ -1,21 +1,19 @@
 #!/usr/bin/env node
 // 作品を 1 コマずつ描き出して、投稿用の動画（H.264）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--at "秒:式"]... [--out 出力先.mp4]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--at "秒:式"]... [--out 出力先.mp4]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
+import { readFile, rename, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { ROOT, SEEDED_RANDOM, connectCdp, launchChrome, run } from './common.mjs';
+import { CHOICES, PAGES, choiceExpressions, pagesWith } from './pages.mjs';
 
 // ---- 設定 ----
-const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const WIDTH = 1280;
 const HEIGHT = 720;
 const FPS = 30;
@@ -27,21 +25,13 @@ const THUMBS_COLS = 4;            // 確認用の画像の列数
 const THUMBS_ROWS = 3;            // 確認用の画像の行数
 const THUMB_WIDTH = 320;          // 確認用の画像の 1 コマの幅（px）
 
-// 作品ごとのシーンの定義。select はシーンを番号で選ぶ式で、i が番号。
-// 無い作品は場面を選べないので、1 場面だけ撮る
-const SCENES = {
-  drone: { names: 'SCENES', select: 'setScene(i)' },
-  ripple: { names: 'SCENES', select: 'setScene(i)' },
-  waterfall: { names: 'SCENES', select: 'setScene(i)' },
-  penguins: { names: 'SCENES', select: 'setScene(i)' },
-  sandpicture: { names: 'SCENES', select: 'setScene(i)' },
-};
-const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture'];
+// 場面の選び方（--scenes・--presets）は pages.mjs の CHOICES。引数を省くと、作品が起動時に選んだ場面のまま 1 場面だけ撮る
 
 const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプション]
 
 作品名: ${PAGES.join(' ')}
-  --scenes 0,1,2  場面の番号（${Object.keys(SCENES).join('・')} のみ）
+  --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）。番号ごとに 1 場面撮る
+  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。番号ごとに 1 場面撮る
   --seconds S     1 場面の長さ（秒。既定 5）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し）
@@ -53,15 +43,7 @@ const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプショ�
 // <body> の直後に置く。common.js のあと、作品のモジュールの前に実行される
 const PRELUDE = `<script>
 (() => {
-  // 同じ種から同じ動画を作るため、乱数を固定する（mulberry32）
-  let s = new URLSearchParams(location.search).get('seed') >>> 0;
-  Math.random = () => {
-    s = (s + 0x6D2B79F5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+${SEEDED_RANDOM}
   let now = 0;
   performance.now = () => now;
 
@@ -108,7 +90,7 @@ const PRELUDE = `<script>
     let frame = 0;
     for (const scene of plan.scenes) {
       if (scene !== null) {
-        if (scene >= names.length) throw new Error('場面の番号は 0〜' + (names.length - 1) + ': ' + names.join(', '));
+        if (scene >= names.length) throw new Error('番号は 0〜' + (names.length - 1) + ': ' + names.join(', '));
         select(scene);
       }
       for (let i = 0; i < plan.warmupFrames; i++) {
@@ -141,9 +123,7 @@ function instrument(html, page) {
   const anchor = 'renderer.setAnimationLoop(tick);';
   if (html.split('<body>').length !== 2) throw new Error(`${page}: <body> が 1 か所ではない`);
   if (html.split(anchor).length !== 2) throw new Error(`${page}: 「${anchor}」が 1 か所ではない`);
-  const def = SCENES[page];
-  const select = def ? `(i) => { ${def.select}; }` : 'null';
-  const names = def ? `${def.names}.map((s) => s.name)` : 'null';
+  const { select, names } = choiceExpressions(page);
   // evaluate は作品のモジュールの中で eval するので、--at の式から作品の変数が見える
   return html
     .replace('<body>', () => `<body>\n${PRELUDE}`)
@@ -151,18 +131,6 @@ function instrument(html, page) {
 }
 
 // ---- ffmpeg ----
-function run(command, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', reject);
-    child.on('exit', (code) => (code === 0 ? resolve(out) : reject(new Error(`${command} が失敗した (${code})\n${err}`))));
-  });
-}
-
 function startEncoder(output) {
   const encoder = spawn('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y',
@@ -203,64 +171,10 @@ function makeThumbs(file, thumbs, frames) {
 }
 
 // ---- Chrome ----
-async function launchChrome() {
-  const userDataDir = await mkdtemp(path.join(tmpdir(), 'video-export-'));   // 普段のプロフィールと分ける
-  const chrome = spawn(CHROME, [
-    '--headless=new',
-    `--user-data-dir=${userDataDir}`,
-    '--remote-debugging-port=0',
-    '--use-angle=metal',            // ソフトウェア描画に落ちないよう、実際の GPU を使わせる
-    '--ignore-gpu-blocklist',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
-    '--no-first-run',
-    '--no-default-browser-check',
-    'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  const wsUrl = await new Promise((resolve, reject) => {
-    let log = '';
-    chrome.stderr.on('data', (d) => {
-      log += d;
-      const m = log.match(/DevTools listening on (ws:\S+)/);
-      if (m) resolve(m[1]);
-    });
-    chrome.on('exit', (code) => reject(new Error(`Chrome が終了した (${code})\n${log}`)));
-  });
-  return { chrome, wsUrl, userDataDir };
-}
-
-// ページのタブにつなぎ、エラーは onError に渡す
+// ページのタブにつなぐ。ページのエラーが起きたら onError に渡す
 async function connectPage(wsUrl, onError) {
   const list = await (await fetch(`http://${new URL(wsUrl).host}/json/list`)).json();
-  const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true });
-    ws.addEventListener('error', reject, { once: true });
-  });
-  let id = 0;
-  const pending = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && pending.has(m.id)) {
-      const { resolve, reject } = pending.get(m.id);
-      pending.delete(m.id);
-      if (m.error) reject(new Error(m.error.message));
-      else resolve(m.result);
-    } else if (m.method === 'Runtime.exceptionThrown') {
-      const d = m.params.exceptionDetails;
-      onError(new Error(`ページのエラー: ${(d.exception?.description ?? d.text).split('\n')[0]}`));
-    } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
-      onError(new Error(`ページのエラー: ${m.params.entry.text}`));
-    }
-  });
-  return {
-    ws,
-    send: (method, params = {}) => new Promise((resolve, reject) => {
-      pending.set(++id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params }));
-    }),
-  };
+  return connectCdp(list.find((t) => t.type === 'page').webSocketDebuggerUrl, (text) => onError(new Error(`ページのエラー: ${text.split('\n')[0]}`)));
 }
 
 // ---- 収録 ----
@@ -269,6 +183,7 @@ function parseOptions() {
     allowPositionals: true,
     options: {
       scenes: { type: 'string' },
+      presets: { type: 'string' },
       seconds: { type: 'string', default: '5' },
       warmup: { type: 'string', default: '3' },
       fade: { type: 'string', default: '0.5' },
@@ -279,7 +194,8 @@ function parseOptions() {
   });
   const page = positionals[0];
   if (positionals.length !== 1 || !PAGES.includes(page)) throw new Error(USAGE);
-  if (values.scenes && !SCENES[page]) throw new Error(`${page} にシーンの定義は無い。--scenes は ${Object.keys(SCENES).join('・')} だけで使える`);
+  if (values.scenes && CHOICES[page]?.option !== 'scenes') throw new Error(`${page} にシーンの定義は無い。--scenes は ${pagesWith('scenes')} だけで使える`);
+  if (values.presets && CHOICES[page]?.option !== 'presets') throw new Error(`${page} に配色の定義は無い。--presets は ${pagesWith('presets')} だけで使える`);
 
   const seconds = Number(values.seconds);
   const fade = Number(values.fade);
@@ -288,9 +204,10 @@ function parseOptions() {
   if (fade * 2 > seconds) throw new Error('--fade は --seconds の半分以下にする');
 
   // null は場面を選ばず、起動時の場面のまま撮る
-  const scenes = values.scenes?.split(',').map((v) => {
+  const option = CHOICES[page]?.option;
+  const scenes = values[option]?.split(',').map((v) => {
     const n = Number(v);
-    if (!Number.isInteger(n) || n < 0) throw new Error(`--scenes の番号が正しくない: ${v}`);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`--${option} の番号が正しくない: ${v}`);
     return n;
   }) ?? [null];
   const sceneFrames = Math.round(seconds * FPS);
@@ -366,7 +283,7 @@ async function main() {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
-  const { chrome, wsUrl, userDataDir } = await launchChrome();
+  const { chrome, wsUrl, userDataDir } = await launchChrome('video-export');
   chrome.on('exit', (code) => settle.reject(new Error(`Chrome が終了した (${code})`)));
   const stallTimer = setInterval(() => {
     if (Date.now() - lastFrameAt > STALL_MS) settle.reject(new Error(`${STALL_MS / 1000} 秒間コマが届かない（${received}/${totalFrames} コマで停止）`));

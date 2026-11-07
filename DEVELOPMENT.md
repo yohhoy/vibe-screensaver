@@ -30,6 +30,8 @@
 | tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して動画を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
+| tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧を持たせたときに直す |
+| tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。

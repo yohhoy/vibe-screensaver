@@ -10,15 +10,14 @@
 // 依存は Node.js（22 以降。標準の WebSocket を使う）と Google Chrome だけ。macmon があれば GPU の温度とクロックも記録する。
 import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import { copyFile, readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { ROOT, SEEDED_RANDOM, checkoutBase, connectCdp, launchChrome } from './common.mjs';
+import { CHOICES, PAGES as PAGE_NAMES, choiceExpressions } from './pages.mjs';
 
 // ---- 設定 ----
-const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SEED = 12345;              // Math.random を置き換える乱数の種
 const STEP_MS = 1000 / 30;       // 1 コマで進める時間（ms）
 const SETTLE_FRAMES = 30;        // 計測と同じ手順で描くが、結果に入れない最初のコマ数。シェーダーのコンパイルを済ませ、
@@ -40,36 +39,15 @@ const CONDITIONS = [
   { name: 'Retina', width: 1280, height: 832, dpr: 2 },
 ];
 
-// 作品ごとのシーン。select はシーンを切り替える式で、i が番号。
-// scenes が無い作品（シーンの定義が無く、乱数で変わるだけの作品）は 1 行だけ測る
-const PAGES = [
-  { page: 'pipes' },
-  { page: 'tube' },
-  { page: 'drone', scenes: 'SCENES', select: 'setScene(i)' },
-  { page: 'ripple', scenes: 'SCENES', select: 'setScene(i)' },
-  { page: 'campfire' },
-  { page: 'jellyfish' },
-  { page: 'aurora' },
-  { page: 'waterfall', scenes: 'SCENES', select: 'setScene(i)' },
-  { page: 'lavalamp' },
-  { page: 'penguins', scenes: 'SCENES', select: 'setScene(i)' },
-  { page: 'diamond' },
-  { page: 'sandpicture' },
-];
+// 作品ごとのシーン（pages.mjs の CHOICES）。scenes はシーン別に測るか。
+// シーンの定義（SCENES）が無い作品は 1 行だけ測る。配色の定義（COLOR_PRESETS）はシーンとして分けない
+const PAGES = PAGE_NAMES.map((page) => ({ page, scenes: CHOICES[page]?.option === 'scenes' }));
 
 // ---- ページに差し込む処理 ----
 // 作品のスクリプトより先に実行し、乱数と時計を固定する
 const PRELUDE = `<script>
 (() => {
-  // 同じコマの列を描くため、乱数を固定する（mulberry32）
-  let s = Number(new URLSearchParams(location.search).get('seed')) >>> 0;
-  Math.random = () => {
-    s = (s + 0x6D2B79F5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+${SEEDED_RANDOM}
   // 作品が読む時計は仮の時計にする。本物の時計は計測にだけ使う
   const realNow = performance.now.bind(performance);
   let virtualNow = 0;
@@ -242,8 +220,7 @@ function instrument(html, def) {
   if (!html.includes('<head>')) throw new Error(`${def.page}: <head> が見つからない`);
   const anchor = 'renderer.setAnimationLoop(tick);';
   if (html.split(anchor).length !== 2) throw new Error(`${def.page}: 「${anchor}」が 1 か所ではない`);
-  const select = def.select ? `(i) => { ${def.select}; }` : 'null';
-  const names = def.scenes ? `${def.scenes}.map((s) => s.name)` : 'null';
+  const { select, names } = def.scenes ? choiceExpressions(def.page) : { select: 'null', names: 'null' };
   return html
     .replace('<head>', () => `<head>\n${PRELUDE}`)
     .replace(anchor, () => `window.__benchStart({ renderer, tick, select: ${select}, names: ${names} });`);
@@ -270,97 +247,6 @@ function serve(root) {
     }
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
-}
-
-// ---- Chrome DevTools Protocol ----
-class Cdp {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.errors = [];
-    ws.addEventListener('message', (e) => {
-      const m = JSON.parse(e.data);
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        if (m.error) reject(new Error(m.error.message));
-        else resolve(m.result);
-      } else if (m.method === 'Runtime.exceptionThrown') {
-        const d = m.params.exceptionDetails;
-        this.errors.push(d.exception?.description ?? d.text);
-      } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
-        this.errors.push(m.params.entry.text);
-      }
-    });
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true });
-      ws.addEventListener('error', reject, { once: true });
-    });
-    return new Cdp(ws);
-  }
-}
-
-async function launchChrome() {
-  const userDataDir = await mkdtemp(path.join(tmpdir(), 'gpu-bench-'));
-  const chrome = spawn(CHROME, [
-    '--headless=new',
-    `--user-data-dir=${userDataDir}`,
-    '--remote-debugging-port=0',
-    '--use-angle=metal',            // ソフトウェア描画に落ちないよう、実際の GPU を使わせる
-    '--ignore-gpu-blocklist',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
-    '--no-first-run',
-    '--no-default-browser-check',
-    'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  const wsUrl = await new Promise((resolve, reject) => {
-    let log = '';
-    chrome.stderr.on('data', (d) => {
-      log += d;
-      const m = log.match(/DevTools listening on (ws:\S+)/);
-      if (m) resolve(m[1]);
-    });
-    chrome.on('exit', (code) => reject(new Error(`Chrome が終了した (${code})\n${log}`)));
-  });
-  return { chrome, wsUrl, userDataDir };
-}
-
-// ---- 比べる版を取り出す ----
-function run(command, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', reject);
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${command} が失敗した (${code})\n${err}`))));
-  });
-}
-
-// --base の版を dir の下に取り出し、その場所を返す。作業ツリーのファイルには触らない。
-// git のコミットならその版を、作品の HTML のパスなら HEAD の版にその HTML を重ねる（video-compare.mjs と同じ）
-async function checkoutBase(base, page, dir) {
-  const file = path.resolve(base);
-  const isFile = existsSync(file) && statSync(file).isFile();
-  const archive = path.join(dir, 'base.tar');
-  const root = path.join(dir, 'base');
-  await mkdir(root, { recursive: true });
-  await run('git', ['-C', ROOT, 'archive', '-o', archive, isFile ? 'HEAD' : base]);
-  await run('tar', ['-xf', archive, '-C', root]);
-  if (isFile) await copyFile(file, path.join(root, `${page}.html`));
-  return root;
 }
 
 // ---- GPU の温度とクロック（macmon） ----
@@ -473,7 +359,7 @@ async function measure(browser, origin, def, sceneIndex, condition, version, opt
   const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
   const pageInfo = await (await fetch(`${opts.httpBase}/json/list`)).json();
   const target = pageInfo.find((t) => t.id === targetId);
-  const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+  const cdp = await connectCdp(target.webSocketDebuggerUrl);
   try {
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');
@@ -671,9 +557,9 @@ async function main() {
   const versions = opts.base
     ? [{ label: 'base', origin: await listen(baseRoot) }, { label: 'work', origin: await listen(ROOT) }]
     : [{ label: null, origin: await listen(ROOT) }];
-  const { chrome, wsUrl, userDataDir } = await launchChrome();
+  const { chrome, wsUrl, userDataDir } = await launchChrome('gpu-bench');
   opts.httpBase = `http://${new URL(wsUrl).host}`;
-  const browser = await Cdp.connect(wsUrl);
+  const browser = await connectCdp(wsUrl);
   const pages = PAGES.filter((p) => !opts.only || opts.only.includes(p.page));
   const conditions = CONDITIONS.filter((c) => !opts.conditions || opts.conditions.includes(c.name));
 
@@ -691,8 +577,9 @@ async function main() {
           for (const def of group) {
             // --scene のときは、シーンのある作品はそのシーンだけ、無い作品は 1 行だけ測る
             const first = opts.scene != null && def.scenes ? opts.scene : 0;
-            const last = opts.scene != null ? first + 1 : (sceneCounts.get(def.page) ?? 1);
-            for (let i = first; i < last; i++) {
+            // 終わりの番号は、測るたびに sceneCounts から求め直す
+            const last = () => (opts.scene != null ? first + 1 : (sceneCounts.get(def.page) ?? 1));
+            for (let i = first; i < last(); i++) {
               for (const { label, origin } of versions) {
                 const t0 = Date.now();
                 const r = await measure(browser, origin, def, i, condition, label, opts);

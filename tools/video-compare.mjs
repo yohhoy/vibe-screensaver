@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 // 2 つの版の作品を同じ条件で撮り、並べた比較動画と確認用の画像を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-compare.mjs <作品名> [--base HEAD] [--case "名前:式"]... [--scenes 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
+//   node tools/video-compare.mjs <作品名> [--base HEAD] [--case "名前:式"]... [--scenes 0,1,2 | --presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
 //
 // 撮影は video-export.mjs に任せる。作品の HTML も作業ツリーも変更しない。依存は video-export.mjs と同じで、加えて git と tar。
-import { spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { ROOT, checkoutBase, run } from './common.mjs';
+import { pagesWith } from './pages.mjs';
 
 // ---- 設定 ----
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const EXPORTER = path.join(ROOT, 'tools', 'video-export.mjs');
+const EXPORTER_FILES = ['video-export.mjs', 'common.mjs', 'pages.mjs'];   // 比べる版にも写す、撮影の処理のファイル（tools の下）
 const VIDEO_WIDTH = 1920;         // 比較動画の幅（px）。列が 1 つのときは半分にする
 const SHEET_MAX = 1536;           // 確認用の画像の長辺の上限（px）。これより大きいと、読むときに縮小され、トークンも増える
 const X264_CRF = 20;              // 比較動画の画質（小さいほど高画質。0..51）
@@ -25,7 +24,8 @@ const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプショ
 上の段に --base の版、下の段に作業ツリーの版を並べる。
   --base 版       比べる版。git のコミットか、作品の HTML のパス（既定 HEAD）
   --case "名前:式" 列を 1 つ足す。収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
-  --scenes 0,1,2  場面の番号（drone・ripple・waterfall・penguins・sandpicture のみ）
+  --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）
+  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）
   --seconds S     1 場面の長さ（秒。既定 4）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --seed N        乱数の種（既定 1）
@@ -33,18 +33,6 @@ const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプショ
   --open          できた動画を開く`;
 
 // ---- 外部のコマンド ----
-function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', reject);
-    child.on('exit', (code) => (code === 0 ? resolve(out) : reject(new Error(`${path.basename(command)} が失敗した (${code})\n${err}`))));
-  });
-}
-
 const ffmpeg = (args, options) => run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], options);
 
 // ---- 引数 ----
@@ -55,6 +43,7 @@ function parseOptions() {
       base: { type: 'string', default: 'HEAD' },
       case: { type: 'string', multiple: true, default: [] },
       scenes: { type: 'string' },
+      presets: { type: 'string' },
       seconds: { type: 'string', default: '4' },
       warmup: { type: 'string', default: '3' },
       seed: { type: 'string', default: '1' },
@@ -72,31 +61,24 @@ function parseOptions() {
     ...values,
     page: positionals[0],
     cases: cases.length ? cases : [{ label: 'そのまま', code: null }],
-    sceneCount: values.scenes ? values.scenes.split(',').length : 1,
+    sceneCount: (values.scenes ?? values.presets)?.split(',').length ?? 1,
     out: path.resolve(values.out ?? `${positionals[0]}-compare.mp4`),
   };
 }
 
 // ---- 比べる版を取り出す ----
-// HTML のパスなら HEAD に重ねる。撮影の処理は、どの版でも今の video-export.mjs を使う（古い版には無いことがあるため）
-async function checkoutBase(base, page, dir) {
-  const file = path.resolve(base);
-  const isFile = existsSync(file) && statSync(file).isFile();
-  const archive = path.join(dir, 'base.tar');
-  const baseRoot = path.join(dir, 'base');
-  await mkdir(path.join(baseRoot, 'tools'), { recursive: true });
-  await run('git', ['-C', ROOT, 'archive', '-o', archive, isFile ? 'HEAD' : base]);
-  await run('tar', ['-xf', archive, '-C', baseRoot]);
-  await copyFile(EXPORTER, path.join(baseRoot, 'tools', 'video-export.mjs'));
-  if (isFile) await copyFile(file, path.join(baseRoot, `${page}.html`));
-  return path.join(baseRoot, 'tools', 'video-export.mjs');
+// 撮影の処理は、どの版でも作業ツリーのもの（EXPORTER_FILES）を使う。取り出した版の video-export.mjs の場所を返す
+async function checkoutExporter(base, page, dir) {
+  const root = await checkoutBase(base, page, dir, EXPORTER_FILES);
+  return path.join(root, 'tools', 'video-export.mjs');
 }
 
 // ---- 撮影 ----
 async function capture(exporter, options, code, out) {
-  const { page, seconds, warmup, seed, scenes } = options;
+  const { page, seconds, warmup, seed, scenes, presets } = options;
   const args = [exporter, page, '--seconds', seconds, '--warmup', warmup, '--seed', seed, '--fade', '0', '--out', out];
   if (scenes) args.push('--scenes', scenes);
+  if (presets) args.push('--presets', presets);
   if (code) args.push('--at', `0:${code}`);
   for (let attempt = 1; ; attempt++) {
     try {
@@ -158,7 +140,7 @@ async function main() {
   const thumbs = `${out.replace(/\.mp4$/, '')}.thumbs.jpg`;
   const dir = await mkdtemp(path.join(tmpdir(), 'video-compare-'));
   try {
-    const baseExporter = await checkoutBase(base, page, dir);
+    const baseExporter = await checkoutExporter(base, page, dir);
     const before = cases.map((_, i) => path.join(dir, `before-${i}.mp4`));
     const after = cases.map((_, i) => path.join(dir, `after-${i}.mp4`));
     // GPU を取り合わないよう、1 本ずつ撮る
