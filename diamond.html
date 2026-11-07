@@ -184,9 +184,12 @@ const THREAD_COLOR = [0.16, 0.16, 0.16];
 const THREAD_WIDTH = 0.008;
 const SPIDER_SWAY = 0.0008;       // 糸の揺れの角度 (rad)。糸が長いので、小さくても左右に大きく揺れる
 const SPIDER_SWAY_PERIOD = 5;     // 糸の揺れの周期（秒）
-// 脚の動き [振れ幅 (rad), 速さ（1 秒あたりの回数。SPIDER_SWAY_PERIOD 秒で割り切れる整数）]。
-// 控えめにして、昇るときだけ小刻みに速く動かし、ちょこちょこと昇るコミカルな印象にする
-const SPIDER_LEG_MOTION = { down: [0.012, 1], hang: [0.02, 1], up: [0.06, 4] };
+// 昇るときは、上へ伸ばした 2 本の脚（SPIDER_LEGS の最後）で糸を左右交互に手繰り寄せる。ほかの脚は自分では動かさない
+const SPIDER_CLIMB = 0.6;         // 手繰る速さ（1 秒あたりの回数。左右それぞれ）
+// 脚は、空気の抵抗と慣性でも揺れる（ばねで近似）。降りるときは上へ流れ、止まると揺り戻し、昇るときは少し垂れる
+const SPIDER_LEG_DRAG = 0.2;      // 昇る速さ 1 あたりに脚が垂れる角度 (rad)。降りるとき（速さが負）は上へ流れる
+const SPIDER_LEG_SPRING = [7.5, 0.5];   // 揺れの角速度 (rad/s) と減衰比。減衰比を小さくすると揺り戻しが増える
+const SPIDER_LEG_WEIGHT = [1, 0.8, 0.6, 0.4];   // 脚ごとの揺れの大きさ（SPIDER_LEGS の順。前の脚ほど大きい）
 
 // ブルーム
 const BLOOM_SCALE = 0.5;          // ブルームの解像度の倍率
@@ -605,7 +608,7 @@ const baseboard = new THREE.Mesh(new THREE.BoxGeometry(ROOM_HALF_WIDTH * 2, BASE
 baseboard.position.set(0, FLOOR_Y + BASEBOARD_HEIGHT / 2, WALL_Z + BASEBOARD_DEPTH / 2);
 roomScene.add(baseboard);
 
-// 回る展示物（ダイヤモンド・爪・支柱・台座）をまとめる
+// 回る展示物（ダイヤモンド・爪・脚・台座）をまとめる
 const exhibit = new THREE.Group();
 scene.add(exhibit);
 
@@ -1139,7 +1142,7 @@ function addRefractedFleck(key, facet, lx, ly, lz, fresnel) {
   if (!out) return;
   // 赤と青の光の届く点を結ぶ
   const red = landingPoint(out, IOR_RGB[0]), blue = landingPoint(out, IOR_RGB[2]);
-  // 赤と青が別の面（台座の上と床など）に落ちると、筋が空中を横切るので描かない
+  // 赤と青が別の面（台座の上と壁など）に落ちると、筋が空中を横切るので描かない
   if (!red || !blue || red.wallHit !== blue.wallHit || red.onTop !== blue.onTop) return;
   if (Math.hypot(red.x - blue.x, red.y - blue.y, red.z - blue.z) > FLECK_MAX_LENGTH) return;
   const tint = (channel) => Math.exp(-absorb.getComponent(channel) * out.path) * (1 - fresnel);
@@ -1220,7 +1223,7 @@ function fitCamera() {
 
 // ---- 蜘蛛（隠し要素） ----
 // 天井から垂らした糸と、その先の蜘蛛のシルエット。部屋に固定して置き、カメラの方へ向ける（展示物と一緒には回らない）。
-// 蜘蛛は canvas に描いた板で、脚を動かすときだけ描き直す。リアルにはせず、影絵ていどの形にとどめる
+// 蜘蛛は canvas に描いた板で、蜘蛛がいる間は毎フレーム描き直す（脚が常に揺れるため）。リアルにはせず、影絵ていどの形にとどめる
 const SPIDER_TOP = 0.15, SPIDER_BOTTOM = -0.85;   // 板の上端と下端（糸の付け根が 0、蜘蛛の幅が 1 の座標）
 const SPIDER_BODY = 0.25;         // 糸の付け根から体の中心までの長さ（同じ座標）
 // 脚 [付け根, 膝, 先]（右側。左は鏡写し）。ぶら下がった姿を後ろから見た形で、前の脚は下へ、後ろの脚は上へ伸ばす
@@ -1230,12 +1233,16 @@ const SPIDER_LEGS = [
   [[0.045, -0.29], [0.26, -0.15], [0.45, -0.3]],
   [[0.035, -0.27], [0.19, -0.03], [0.36, 0.04]],
 ];
+// 手繰る脚（最後の脚）の姿 [付け根, 膝, 先]。糸をつかんだ姿から、引き下ろした姿までを直接つなぐ
+const SPIDER_GRAB = [[0.035, -0.27], [0.15, -0.02], [0.02, 0.13]];
+const SPIDER_PULL = [[0.035, -0.27], [0.21, -0.14], [0.11, -0.1]];
 
 const spiderCanvas = Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
 const spiderTexture = new THREE.CanvasTexture(spiderCanvas);
 
-// 脚の角度を pose(脚の番号, 左右) で振って描く（脚ごとに付け根のまわりで回す）
-function drawSpider(pose) {
+// 脚の揺れ swing (rad) を重みを掛けて付け根のまわりに回して描く。
+// climbPhase（手繰る脚の位相）を渡すと、最後の脚は揺れでなく手繰る姿になる（左右は半周期ずらす）
+function drawSpider(swing, climbPhase) {
   const ctx = spiderCanvas.getContext('2d');
   const s = spiderCanvas.width;
   const px = (x) => (x + 0.5) * s, py = (y) => (SPIDER_TOP - y) * s;
@@ -1248,8 +1255,14 @@ function drawSpider(pose) {
   ctx.fill();
   ctx.lineWidth = 0.022 * s;
   for (const side of [-1, 1]) {
-    SPIDER_LEGS.forEach((leg, i) => {
-      const a = pose(i, side) * side, c = Math.cos(a), sn = Math.sin(a);
+    SPIDER_LEGS.forEach((rest, i) => {
+      let leg = rest, angle = swing * SPIDER_LEG_WEIGHT[i];
+      if (climbPhase !== null && i === SPIDER_LEGS.length - 1) {
+        const u = 0.5 - 0.5 * Math.cos(climbPhase + (side > 0 ? Math.PI : 0));   // 0: つかむ、1: 引き下ろす
+        leg = SPIDER_GRAB.map((g, k) => g.map((v, m) => v + (SPIDER_PULL[k][m] - v) * u));
+        angle = 0;
+      }
+      const a = angle * side, c = Math.cos(a), sn = Math.sin(a);
       const [bx, by] = leg[0];
       ctx.beginPath();
       for (const [x, y] of leg) {
@@ -1278,7 +1291,8 @@ spiderRig.add(thread, spiderMesh);
 
 let spider = null;         // いる蜘蛛 { phase: 'down' | 'hang' | 'up', t: その段階の経過秒数, hang, startY, stopY }。いなければ null
 let spiderWait = randomInterval(SPIDER_INTERVAL);   // 次に現れるまでの秒数
-let spiderClock = 0;       // 揺れと脚の動きの位相（秒）。0〜SPIDER_SWAY_PERIOD に収める
+let legSwing = 0, legSwingV = 0, spiderPrevY = 0;   // 脚の揺れの角度 (rad)・角速度・前のコマの高さ
+let spiderClock = 0;       // 糸の揺れの位相（秒）。0〜SPIDER_SWAY_PERIOD に収める
 
 // 画面の点（NDC）を、蜘蛛が降りる奥行きの面に写す
 function toSpiderPlane(ndcX, ndcY) {
@@ -1300,9 +1314,18 @@ function startSpider() {
     startY: top - SPIDER_SIZE * SPIDER_BOTTOM + 0.05, stopY,
   };
   spiderWait = randomInterval(SPIDER_INTERVAL);
+  legSwing = legSwingV = 0;
+  spiderPrevY = spider.startY;
   spiderRig.position.set(x, WALL_TOP_Y, SPIDER_Z);
   spiderRig.rotation.y = Math.atan2(camera.position.x - x, camera.position.z - SPIDER_Z);
   spiderRig.visible = true;
+}
+
+// 手繰る脚の位相（昇り始めからの進み u は 0〜1）。昇る速さは |sin| に比例し、半周期ごとに左右の脚が持ち替える
+const climbPhase = (u) => TAU * SPIDER_CLIMB * SPIDER_ASCEND_TIME * u;
+function climbProgress(u) {
+  const g = (th) => { const k = Math.floor(th / Math.PI); return 2 * k + 1 - Math.cos(th - k * Math.PI); };
+  return g(climbPhase(u)) / g(climbPhase(1));
 }
 
 function updateSpider(dt) {
@@ -1322,8 +1345,9 @@ function updateSpider(dt) {
   } else if (spider.phase === 'hang') {
     if (spider.t >= spider.hang) Object.assign(spider, { phase: 'up', t: 0 });
   } else {
+    // 手繰る脚に合わせて上がる。左右どちらかが引き下ろしている間だけ進み、持ち替えの瞬間は止まる
     const u = Math.min(spider.t / SPIDER_ASCEND_TIME, 1);
-    y = stopY + (startY - stopY) * u * u * (3 - 2 * u);
+    y = stopY + (startY - stopY) * climbProgress(u);
     if (u >= 1) {
       spider = null;
       spiderRig.visible = false;
@@ -1334,10 +1358,16 @@ function updateSpider(dt) {
   thread.scale.y = length;
   spiderMesh.position.y = -length;
   spiderRig.rotation.z = SPIDER_SWAY * Math.sin(TAU * spiderClock / SPIDER_SWAY_PERIOD);
-  // 脚を左右と前後で交互に動かす
-  const [legAmp, legSpeed] = SPIDER_LEG_MOTION[spider.phase];
-  const w = TAU * legSpeed * spiderClock;
-  drawSpider((i, side) => legAmp * Math.sin(w + i * Math.PI / 2 + (side > 0 ? Math.PI : 0)));
+  // 脚の揺れ。昇る速さに応じた角度へ、ばねで追従させる
+  const [omega, zeta] = SPIDER_LEG_SPRING;
+  const target = dt > 0 ? -SPIDER_LEG_DRAG * (y - spiderPrevY) / dt : legSwing;   // 止まった時計（dt = 0）では揺らさない
+  const n = 4, h = dt / n;
+  for (let k = 0; k < n; k++) {
+    legSwingV += (-omega * omega * (legSwing - target) - 2 * zeta * omega * legSwingV) * h;
+    legSwing += legSwingV * h;
+  }
+  spiderPrevY = y;
+  drawSpider(legSwing, spider.phase === 'up' ? climbPhase(Math.min(spider.t / SPIDER_ASCEND_TIME, 1)) : null);
 }
 
 // ---- シーン切替 ----
