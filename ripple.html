@@ -783,39 +783,6 @@ const boat = { az: 0, dir: 1 };   // 遊覧船の方位と進む向き（右が 
 let jump = null;           // 跳ねている魚 { x, z, dx, dz, height, length, duration, t, exitT, splashed }
 const splashDrops = [];    // 水しぶきの粒 { x, y, z, vx, vy, vz }
 
-// ---- 景色 ----
-const sceneNameEl = document.getElementById('scene-name');
-
-// 月・太陽が無い景色の光（黒いので、円盤も光も見えない）
-const NO_LIGHT = { dir: [0, -Math.PI / 2], color: [0, 0, 0], size: 0, glow: 0 };
-
-function setScene(index) {
-  endEvent();   // 前の景色の出来事を片付ける
-  sceneIndex = (index + SCENES.length) % SCENES.length;
-  const s = SCENES[sceneIndex];
-  skyUniforms.uZenith.value.fromArray(s.zenith);
-  skyUniforms.uHorizon.value.fromArray(s.horizon);
-  const light = s.light ?? NO_LIGHT;
-  skyDir(...light.dir, skyUniforms.uLightDir.value);
-  skyUniforms.uLightColor.value.fromArray(light.color);
-  skyUniforms.uDiskCos.value = Math.cos(light.size);
-  skyUniforms.uGlow.value = light.glow;
-  skyUniforms.uStars.value = !!s.stars;
-  skyUniforms.uCity.value = !!s.city;
-  skyUniforms.uLand.value = !!s.land;
-  skyUniforms.uBoat.value = !!s.boat;
-  waterUniforms.uWater.value.fromArray(s.water);
-  waterUniforms.uF0.value = s.f0;
-  waterUniforms.uFog.value = s.fog;
-  // 線の色は sRGB として指定する（出力時に元の値に戻る）
-  const [r, g, b, a] = s.rain;
-  streakMaterial.color.setRGB(r, g, b, THREE.SRGBColorSpace);
-  streakMaterial.opacity = a;
-  sceneNameEl.textContent = s.name;
-  eventWait = nextEventWait();
-  resetBoat();
-}
-
 // ---- 雨と波紋 ----
 const raycaster = new THREE.Raycaster();
 const waterPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -1173,6 +1140,38 @@ function updatePhases() {
 }
 
 // ---- シーン切替 ----
+const sceneNameEl = document.getElementById('scene-name');
+
+// 月・太陽が無い景色の光（黒いので、円盤も光も見えない）
+const NO_LIGHT = { dir: [0, -Math.PI / 2], color: [0, 0, 0], size: 0, glow: 0 };
+
+function setScene(index) {
+  endEvent();   // 前の景色の出来事を片付ける
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  skyUniforms.uZenith.value.fromArray(s.zenith);
+  skyUniforms.uHorizon.value.fromArray(s.horizon);
+  const light = s.light ?? NO_LIGHT;
+  skyDir(...light.dir, skyUniforms.uLightDir.value);
+  skyUniforms.uLightColor.value.fromArray(light.color);
+  skyUniforms.uDiskCos.value = Math.cos(light.size);
+  skyUniforms.uGlow.value = light.glow;
+  skyUniforms.uStars.value = !!s.stars;
+  skyUniforms.uCity.value = !!s.city;
+  skyUniforms.uLand.value = !!s.land;
+  skyUniforms.uBoat.value = !!s.boat;
+  waterUniforms.uWater.value.fromArray(s.water);
+  waterUniforms.uF0.value = s.f0;
+  waterUniforms.uFog.value = s.fog;
+  // 線の色は sRGB として指定する（出力時に元の値に戻る）
+  const [r, g, b, a] = s.rain;
+  streakMaterial.color.setRGB(r, g, b, THREE.SRGBColorSpace);
+  streakMaterial.opacity = a;
+  sceneNameEl.textContent = s.name;
+  eventWait = nextEventWait();
+  resetBoat();
+}
+
 // 暗転している間に、次の景色へ
 const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
 
