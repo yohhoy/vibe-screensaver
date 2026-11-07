@@ -26,7 +26,7 @@ import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 長さの基準は、回転軸からダイヤモンドのもっとも遠い点までの距離（1）。原点はガードルの中心。色は線形の値
@@ -451,8 +451,10 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 1, 80);
 
+// 全画面の描画先の色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
 // マルチサンプルにするのはシーンを描く描画先だけ
-const sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA_SAMPLES });
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES });
 function updateSceneTargetSize() {
   const pr = renderer.getPixelRatio();
   sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
@@ -460,7 +462,7 @@ function updateSceneTargetSize() {
 updateSceneTargetSize();
 
 const composer = new EffectComposer(renderer,
-  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false }));
 composer.setPixelRatio(renderer.getPixelRatio());
 composer.setSize(innerWidth, innerHeight);
 const scenePass = new TexturePass(sceneTarget.texture);

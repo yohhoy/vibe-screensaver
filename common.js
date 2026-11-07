@@ -37,6 +37,23 @@
     for (; sys.carry >= 1; sys.carry--) if (sys.list.length < sys.max) sys.list.push(spawn());
   }
 
+  // ---- 描画先の形式 ----
+  // 不透明度を使わない浮動小数点の描画先の、形式の指定。three.js の WebGLRenderTarget の引数に、
+  // type: THREE.HalfFloatType と一緒に混ぜて渡す（samples は MSAA の倍率）。
+  // 1 画素 4 バイトの R11F_G11F_B10F は、半精度の RGBA（8 バイト）よりメモリの読み書きが軽い。
+  // ただし描くには EXT_color_buffer_float が要り、MSAA の倍率も端末しだいなので、
+  // 使えない端末では {} を返し、半精度の RGBA（EXT_color_buffer_half_float でも描ける）のままにする。
+  // three.js に RGB の形式の定数が無いので、WebGL の定数名を文字列で渡す
+  function compactHdrFormat(renderer, samples = 0) {
+    const gl = renderer.getContext();
+    if (!renderer.extensions.has('EXT_color_buffer_float')) return {};
+    if (samples > 0) {
+      const counts = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.R11F_G11F_B10F, gl.SAMPLES);
+      if (!counts || !Array.from(counts).some((n) => n >= samples)) return {};
+    }
+    return { format: 'RGB', internalFormat: 'R11F_G11F_B10F' };
+  }
+
   // ---- 暗転 ----
   let fadeEl = null;
   let fading = false;
@@ -183,7 +200,7 @@
   }
 
   window.Common = {
-    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval, gray, emit,
+    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval, gray, emit, compactHdrFormat,
     IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls,
   };
 })();

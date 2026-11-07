@@ -23,7 +23,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls, compactHdrFormat } = Common;
 const { smoothstep, lerp, degToRad } = THREE.MathUtils;
 
 // ---- 設定 ----
@@ -557,8 +557,10 @@ camera.rotation.order = 'YXZ';
 let halfWidth = 5;   // 列の線の上で、画面の中央から端までの幅
 let cameraTilt = 0;  // 地平線を決まった高さに置くための、カメラの傾き（ラジアン）
 
-// シーンは半精度の描画先に描き、最後の処理で画面へ移す。MSAA を掛けるのはこの描画先だけ
-const sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: SCENE_SAMPLES });
+// シーンは浮動小数点の描画先に描き、最後の処理で画面へ移す。MSAA を掛けるのはこの描画先だけ。
+// 色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, SCENE_SAMPLES), samples: SCENE_SAMPLES });
 const postMaterial = new THREE.ShaderMaterial({
   vertexShader: POST_VERT,
   fragmentShader: POST_FRAG,
