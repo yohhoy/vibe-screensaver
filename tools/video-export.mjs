@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 作品を 1 コマずつ描き出して、投稿用の動画（H.264）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--at "秒:式"]... [--out 出力先.mp4]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--out 出力先.mp4]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { ROOT, SEEDED_RANDOM, connectCdp, launchChrome, run } from './common.mjs';
-import { CHOICES, PAGES, choiceExpressions, pagesWith } from './pages.mjs';
+import { CHOICES, HIDDEN, PAGES, choiceExpressions, pagesWith } from './pages.mjs';
 
 // ---- 設定 ----
 const WIDTH = 1280;
@@ -36,6 +36,8 @@ const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプショ�
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し）
   --seed N        乱数の種（既定 1）
+  --hidden H      隠し要素（${Object.keys(HIDDEN).join('・')} のみ）。auto は作品に任せる（既定）、off は出さない、
+                  秒の並び（例 2,8.5）は自然には出さず、動画のその時刻に呼び出す
   --at "秒:式"    動画の時刻に式を実行する。作品のスクリプトの変数を使える。複数指定できる
   --out PATH      出力先（既定 <作品名>.mp4）。確認用の画像を <出力先>.thumbs.jpg に作る`;
 
@@ -63,7 +65,7 @@ ${SEEDED_RANDOM}
   }
 
   // 作品の「開始」節の最後で呼ばれる
-  window.__exportStart = async ({ renderer, tick, select, names, evaluate }) => {
+  window.__exportStart = async ({ renderer, tick, select, names, evaluate, summon }) => {
     const plan = await (await fetch('/__plan')).json();
     const source = renderer.domElement;
     if (source.width !== plan.width || source.height !== plan.height) {
@@ -100,6 +102,7 @@ ${SEEDED_RANDOM}
       let level = 0;
       for (let i = 0; i < plan.sceneFrames; i++, frame++) {
         for (const at of plan.at) if (at.frame === frame) evaluate(at.code);
+        for (const f of plan.summonFrames) if (f === frame) summon();
         advance();
         if (i === plan.sceneFrames >> 1) level = brightness();
         const fade = plan.fadeFrames ? Math.min(1, i / plan.fadeFrames, (plan.sceneFrames - 1 - i) / plan.fadeFrames) : 1;
@@ -119,15 +122,20 @@ ${SEEDED_RANDOM}
 </script>`;
 
 // 作品の開始の処理を、収録の開始に置き換える。見つからないときは止める（黙って別の物を撮らないため）
-function instrument(html, page) {
+function instrument(html, page, hidden) {
   const anchor = 'renderer.setAnimationLoop(tick);';
   if (html.split('<body>').length !== 2) throw new Error(`${page}: <body> が 1 か所ではない`);
   if (html.split(anchor).length !== 2) throw new Error(`${page}: 「${anchor}」が 1 か所ではない`);
   const { select, names } = choiceExpressions(page);
+  // 隠し要素は、自然な出現（作品が待ち時間で呼ぶ関数）を空の関数に差し替えて止め、元の関数は呼び出し用に取っておく。
+  // 作品の関数は function 宣言なので、モジュールの中なら代入で差し替えられる
+  const fn = HIDDEN[page];
+  const hook = hidden.mode === 'auto' ? 'const summon = () => {};'
+    : `const summon = ${fn}; ${fn} = () => {};`;
   // evaluate は作品のモジュールの中で eval するので、--at の式から作品の変数が見える
   return html
     .replace('<body>', () => `<body>\n${PRELUDE}`)
-    .replace(anchor, () => `window.__exportStart({ renderer, tick, select: ${select}, names: ${names}, evaluate: (code) => eval(code) });`);
+    .replace(anchor, () => `${hook}\nwindow.__exportStart({ renderer, tick, select: ${select}, names: ${names}, evaluate: (code) => eval(code), summon });`);
 }
 
 // ---- ffmpeg ----
@@ -188,6 +196,7 @@ function parseOptions() {
       warmup: { type: 'string', default: '3' },
       fade: { type: 'string', default: '0.5' },
       seed: { type: 'string', default: '1' },
+      hidden: { type: 'string', default: 'auto' },
       at: { type: 'string', multiple: true, default: [] },
       out: { type: 'string' },
     },
@@ -212,6 +221,10 @@ function parseOptions() {
   }) ?? [null];
   const sceneFrames = Math.round(seconds * FPS);
   const totalFrames = scenes.length * sceneFrames;
+  // 隠し要素: auto（作品に任せる）・off（出さない）・秒の並び（その時刻に呼び出す）
+  const hiddenTimes = ['auto', 'off'].includes(values.hidden) ? [] : values.hidden.split(',').map(Number);
+  if (values.hidden !== 'auto' && !HIDDEN[page]) throw new Error(`${page} に隠し要素は無い。--hidden は ${Object.keys(HIDDEN).join('・')} だけで使える`);
+  if (hiddenTimes.some((t) => !(t >= 0 && Math.round(t * FPS) < totalFrames))) throw new Error(`--hidden は auto・off・動画の中の秒の並び（0〜${seconds * scenes.length} 未満）で書く: ${values.hidden}`);
   const at = values.at.map((spec) => {
     const m = spec.match(/^([\d.]+):(.+)$/s);
     const frame = m && Math.round(Number(m[1]) * FPS);
@@ -220,11 +233,13 @@ function parseOptions() {
   });
   return {
     page,
+    hidden: { mode: values.hidden === 'auto' ? 'auto' : 'off' },
     seed: values.seed,
     out: path.resolve(values.out ?? `${page}.mp4`),
     plan: {
       width: WIDTH, height: HEIGHT, fps: FPS, jpegQuality: JPEG_QUALITY,
       scenes, sceneFrames, at,
+      summonFrames: hiddenTimes.map((t) => Math.round(t * FPS)),
       warmupFrames: Math.round(warmup * FPS),
       fadeFrames: Math.round(fade * FPS),
     },
@@ -233,7 +248,7 @@ function parseOptions() {
 }
 
 async function main() {
-  const { page, seed, out, plan, totalFrames } = parseOptions();
+  const { page, hidden, seed, out, plan, totalFrames } = parseOptions();
   const partial = `${out}.part`;
   const thumbs = `${out.replace(/\.mp4$/, '')}.thumbs.jpg`;
   const { encoder, finished } = startEncoder(partial);
@@ -273,7 +288,7 @@ async function main() {
     }
     try {
       let body = await readFile(path.join(ROOT, name));
-      if (PAGES.includes(name.replace(/\.html$/, ''))) body = instrument(body.toString(), page);
+      if (PAGES.includes(name.replace(/\.html$/, ''))) body = instrument(body.toString(), page, hidden);
       const type = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }[path.extname(name)];
       reply(200, type ?? 'application/octet-stream', body);
     } catch (e) {

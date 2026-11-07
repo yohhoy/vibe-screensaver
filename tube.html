@@ -56,7 +56,7 @@ const MAX_BLUR = 0.15;            // 速度を上げたときの強さの上限
 // 描画
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 
-// 隠しキャラ（壁のハッチから跳び出すマスコット）
+// マスコット（隠し要素）。壁のハッチが開いて、跳び出してくる
 const HATCH_SIZE = new THREE.Vector2(1, 1);  // ハッチの大きさ（マス数: 長さ方向, 円周方向）
 const HATCH_HALF = HATCH_SIZE.clone().multiplyScalar(0.5);  // ハッチの大きさの半分（計算用）
 const HATCH_DEPTH = 1.2;          // ハッチの穴の深さ
@@ -68,8 +68,7 @@ const JUMP_HEIGHT = TUBE_RADIUS * 0.7;  // ジャンプの最高点（壁から�
 const JUMP_TIME = 1.2;            // 跳んで穴に戻るまでの秒数
 const SIGNAL_TIME = 1.0;          // ハッチが点滅してから開くまでの秒数
 const LAND_DIST = 8;              // 着地したときのカメラとの距離
-const MASCOT_MEAN_INTERVAL = 10;  // 自然に現れる平均間隔 (秒)
-const MASCOT_MAX_INTERVAL = 60;   // 間隔の上限 (秒)
+const HATCH_INTERVAL = [10, 0, 60];   // 現れる間隔 [平均, 下限, 上限]（秒）
 
 // 配色のプリセット（シーン切替のたびにこの順番で次へ進める）: 基準の色相と、トンネルに沿った色相の変化幅
 const COLOR_PRESETS = [
@@ -272,8 +271,11 @@ function frameNormalAt(t, out) {
 // カメラから見て dist 先のコース上の位置 (0..1)
 const courseAhead = (dist) => (progress + dist / course.length) % 1;
 
-// ---- 隠しキャラ: 壁のハッチから跳び出すマスコット ----
-// ハッチの座標系: 原点が壁面のハッチ中心、y がトンネルの内側、z が進行方向
+// ---- マスコット（隠し要素） ----
+// 壁のハッチが点滅して開き、Claude Code のマスコットが跳び出して、同じ穴へ戻る。
+// ハッチの枠と光はトンネルのシェーダー（uHatch*）が壁に描き、奥の穴とマスコットは three.js のメッシュで置く。
+// ハッチの座標系: 原点が壁面のハッチ中心、y がトンネルの内側、z が進行方向。
+// 段階: signal（点滅）→ open（開く）→ jump（跳ぶ）→ close（閉じる）→ 消える
 
 // ハッチの奥の穴。トンネル壁の一部を外側へ HATCH_DEPTH だけ掘った形
 function createShaftGeometry() {
@@ -343,157 +345,137 @@ function createMascot() {
 const moveToward = (x, target, step) =>
   x < target ? Math.min(x + step, target) : Math.max(x - step, target);
 
-// 指数分布で次の出現までの秒数を決め、続けて出たりしばらく出なかったりする不規則さを出す
-const nextInterval = () => randomInterval([MASCOT_MEAN_INTERVAL, 0, MASCOT_MAX_INTERVAL]);
+const hatchGroup = new THREE.Group();
+const shaftMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+hatchGroup.add(new THREE.Mesh(createShaftGeometry(), shaftMaterial));
+const hatchLight = new THREE.PointLight(0xffffff, 0, 5, 0);   // 穴の中からの光
+hatchLight.position.y = -HATCH_DEPTH + 0.3;
+hatchGroup.add(hatchLight);
+const mascot = createMascot();
+hatchGroup.add(mascot.root);
+scene.add(hatchGroup);
 
-// ハッチの出現からマスコットのジャンプまでを管理する。
-// フェーズ: idle → signal（点滅）→ open → jump → close → idle
-function createHatch() {
-  const uniforms = tunnelMaterial.uniforms;
-  const group = new THREE.Group();
-  const shaftMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-  group.add(new THREE.Mesh(createShaftGeometry(), shaftMaterial));
-  const light = new THREE.PointLight(0xffffff, 0, 5, 0);   // 穴の中からの光
-  light.position.y = -HATCH_DEPTH + 0.3;
-  group.add(light);
-  const mascot = createMascot();
-  group.add(mascot.root);
-  scene.add(group);
+let hatch = null;      // 出ているハッチ { phase: 'signal' | 'open' | 'jump' | 'close', t: その段階の経過秒数, courseT: コース上の位置（0..1）, open: 開き具合（0..1） }。無ければ null
+let hatchWait = 0;     // 次に現れるまでの秒数（シーン切替のたびに hideHatch で決める）
 
-  let phase = 'idle';
-  let phaseTime = 0;    // 今のフェーズに入ってからの秒数
-  let waitTimer = 0;    // idle 中、次に現れるまでの秒数
-  let courseT = 0;      // ハッチのコース上の位置 (0..1)
-  let open = 0;         // 0..1
-  const camLocal = new THREE.Vector3();
-  const outward = new THREE.Vector3();
-  const up = new THREE.Vector3();
-  const side = new THREE.Vector3();
-  const basis = new THREE.Matrix4();
+const hatchOutward = new THREE.Vector3();
+const hatchUp = new THREE.Vector3();
+const hatchSide = new THREE.Vector3();
+const hatchBasis = new THREE.Matrix4();
+const hatchCam = new THREE.Vector3();   // カメラの位置（ハッチの座標系）
 
-  function setPhase(next) {
-    phase = next;
-    phaseTime = 0;
-  }
-
-  function reset() {
-    setPhase('idle');
-    waitTimer = nextInterval();
-    open = 0;
-    mascot.root.position.y = HIDE_Y;
-    mascot.root.rotation.set(0, 0, 0);
-    mascot.root.scale.set(1, 1, 1);
-    for (const arm of mascot.arms) arm.rotation.z = 0;
-    // コースの輪の中心（必ずトンネルの外で、壁に隠れて見えない）に退避
-    group.position.set(0, 0, 0);
-    light.intensity = 0;
-    uniforms.uHatchOpen.value = 0;
-    uniforms.uHatchGlow.value = 0;
-  }
-
-  // カメラの少し先の壁に、グリッドのマス目に合わせてハッチを置く
-  function spawn() {
-    const ahead = Math.min(LAND_DIST + speed * (SIGNAL_TIME + HATCH_OPEN_TIME + JUMP_TIME), HATCH_MAX_AHEAD);
-    const uc = Math.floor(courseAhead(ahead) * course.rings) + HATCH_HALF.x;
-    if (uc + HATCH_HALF.x + 1 > course.rings) { waitTimer = 0.5; return; }   // コースの継ぎ目は避ける
-    const vc = 1 + randInt(AROUND_LINES - HATCH_SIZE.y - 1) + HATCH_HALF.y;
-
-    courseT = uc / course.rings;
-    const i = Math.round(courseT * TUBULAR_SEGMENTS);
-    const angle = (vc / AROUND_LINES) * TAU;
-    // TubeGeometry と同じ式で、ハッチ中心の外向き方向を求める
-    outward.copy(course.normals[i]).multiplyScalar(-Math.cos(angle))
-      .addScaledVector(course.binormals[i], Math.sin(angle));
-    up.copy(outward).negate();
-    side.crossVectors(up, course.tangents[i]);
-    group.quaternion.setFromRotationMatrix(basis.makeBasis(side, up, course.tangents[i]));
-    course.curve.getPointAt(courseT, group.position).addScaledVector(outward, TUBE_RADIUS);
-    group.updateMatrixWorld();
-
-    uniforms.uHatch.value.set(uc, vc);
-    setPhase('signal');
-  }
-
-  // カメラが着地点の LAND_DIST 手前に着くまでの秒数（通り過ぎていれば負）
-  function timeToArrive() {
-    const dist = ((courseT - progress + 1.5) % 1 - 0.5) * course.length;
-    return (dist - LAND_DIST) / speed;
-  }
-
-  // 速度が変わっても、カメラが近づききる前に着地するよう開くタイミングを決める
-  function advancePhase() {
-    switch (phase) {
-      case 'signal': {
-        const arrive = timeToArrive();
-        if (arrive <= 0) setPhase('close');
-        else if (arrive <= HATCH_OPEN_TIME + JUMP_TIME) setPhase('open');
-        break;
-      }
-      case 'open':  if (open === 1) setPhase('jump'); break;
-      case 'jump':  if (phaseTime >= JUMP_TIME) setPhase('close'); break;
-      case 'close': if (open === 0) reset(); break;
-    }
-  }
-
-  function animateMascot(follow) {
-    const { root, arms, eyes } = mascot;
-    const jumping = phase === 'jump';
-
-    // 放物線を描いてトンネル中央へ跳び、同じ穴へ戻る。速いときほど縦に伸ばす
-    const tau = jumping ? phaseTime / JUMP_TIME : 0;
-    root.position.y = HIDE_Y + 4 * (JUMP_HEIGHT - HIDE_Y) * tau * (1 - tau);
-    const stretch = jumping ? 1 + 0.3 * Math.abs(1 - 2 * tau) : 1;
-    root.scale.set(1 / Math.sqrt(stretch), stretch, 1 / Math.sqrt(stretch));
-
-    // カメラの方を向いて見上げる
-    group.worldToLocal(camLocal.copy(camera.position));
-    const yaw = clamp(Math.atan2(-camLocal.x, -camLocal.z), -0.8, 0.8);
-    const headY = root.position.y + 3 * PIXEL;
-    const pitch = clamp(
-      Math.atan2(camLocal.y - headY, Math.hypot(camLocal.x, camLocal.z)), -0.2, 0.6);
-    root.rotation.y += (yaw - root.rotation.y) * follow;
-    root.rotation.x += (pitch - root.rotation.x) * follow;
-
-    // 跳んでいる間はばんざいし、頂点を過ぎたところで一度まばたき
-    const armAngle = jumping ? 1.2 : 0;
-    arms[0].rotation.z += (-armAngle - arms[0].rotation.z) * follow;
-    arms[1].rotation.z += (armAngle - arms[1].rotation.z) * follow;
-    const eyeScale = tau > 0.62 && tau < 0.7 ? 0.15 : 1;
-    for (const eye of eyes) eye.scale.y = eyeScale;
-  }
-
-  function update(dt) {
-    if (phase === 'idle') {
-      waitTimer -= dt;
-      if (waitTimer <= 0) spawn();
-      return;
-    }
-    phaseTime += dt;
-    advancePhase();
-    if (phase === 'idle') return;
-
-    const opening = phase === 'open' || phase === 'jump';
-    open = moveToward(open, opening ? 1 : 0, dt / HATCH_OPEN_TIME);
-    animateMascot(1 - Math.exp(-dt * 8));
-
-    uniforms.uHatchOpen.value = open;
-    uniforms.uHatchGlow.value =
-      phase === 'signal' ? 0.5 + 0.5 * Math.cos(phaseTime * Math.PI * 6) : 0.5;
-    light.intensity = 4 * open;
-  }
-
-  return {
-    update,
-    reset,
-    summon() { if (phase === 'idle') spawn(); },
-    setHue(hue) {
-      shaftMaterial.color.setHSL(hue, 0.5, 0.12);
-      light.color.setHSL(hue, 0.9, 0.6);
-    },
-  };
+// ハッチと穴の中の光の色を、トンネルの色相に合わせる
+function setHatchHue(hue) {
+  shaftMaterial.color.setHSL(hue, 0.5, 0.12);
+  hatchLight.color.setHSL(hue, 0.9, 0.6);
 }
 
-const hatch = createHatch();
+// カメラの少し先の壁に、グリッドのマス目に合わせてハッチを置き、点滅から始める。出ている間は何もしない
+function startHatch() {
+  if (hatch) return;
+  const ahead = Math.min(LAND_DIST + speed * (SIGNAL_TIME + HATCH_OPEN_TIME + JUMP_TIME), HATCH_MAX_AHEAD);
+  const uc = Math.floor(courseAhead(ahead) * course.rings) + HATCH_HALF.x;
+  if (uc + HATCH_HALF.x + 1 > course.rings) { hatchWait = 0.5; return; }   // コースの継ぎ目は避ける
+  const vc = 1 + randInt(AROUND_LINES - HATCH_SIZE.y - 1) + HATCH_HALF.y;
+
+  const courseT = uc / course.rings;
+  const i = Math.round(courseT * TUBULAR_SEGMENTS);
+  const angle = (vc / AROUND_LINES) * TAU;
+  // TubeGeometry と同じ式で、ハッチ中心の外向き方向を求める
+  hatchOutward.copy(course.normals[i]).multiplyScalar(-Math.cos(angle))
+    .addScaledVector(course.binormals[i], Math.sin(angle));
+  hatchUp.copy(hatchOutward).negate();
+  hatchSide.crossVectors(hatchUp, course.tangents[i]);
+  hatchGroup.quaternion.setFromRotationMatrix(hatchBasis.makeBasis(hatchSide, hatchUp, course.tangents[i]));
+  course.curve.getPointAt(courseT, hatchGroup.position).addScaledVector(hatchOutward, TUBE_RADIUS);
+  hatchGroup.updateMatrixWorld();
+
+  tunnelMaterial.uniforms.uHatch.value.set(uc, vc);
+  hatch = { phase: 'signal', t: 0, courseT, open: 0 };
+}
+
+// ハッチを閉じてマスコットを隠し、次に現れるまでの秒数を決める。指数分布で決めるので、続けて出たりしばらく出なかったりする
+function hideHatch() {
+  hatch = null;
+  hatchWait = randomInterval(HATCH_INTERVAL);
+  mascot.root.position.y = HIDE_Y;
+  mascot.root.rotation.set(0, 0, 0);
+  mascot.root.scale.set(1, 1, 1);
+  for (const arm of mascot.arms) arm.rotation.z = 0;
+  // コースの輪の中心（必ずトンネルの外で、壁に隠れて見えない）に退避
+  hatchGroup.position.set(0, 0, 0);
+  hatchLight.intensity = 0;
+  tunnelMaterial.uniforms.uHatchOpen.value = 0;
+  tunnelMaterial.uniforms.uHatchGlow.value = 0;
+}
+
+// カメラが着地点の LAND_DIST 手前に着くまでの秒数（通り過ぎていれば負）
+function timeToArrive() {
+  const dist = ((hatch.courseT - progress + 1.5) % 1 - 0.5) * course.length;
+  return (dist - LAND_DIST) / speed;
+}
+
+// 速度が変わっても、カメラが近づききる前に着地するよう開くタイミングを決める
+function advanceHatch() {
+  const next = (phase) => { hatch.phase = phase; hatch.t = 0; };
+  switch (hatch.phase) {
+    case 'signal': {
+      const arrive = timeToArrive();
+      if (arrive <= 0) next('close');
+      else if (arrive <= HATCH_OPEN_TIME + JUMP_TIME) next('open');
+      break;
+    }
+    case 'open':  if (hatch.open === 1) next('jump'); break;
+    case 'jump':  if (hatch.t >= JUMP_TIME) next('close'); break;
+    case 'close': if (hatch.open === 0) hideHatch(); break;
+  }
+}
+
+function animateMascot(follow) {
+  const { root, arms, eyes } = mascot;
+  const jumping = hatch.phase === 'jump';
+  // 放物線を描いてトンネル中央へ跳び、同じ穴へ戻る。速いときほど縦に伸ばす
+  const tau = jumping ? hatch.t / JUMP_TIME : 0;
+  root.position.y = HIDE_Y + 4 * (JUMP_HEIGHT - HIDE_Y) * tau * (1 - tau);
+  const stretch = jumping ? 1 + 0.3 * Math.abs(1 - 2 * tau) : 1;
+  root.scale.set(1 / Math.sqrt(stretch), stretch, 1 / Math.sqrt(stretch));
+
+  // カメラの方を向いて見上げる
+  hatchGroup.worldToLocal(hatchCam.copy(camera.position));
+  const yaw = clamp(Math.atan2(-hatchCam.x, -hatchCam.z), -0.8, 0.8);
+  const headY = root.position.y + 3 * PIXEL;
+  const pitch = clamp(
+    Math.atan2(hatchCam.y - headY, Math.hypot(hatchCam.x, hatchCam.z)), -0.2, 0.6);
+  root.rotation.y += (yaw - root.rotation.y) * follow;
+  root.rotation.x += (pitch - root.rotation.x) * follow;
+
+  // 跳んでいる間はばんざいし、頂点を過ぎたところで一度まばたき
+  const armAngle = jumping ? 1.2 : 0;
+  arms[0].rotation.z += (-armAngle - arms[0].rotation.z) * follow;
+  arms[1].rotation.z += (armAngle - arms[1].rotation.z) * follow;
+  const eyeScale = tau > 0.62 && tau < 0.7 ? 0.15 : 1;
+  for (const eye of eyes) eye.scale.y = eyeScale;
+}
+
+function updateHatch(dt) {
+  if (!hatch) {
+    hatchWait -= dt;
+    if (hatchWait <= 0) startHatch();
+    return;
+  }
+  hatch.t += dt;
+  advanceHatch();
+  if (!hatch) return;   // 閉じ終えて消えた
+
+  const opening = hatch.phase === 'open' || hatch.phase === 'jump';
+  hatch.open = moveToward(hatch.open, opening ? 1 : 0, dt / HATCH_OPEN_TIME);
+  animateMascot(1 - Math.exp(-dt * 8));
+
+  tunnelMaterial.uniforms.uHatchOpen.value = hatch.open;
+  tunnelMaterial.uniforms.uHatchGlow.value =
+    hatch.phase === 'signal' ? 0.5 + 0.5 * Math.cos(hatch.t * Math.PI * 6) : 0.5;
+  hatchLight.intensity = 4 * hatch.open;
+}
 
 // ---- カメラ ----
 const tmpPos = new THREE.Vector3();
@@ -523,7 +505,7 @@ function setColorPreset(index) {
   const { hue, spread } = COLOR_PRESETS[colorPresetIndex];
   tunnelMaterial.uniforms.uHue.value = hue;
   tunnelMaterial.uniforms.uSpread.value = spread;
-  hatch.setHue(hue);
+  setHatchHue(hue);
 }
 
 function loadCourse() {
@@ -532,7 +514,7 @@ function loadCourse() {
   scene.add(course.mesh);
   tunnelMaterial.uniforms.uRepeat.value = course.rings;
   progress = 0;
-  hatch.reset();
+  hideHatch();
 }
 
 const nextCourse = () => fadeAndRun(() => {
@@ -554,7 +536,7 @@ function tick(now) {
   last = now;
   tunnelMaterial.uniforms.uTime.value += dt;
   updateCamera(dt);
-  hatch.update(dt);
+  updateHatch(dt);
   composer.render();
 }
 
@@ -571,7 +553,7 @@ setupControls({
   },
   // 作品だけのキー操作
   keys: {
-    KeyC: () => hatch.summon(),     // 隠しコマンド（HUDには出さない）
+    KeyC: startHatch,                  // 隠しコマンド（HUDには出さない）
   },
   onResize() {
     camera.aspect = innerWidth / innerHeight;

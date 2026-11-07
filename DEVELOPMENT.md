@@ -140,7 +140,7 @@ setupControls({
 - 新作は既存ファイル（[pipes.html](pipes.html) など）を土台にし、`<head>`、`#hud`、節の順番を揃える。
 - [index.html](index.html) の作品一覧にリンクを追加・更新する。
 - README.md の作品ごとの節（1 行の概要・操作）を更新する。
-- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。隠し要素（sandpicture のラクダ、aurora のサンタなど）は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。出るまでの待ち時間を無限大にするなど、作品の変数で出ないようにしてから撮る（`video-export.mjs` なら `--at "0:camelWait = Infinity"` のように渡す）。
+- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。隠し要素（sandpicture のラクダ、aurora のサンタなど）は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。作品の変数で出ないようにしてから撮る（`video-export.mjs` なら `--hidden off`）。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
 - 見た目のための乱数を足すときは、既存の乱数を引く順番を変えない（既存の乱数を全部引いたあとに引くか、`Math.random` を使わない別の乱数にする）。`Math.random` を引く回数や順番が変わると、そのあとの乱数の列がすべてずれ、配置などが変わって、video-compare で同じ絵どうしを比べられなくなる。

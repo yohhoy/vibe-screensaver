@@ -1,4 +1,4 @@
-// 作品の一覧と、場面の選び方。video-export.mjs・video-compare.mjs・gpu-bench.mjs で使う。
+// 作品の一覧と、場面の選び方・隠し要素の呼び出し方。video-export.mjs・video-compare.mjs・gpu-bench.mjs で使う。
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）
@@ -17,6 +17,17 @@ export const CHOICES = {
   aurora: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
   lavalamp: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
   sandpicture: { option: 'presets', list: 'COLOR_PRESETS', select: 'startPicture(i)' },   // 配色を替えて、新しい絵から始める
+};
+
+// 隠し要素を持つ作品の、呼び出す関数名。作品のトップレベルの function で、隠しキー（C）と、待ち時間が切れたときの自然な出現の
+// 両方がこの関数を呼ぶ。video-export.mjs の --hidden は、これを差し替えて出現を止め、呼び出す時刻を決める
+export const HIDDEN = {
+  tube: 'startHatch',
+  aurora: 'startSanta',
+  ripple: 'startEvent',
+  penguins: 'startChick',
+  diamond: 'startSpider',
+  sandpicture: 'startCamel',
 };
 
 // option で場面を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）

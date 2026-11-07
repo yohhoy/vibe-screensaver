@@ -18,13 +18,28 @@ node tools/video-export.mjs waterfall --scenes 0,1,2 --seconds 5 --out out.mp4
 
 ## 出来事のタイミング
 
-`--at "秒:式"` で、動画の時刻に式を実行する。式は作品のスクリプトの中で評価するので、作品の変数と関数を使える。隠し要素もこれで呼び出す（式は各 HTML の `setupControls` の `keys` を見る）。
+`--at "秒:式"` で、動画の時刻に式を実行する。式は作品のスクリプトの中で評価するので、作品の変数と関数を使える。隠し要素は、次の節の `--hidden` で出し入れする。
 
 ```sh
 node tools/video-export.mjs aurora --seconds 15 --warmup 0 --at "1:startSanta()" --out santa.mp4
 ```
 
 時刻は動画の中の秒で数える。`--warmup` の時間は含まない。
+
+## 隠し要素
+
+隠し要素（tube・aurora・ripple・penguins・diamond・sandpicture）の出し方は `--hidden` で決める。
+
+- `auto`（既定）: 作品に任せる。待ち時間が切れたときに出る。
+- `off`: 出さない。サムネイルや、隠し要素を写したくない動画に使う。
+- `2,8.5`: 自然には出さず、動画のその時刻に呼び出す。時刻は `--at` と同じく動画の中の秒で、`--warmup` は含まない。
+
+```sh
+node tools/video-export.mjs sandpicture --presets 0 --hidden off --out desert.mp4
+node tools/video-export.mjs aurora --seconds 15 --warmup 0 --hidden 1 --out santa.mp4
+```
+
+作品のトップレベルの関数（`pages.mjs` の `HIDDEN`）を、待ち時間が切れたときの呼び出しと隠しキー（C）が共有している。ツールはその関数を空に差し替えて自然な出現を止め、元の関数を指定の時刻に呼ぶ。隠し要素を足す作品も、この形にして `HIDDEN` に足す。
 
 ## 確認
 
