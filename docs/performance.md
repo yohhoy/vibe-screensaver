@@ -63,7 +63,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 | penguins | Blue Sky | 1.71（1.71〜1.71） | 2.2（2.2〜2.2） | 5.3 |
 | penguins | Midnight Sun | 1.76（1.74〜1.76） | 2.3（2.3〜2.3） | 5.6 |
 | penguins | Blizzard | 1.81（1.80〜1.81） | 2.4（2.4〜2.4） | 5.4 |
-| diamond | — | 4.41（4.40〜4.47） | 3.4（3.3〜3.4） | 5.5 |
+| diamond | — | 4.45（4.39〜4.54） | 3.4（3.4〜3.5） | 5.8 |
 | sandpicture | — | 1.70（1.68〜1.70） | 2.2（2.2〜2.2） | 5.3 |
 
 ### Retina（1280×832、devicePixelRatio 2）
@@ -88,7 +88,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 | penguins | Blue Sky | 1.89（1.89〜2.00） | 2.4（2.4〜2.5） | 5.3 |
 | penguins | Midnight Sun | 1.95（1.94〜2.04） | 2.5（2.5〜2.6） | 5.5 |
 | penguins | Blizzard | 1.95（1.94〜2.07） | 2.5（2.5〜2.7） | 5.5 |
-| diamond | — | 9.36（9.35〜9.36） | 6.0（6.0〜6.0） | 5.3 |
+| diamond | — | 3.13（3.13〜3.19） | 3.9（3.9〜4.1） | 5.4 |
 | sandpicture | — | 2.23（2.22〜2.23） | 2.7（2.7〜2.7） | 5.3 |
 
 ### 描画の内容
@@ -125,7 +125,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 
 ### 測った条件
 
-- 日付とコード: 2026-11-07、コミット badc14f
+- 日付とコード: 2026-11-07、コミット c2ab352
 - 機材: MacBook Air（M3、GPU 10 コア、メモリ 16GB）、AC 電源、低電力モードはオフ
 - ブラウザ: Chrome 156.0.8078.79（ヘッドレス、ANGLE Metal）
 - 作品ごとに、GPU が 50℃ 以下に冷めるのを待ってから（`--cool 50`）、その作品の全シーンを順に 3 周する。1 回は起動から 450 コマ（作品の中の時間で 15 秒）で、その中央値をとる。表の値は 3 周の中央値。
