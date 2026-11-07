@@ -36,6 +36,7 @@ const MAX_SEGMENTS = 1400;                 // これを超えたらリセット
 const STRAIGHT_BIAS = 0.75;                // 直進を続ける確率
 const FLANGE_CHANCE = 0.12;                // 直進時にフランジ継手を入れる確率
 const MIN_SCALE = 0.0001;                  // 長さ0のスケールを避けるための下限
+const BATCH_SIZE = 48;                     // 動かなくなった部品がこの数（個）たまるごとに、材質ごとに 1 つのメッシュへ結合する
 // パイプの色の候補
 const COLORS = [0xd03030, 0x30b030, 0x3060e0, 0xe0c020, 0xc040c0, 0x30c0c0,
                 0xe08020, 0xe0e0e0, 0x8080ff, 0xff70a0];
@@ -127,6 +128,25 @@ const geo = {
 
 const boltMat = new THREE.MeshPhongMaterial({ color: 0xa0a0a8, shininess: 120, specular: 0xaaaaaa });
 const pipeMaterials = [];                  // リセット時にまとめて破棄する
+const mergedGeometries = [];               // 結合してできたジオメトリ。リセット時にまとめて破棄する
+
+// 動かない部品のメッシュを、材質ごとに 1 つのメッシュへ結合して world に置き直す。見た目は変わらない
+function mergeMeshes(meshes) {
+  const byMaterial = new Map();
+  for (const m of meshes) {
+    m.updateMatrix();
+    const g = m.geometry.clone().applyMatrix4(m.matrix);
+    if (!byMaterial.has(m.material)) byMaterial.set(m.material, []);
+    byMaterial.get(m.material).push(g);
+    world.remove(m);
+  }
+  for (const [material, geometries] of byMaterial) {
+    const merged = mergeGeometries(geometries);
+    geometries.forEach(g => g.dispose());
+    mergedGeometries.push(merged);
+    world.add(new THREE.Mesh(merged, material));
+  }
+}
 
 // ---- 状態 ----
 let speed = BASE_SPEED;
@@ -184,13 +204,15 @@ class Pipe {
     this.pos = cell;
     this.dir = null;       // 直前に進んだ方向（DIRS の要素）
     this.growing = null;   // 伸長中のセグメント { mesh, length, t }
+    this.settled = [];     // もう動かず、結合を待っているメッシュ
     this.lastSeg = null;
     this.alive = true;
     grid.occupy(cell);
     this.addMesh(geo.sphere, grid.toWorld(cell));
   }
 
-  addMesh(geometry, position, quaternion, material = this.material) {
+  // world に置くだけ。管のセグメントは長さが変わるので、これで作って伸び終えてから settleLast に渡す
+  createMesh(geometry, position, quaternion, material = this.material) {
     const m = new THREE.Mesh(geometry, material);
     m.position.copy(position);
     if (quaternion) m.quaternion.copy(quaternion);
@@ -198,9 +220,29 @@ class Pipe {
     return m;
   }
 
+  // 動かない部品を置く。結合の待ちに入る
+  addMesh(geometry, position, quaternion, material) {
+    const m = this.createMesh(geometry, position, quaternion, material);
+    this.settled.push(m);
+    return m;
+  }
+
   // Y軸向きのジオメトリを dir 方向に向けて配置
   addAligned(geometry, position, dir, material) {
     return this.addMesh(geometry, position, alignY(dir), material);
+  }
+
+  // 長さが決まった直前のセグメントを結合の待ちに入れ、たまっていれば結合する
+  settleLast() {
+    if (this.lastSeg) this.settled.push(this.lastSeg.mesh);
+    if (this.settled.length >= BATCH_SIZE) this.flush();
+  }
+
+  // 結合の待ちをすべて結合する
+  flush() {
+    if (!this.settled.length) return;
+    mergeMeshes(this.settled);
+    this.settled = [];
   }
 
   // center から dir 方向へ offset 離れた位置に、dir 向きの差し込み口を付ける
@@ -234,6 +276,8 @@ class Pipe {
     const end = grid.toWorld(this.pos);
     this.addMesh(geo.sphere, end);
     if (this.dir) this.addCollar(end, this.dir, -COLLAR_OFFSET);
+    this.settleLast();
+    this.flush();   // 止まったパイプはもう動かないので、残りもまとめる
   }
 
   chooseDir() {
@@ -278,7 +322,8 @@ class Pipe {
       length = 1 - ELBOW_R;
     }
 
-    const mesh = this.addAligned(geo.pipe, start, next);
+    this.settleLast();   // 直前のセグメントは、エルボーで縮めた後の長さで確定する
+    const mesh = this.createMesh(geo.pipe, start, alignY(next));
     mesh.scale.y = MIN_SCALE;
     this.growing = this.lastSeg = { mesh, length, t: 0 };
     this.dir = next;
@@ -342,6 +387,8 @@ function placeCamera() {
 function start() {
   for (const m of pipeMaterials) m.dispose();
   pipeMaterials.length = 0;
+  for (const g of mergedGeometries) g.dispose();
+  mergedGeometries.length = 0;
   world.clear();
   grid.clear();
   segmentCount = 0;
