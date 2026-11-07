@@ -39,6 +39,7 @@ const SCREEN_HEIGHT_RATIO = 0.5;  // ダイヤモンドの幅が画面の高さ�
 const SCREEN_WIDTH_RATIO = 0.6;   // 縦長の画面で、ダイヤモンドの幅が画面の幅に占める割合の上限
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };
 const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
+const MSAA_OFF_PIXEL_RATIO = 1.25;   // 解像度の倍率がこれ以上なら MSAA を切る（画素が細かくてぎざぎざが目立たず、負荷も大きく減る）
 
 // 部屋
 const FLOOR_Y = -5;
@@ -453,8 +454,9 @@ const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 1,
 
 // 全画面の描画先の色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
 // マルチサンプルにするのはシーンを描く描画先だけ
+const sceneSamples = renderer.getPixelRatio() < MSAA_OFF_PIXEL_RATIO ? MSAA_SAMPLES : 0;
 const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
-  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES });
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, sceneSamples), samples: sceneSamples });
 function updateSceneTargetSize() {
   const pr = renderer.getPixelRatio();
   sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
