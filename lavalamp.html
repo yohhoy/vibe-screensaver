@@ -54,9 +54,9 @@ const BOTTLE_CURVE_STEPS = 16;        // 瓶の下端の丸みの分割数
 const METAL_COLOR = [0.62, 0.64, 0.68];
 const METAL_SPEC = 0.5;               // 映り込みの明るさ
 
-// 配色（壁一面に並んだ溶岩ランプの写真から取った色）。
+// 配色のプリセット（壁一面に並んだ溶岩ランプの写真から取った色）。
 // waxHot: 電球に近い所の蝋、wax: 上の方の蝋、liquidBright: 下の方の液体、liquidDeep: 上の方の液体
-const PALETTES = [
+const COLOR_PRESETS = [
   { waxHot: [1, 0.82, 0.25], wax: [1, 0.17, 0.2], liquidBright: [0.95, 0.12, 0.42], liquidDeep: [0.34, 0.1, 0.52] },    // 赤い蝋と紫の液体
   { waxHot: [0.86, 1, 0.22], wax: [0.32, 0.76, 0.16], liquidBright: [0, 0.5, 0.56], liquidDeep: [0.03, 0.22, 0.38] },   // 緑の蝋と青緑の液体
   { waxHot: [1, 0.96, 0.42], wax: [1, 0.84, 0.2], liquidBright: [1, 0.16, 0.24], liquidDeep: [0.84, 0.08, 0.36] },      // 黄色の蝋と赤い液体
@@ -549,7 +549,7 @@ const pool = { bottom: 0, top: 0 };   // 溜まりの蝋の量
 let blobs = [];                 // 浮かんでいる塊
 let bottomWait = 0;             // 底から次の塊を出すまでの秒数
 let topWait = 0;                // 上から次の塊を落とすまでの秒数
-let palette = null;             // いまの配色
+let colorPresetIndex = -1;      // いまの配色（COLOR_PRESETS の番号。起動前は -1）
 
 // ---- ランプと部屋 ----
 const waxHotColor = new THREE.Color();
@@ -614,16 +614,20 @@ const halo = new THREE.Mesh(new THREE.PlaneGeometry(...HALO_PLANE), shaderMateri
 halo.position.set(0, HALO_Y, HALO_Z);
 scene.add(wall, table, halo);
 
-// 配色を選び直す。前と同じ配色は続けない
-function pickPalette() {
-  palette = pick(PALETTES.filter((p) => p !== palette));
+// 配色を COLOR_PRESETS の index 番に替え、色相を少しばらつかせる
+function setColorPreset(index) {
+  colorPresetIndex = index;
+  const preset = COLOR_PRESETS[index];
   const jitter = rand(-HUE_JITTER, HUE_JITTER);
-  waxHotColor.setRGB(...palette.waxHot).offsetHSL(jitter, 0, 0);
-  waxColor.setRGB(...palette.wax).offsetHSL(jitter, 0, 0);
-  liquidBrightColor.setRGB(...palette.liquidBright).offsetHSL(jitter, 0, 0);
-  liquidDeepColor.setRGB(...palette.liquidDeep).offsetHSL(jitter, 0, 0);
+  waxHotColor.setRGB(...preset.waxHot).offsetHSL(jitter, 0, 0);
+  waxColor.setRGB(...preset.wax).offsetHSL(jitter, 0, 0);
+  liquidBrightColor.setRGB(...preset.liquidBright).offsetHSL(jitter, 0, 0);
+  liquidDeepColor.setRGB(...preset.liquidDeep).offsetHSL(jitter, 0, 0);
   glowColor.copy(waxColor).lerp(liquidBrightColor, GLOW_LIQUID_MIX);
 }
+
+// 前と違う配色の番号を選ぶ
+const pickColorPreset = () => pick(COLOR_PRESETS.map((_, i) => i).filter((i) => i !== colorPresetIndex));
 
 // ---- 小物 ----
 // 小物の部品をすべて机の座標に置き、1 つの形にまとめて 1 回で描く
@@ -1252,7 +1256,7 @@ function fitCamera() {
 // ---- シーン切替 ----
 // 配色と小物を選び直し、蝋を底に戻して最初からやり直す
 function start() {
-  pickPalette();
+  setColorPreset(pickColorPreset());
   arrangeProps();
   resetWax();
 }

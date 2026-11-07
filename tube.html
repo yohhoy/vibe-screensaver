@@ -71,8 +71,8 @@ const LAND_DIST = 8;              // 着地したときのカメラとの距離
 const MASCOT_MEAN_INTERVAL = 10;  // 自然に現れる平均間隔 (秒)
 const MASCOT_MAX_INTERVAL = 60;   // 間隔の上限 (秒)
 
-// 配色テーマ: 基準の色相と、トンネルに沿った色相の変化幅
-const THEMES = [
+// 配色のプリセット（シーン切替のたびにこの順番で次へ進める）: 基準の色相と、トンネルに沿った色相の変化幅
+const COLOR_PRESETS = [
   { hue: 0.55, spread: 0.25 },    // シアン〜ブルー
   { hue: 0.85, spread: 0.30 },    // マゼンタ〜オレンジ
   { hue: 0.30, spread: 0.15 },    // グリーン
@@ -227,7 +227,7 @@ const tunnelMaterial = new THREE.ShaderMaterial({
 
 // ---- 状態 ----
 let speed = BASE_SPEED;
-let themeIndex = 0;
+let colorPresetIndex = 0;   // いまの配色（COLOR_PRESETS の番号）
 let course;           // createCourse() の戻り値
 let progress = 0;     // 0..1 のコース上の位置
 let roll = 0;
@@ -517,9 +517,10 @@ function updateCamera(dt) {
 }
 
 // ---- シーン切替 ----
-function setTheme(index) {
-  themeIndex = index % THEMES.length;
-  const { hue, spread } = THEMES[themeIndex];
+// 配色を COLOR_PRESETS の index 番に替える
+function setColorPreset(index) {
+  colorPresetIndex = index % COLOR_PRESETS.length;
+  const { hue, spread } = COLOR_PRESETS[colorPresetIndex];
   tunnelMaterial.uniforms.uHue.value = hue;
   tunnelMaterial.uniforms.uSpread.value = spread;
   hatch.setHue(hue);
@@ -535,7 +536,7 @@ function loadCourse() {
 }
 
 const nextCourse = () => fadeAndRun(() => {
-  setTheme(themeIndex + 1);
+  setColorPreset(colorPresetIndex + 1);
   loadCourse();
 });
 
@@ -582,7 +583,7 @@ setupControls({
 
 // ---- 開始 ----
 setSpeed(BASE_SPEED);
-setTheme(randInt(THEMES.length));
+setColorPreset(randInt(COLOR_PRESETS.length));
 loadCourse();
 renderer.setAnimationLoop(tick);
 </script>

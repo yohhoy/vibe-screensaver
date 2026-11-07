@@ -76,7 +76,7 @@ const FILL_HEIGHT = 0.8;                   // 山の高さが画面の高さの�
 const WATCH_SEC = 30;                      // 流すのをやめてから次の絵に移るまでの秒数
 
 // ガラスと光
-const LIQUID_TOP_GAIN = 1.0;               // 液体の上端の明るさ（シーンの液体の色に対する倍率）
+const LIQUID_TOP_GAIN = 1.0;               // 液体の上端の明るさ（配色の液体の色に対する倍率）
 const LIQUID_BOTTOM_GAIN = 0.82;           // 液体の下端の明るさ（同じ）
 const EDGE_DARK = 0.05;                    // 画面の縁を暗くする強さ
 const EDGE_WIDTH = 0.12;                   // 縁を暗くする幅（画面の高さに対する割合）
@@ -133,15 +133,15 @@ const CAMEL_MAX_PITCH = 0.9;               // 斜面に合わせて傾ける角�
 const CAMEL_READ_SEC = 0.1;                // ラクダがいる間に砂の表面を読み出す間隔（秒）
 const CAMEL_COLOR = 0x1a120c;
 
-// シーン（docs/specs/sandpicture.md の「シーンの定義」。この順番でローテーションする）。
-// 砂は 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 18〜53 の範囲で、大きいほど急な斜面で積もる。
+// 配色のプリセット（docs/specs/sandpicture.md の「配色の定義」。絵ごとにこの順番でローテーションする）。
+// name: 読む人のための名前（コードでは使わない）, liquid: 液体の色, sand: 砂の 3 色で、[色, 安息角（画面での角度、度）]。安息角は約 18〜53 の範囲で、大きいほど急な斜面で積もる。
 // 3 色の安息角を離しておくと、山の上に積もる層の厚さが色ごとに変わり、地層のように見える
-const SCENES = [
+const COLOR_PRESETS = [
   { name: 'Desert', liquid: 0xe9dcbc, sand: [[0x3a2418, 45], [0xd0702a, 32], [0xf3ede2, 18]] },
   { name: 'Ocean', liquid: 0xcfe2ec, sand: [[0x14254a, 45], [0x1f8a8a, 32], [0xf0f4f6, 18]] },
   { name: 'Sunset', liquid: 0xf3dcd6, sand: [[0x4a2160, 45], [0xc0303f, 32], [0xe6b53a, 18]] },
 ];
-const SAND_COLORS = 3;                     // 1 つのシーンの砂の色の数
+const SAND_COLORS = 3;                     // 1 つの配色の砂の色の数
 
 // 描画
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
@@ -530,7 +530,7 @@ const overlayCamera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
 
 // ---- 状態 ----
 let holeCount = BASE_HOLES;     // 落とし口の数（強度）
-let sceneIndex = 0;             // いまのシーン（SCENES の番号）
+let colorPresetIndex = 0;       // いまの配色（COLOR_PRESETS の番号）
 let W = 0, H = 0;               // 格子の大きさ（マス）
 let targets = [];               // 格子の描画先（交互に読み書きする 2 枚）
 let current = 0;                // いまの格子が入っている描画先の番号
@@ -594,7 +594,7 @@ function addHole() {
   const flow = randomFlow();
   const drift = HOLE_DRIFT_PERIOD.map((period) => ({ speed: TAU / randIn(period), phase: rand(0, TAU) }));
   holes.push({
-    home: best, x: best, width, color: randInt(SCENES[sceneIndex].sand.length), time: randIn(STRATUM_SEC),
+    home: best, x: best, width, color: randInt(COLOR_PRESETS[colorPresetIndex].sand.length), time: randIn(STRATUM_SEC),
     ...newStratumTone(),
     flow, flowTarget: flow, flowTime: randIn(FLOW_CHANGE_SEC), drift,
   });
@@ -680,7 +680,7 @@ function readSurface() {
 // 口ごとに切り替えるので、山ごとに層の色の順番と厚さが変わる。
 // 流れる量も口ごとに、ときどき選び直した目標へなめらかに近づけ、位置もゆっくり動かす
 function updateStreams(dt) {
-  const count = SCENES[sceneIndex].sand.length;
+  const count = COLOR_PRESETS[colorPresetIndex].sand.length;
   const follow = 1 - Math.exp(-dt / FLOW_SMOOTH_SEC);
   for (const h of holes) {
     h.time -= dt;
@@ -730,7 +730,7 @@ function updatePicture(dt) {
   }
   if (!pouring) {
     watchTime += dt;
-    if (watchTime >= WATCH_SEC && !isFading()) nextScene();
+    if (watchTime >= WATCH_SEC && !isFading()) nextPicture();
   }
 }
 
@@ -945,12 +945,10 @@ function hideCamel() {
 }
 
 // ---- シーン切替 ----
-// 格子を画面に合わせて空にし、シーンを index に替え、落とし口を選び直す
-function setScene(index) {
-  buildGrid();
-  clearGrid();
-  sceneIndex = (index + SCENES.length) % SCENES.length;
-  const s = SCENES[sceneIndex];
+// 砂の色・安息角と液体の色を COLOR_PRESETS の index 番に替える
+function setColorPreset(index) {
+  colorPresetIndex = (index + COLOR_PRESETS.length) % COLOR_PRESETS.length;
+  const s = COLOR_PRESETS[colorPresetIndex];
   s.sand.forEach(([hex, angle], i) => {
     viewPass.uniforms.uSand.value[i].copy(hexToVec3(hex));
     simPass.uniforms.uSticky.value[i] = stickyFraction(angle);
@@ -959,6 +957,13 @@ function setScene(index) {
   viewPass.uniforms.uLiquidTop.value.copy(hexToVec3(s.liquid, LIQUID_TOP_GAIN));
   viewPass.uniforms.uLiquidBottom.value.copy(hexToVec3(s.liquid, LIQUID_BOTTOM_GAIN));
   viewPass.uniforms.uFloor.value.copy(hexToVec3(s.liquid, FLOOR_GAIN));
+}
+
+// 格子を画面に合わせて空にし、配色を index 番に替え、落とし口を選び直して、新しい絵を始める
+function startPicture(index) {
+  buildGrid();
+  clearGrid();
+  setColorPreset(index);
   viewPass.uniforms.uTopSeed.value = rand(0, 1000);
   holes = [];
   pouring = true;
@@ -971,7 +976,7 @@ function setScene(index) {
   hideCamel();
 }
 
-const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+const nextPicture = () => fadeAndRun(() => startPicture(colorPresetIndex + 1));
 
 // ---- 強度 ----
 function setHoleCount(value) {
@@ -1000,7 +1005,7 @@ function tick(now) {
 
 // ---- 入力・UI ----
 setupControls({
-  changeScene: nextScene,
+  changeScene: nextPicture,
   intensity: {
     up: () => setHoleCount(holeCount + 1),
     down: () => setHoleCount(holeCount - 1),
@@ -1016,7 +1021,7 @@ setupControls({
 });
 
 // ---- 開始 ----
-setScene(randInt(SCENES.length));
+startPicture(randInt(COLOR_PRESETS.length));
 renderer.setAnimationLoop(tick);
 </script>
 </body>

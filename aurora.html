@@ -79,7 +79,7 @@ const BRIGHT_WAVE = { len: [300, 900], speed: [0.2, 0.5] };   // 明るさのむ
 const BRIGHT_WAVE_DEPTH = 0.65;   // 明るさのむらの深さ（0: むら無し, 1: 暗い所は真っ暗）
 
 // オーロラの光り方
-const AURORA_BRIGHT = 0.52;       // 明るさの倍率（プリセットの色に掛ける）
+const AURORA_BRIGHT = 0.52;       // 明るさの倍率（配色の色に掛ける）
 const AURORA_BRIGHT_RANGE = [0.6, 1];   // リセットのたびに選ぶ明るさの倍率の範囲（対数で一様に選ぶ）
 const CURTAIN_DIM = 0.55;         // 2 枚目からの幕の明るさ（1 枚ごとにこの倍率を掛ける。主役の 1 本を目立たせ、重なって白く飛ばないように）
 const CURTAIN_DIM_MIN = 0.25;     // その下限（幕を増やしたときに、後ろの幕が見えなくならないように）
@@ -93,11 +93,11 @@ const RAY_REPEAT = 1500;          // 細かい筋の模様がくり返す長さ
 const RAY_BROAD = 0.31;           // 太い筋の模様の細かさ（細かい筋に対する倍率。小さいほど太い）
 const RAY_DRIFT = [0.008, 0.003]; // 筋の模様が横へ流れる速さ [細かい筋, 太い筋]（くり返し 1 回分を 1 として、/秒）
 
-// オーロラの色のプリセット。リセットのたびに chance の確率で 1 つ選ぶ（chance の合計は 1）。
+// 配色のプリセット。リセットのたびに chance の確率で 1 つ選ぶ（chance の合計は 1）。
 // トーンマッピングで色が薄まるので鮮やかにし、上の方は暗いので 1 より大きくする。
 // name: 読む人のための名前（コードでは使わない）, low: 下の縁の色, mid: 中ほどの色, high: 上の方の色（リニア）,
 // lowEnd: low から mid に変わり終わる高さ, highStart: high に変わり始める高さ（どちらも下端 0 → 上端 1）, bright: 明るさの倍率
-const AURORA_PRESETS = [
+const COLOR_PRESETS = [
   { name: 'Green', chance: 0.5, low: [0.45, 1, 0.1], mid: [0.2, 1, 0.15], high: [0.2, 1, 0.15], lowEnd: 0.33, highStart: 1, bright: 1 },
   { name: 'Green with Purple Top', chance: 0.2, low: [0.2, 1, 0.15], mid: [0.2, 1, 0.15], high: [2, 0.02, 0.9], lowEnd: 0.25, highStart: 0.3, bright: 1 },
   { name: 'Green with Pink Edge', chance: 0.2, low: [2.2, 0.05, 0.9], mid: [0.2, 1, 0.15], high: [0.2, 1, 0.15], lowEnd: 0.1, highStart: 1, bright: 1 },
@@ -387,6 +387,7 @@ let activity = 0;          // いまの活動の強さ（0..1。サブストー�
 let substorm = null;       // 起きているサブストーム { t: 始まってからの秒数 }。無ければ null
 let substormWait = randomInterval(SUBSTORM_INTERVAL);   // 次のサブストームまでの秒数
 let skyPhase = 0;          // 星空の回転の位相（0..1）
+let colorPresetIndex = 0;  // いまの配色（COLOR_PRESETS の番号）
 let brightScale = 1;       // オーロラの明るさの倍率（リセットのたびに AURORA_BRIGHT_RANGE から選ぶ）
 // 強度と活動の強さから決まる値（updateActivity で求める）
 const act = { curtains: 1, bright: 1, speed: 1, height: 1 };
@@ -395,7 +396,7 @@ const act = { curtains: 1, bright: 1, speed: 1, height: 1 };
 const lightRaw = new Float32Array(LIGHT_BINS);   // このコマの方位ごとの幕の明るさ（Curtain が足し、updateLight で空にする）
 const lightUniforms = {
   uLight: { value: new Float32Array(LIGHT_BINS) },   // 方位ごとの明かりの強さ
-  uLightColor: { value: new THREE.Vector3() },       // 幕の平均の色（applyPreset で決める）
+  uLightColor: { value: new THREE.Vector3() },       // 幕の平均の色（setColorPreset で決める）
 };
 let lightSnap = true;      // 次の updateLight で、ならさずに合わせる（リセットの直後）
 
@@ -610,7 +611,7 @@ const rayTexture = (() => {
   return tex;
 })();
 
-// 全部の幕で共通の色（applyPreset で決める）
+// 全部の幕で共通の色（setColorPreset で決める）
 const auroraColors = {
   uLow: { value: new THREE.Vector3() },
   uMid: { value: new THREE.Vector3() },
@@ -745,10 +746,10 @@ class Curtain {
 const curtains = Array.from({ length: Math.ceil(Math.max(...CURTAIN_LEVELS) + SUBSTORM_CURTAINS) }, (_, i) => new Curtain(i));
 
 // ---- オーロラの色 ----
-// プリセットを chance の確率で 1 つ選ぶ
-function pickPreset() {
+// 配色を chance の確率で 1 つ選び、その番号を返す
+function pickColorPreset() {
   let r = Math.random();
-  return AURORA_PRESETS.find((p) => (r -= p.chance) < 0) ?? AURORA_PRESETS[0];
+  return Math.max(0, COLOR_PRESETS.findIndex((p) => (r -= p.chance) < 0));
 }
 
 // 幕全体の平均の色（シェーダーの縦の色を、上の方ほど暗い明るさで粗く平均する）
@@ -763,8 +764,10 @@ function averageColor({ low, mid, high, lowEnd, highStart, bright }) {
   return color.map((c) => c * bright / total);
 }
 
-// プリセットの色を幕と明かりに渡す
-function applyPreset(preset) {
+// COLOR_PRESETS の index 番の色を幕と明かりに渡す
+function setColorPreset(index) {
+  colorPresetIndex = index;
+  const preset = COLOR_PRESETS[index];
   const { low, mid, high, lowEnd, highStart, bright } = preset;
   auroraColors.uLow.value.fromArray(low).multiplyScalar(bright);
   auroraColors.uMid.value.fromArray(mid).multiplyScalar(bright);
@@ -983,10 +986,10 @@ function clearSanta() {
 }
 
 // ---- シーン切替 ----
-// オーロラの色のプリセット・明るさ・幕と、山並み・木の位置を選び直す。
+// 配色・明るさ・幕と、山並み・木の位置を選び直す。
 // 幕は山並みの高さに合わせて持ち上げるので、山並みより後に選ぶ
 function reset() {
-  applyPreset(pickPreset());
+  setColorPreset(pickColorPreset());
   const [lo, hi] = AURORA_BRIGHT_RANGE;
   brightScale = lo * (hi / lo) ** Math.random();
   buildRidges();
