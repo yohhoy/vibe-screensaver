@@ -26,7 +26,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray, emit, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 炎・火の粉の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
@@ -34,7 +34,7 @@ const { TAU, clamp, rand, randIn, randInt, randomInterval, gray, emit, IS_TOUCH,
 // カメラ（焚き火のまわりをゆっくり回る）
 const CAM_DIST = 5.5;             // 焚き火からの距離（一定。回っても画面上の大きさが変わらない）
 const CAM_HEIGHT = 1.3;           // 地面からの高さ
-const CAM_TARGET_Y = 1.1;         // 見る点の高さ
+const CAM_TARGET_Y = 1.22;        // 見る点の高さ（高いほど、焚き火が画面の下へ寄る。1.1 から 0.12 上げて、画面の高さの約 2.6% 下げた）
 const CAM_FOV = 45;
 const ORBIT_PERIOD = 240;         // 1 周する秒数
 
@@ -93,6 +93,65 @@ const SPARK_LIFE = [0.3, 1.2];    // 燃え尽きるまでの秒数
 const SPARK_FLOAT_CHANCE = 0.2;   // そのうち普段の火の粉になって、ゆっくり上っていく割合
 const CRACKLE_FLARE = 0.25;       // 一瞬明るくなる強さ
 const CRACKLE_FLARE_TIME = 0.12;  // 明るさが 1/e に戻るまでの秒数
+
+// 隠し要素のリスと花火（リスがどんぐりを焚き火へ投げ込み、焚き火から花火が上がる）
+const SQUIRREL = {
+  interval: [300, 120, 900],      // 現れる間隔 [平均, 下限, 上限]（秒）
+  size: 0.65,                     // リスの板の一辺（ワールドの単位。体の長さはその 7 割ほど）
+  color: [0.045, 0.032, 0.026],   // シルエットの色（周囲の光に左右されない一定の色。どんぐりも同じ）
+  glowColor: [0.32, 0.16, 0.08],  // シルエットのまわりのほのかな光の色（加算。暗い地面でも形が分かるように。周囲の光に左右されない一定の色）
+  glowRadius: 0.016,              // その光の広がり（板の一辺に対する割合。輪郭の外へにじむ幅）
+  sitScale: 0.94,                 // 立ち絵（座って投げる姿）を描く倍率（足もと基準）。走る姿と見比べた大きさをそろえる
+  runScale: 0.86,                 // 走る姿を描く倍率（足もと基準。立ち絵と同じ大きさで描くと、尻尾から頭までが板の幅に収まらない）
+  runSpeed: 2.0,                  // 焚き火へ走る速さ
+  fleeSpeed: 3.0,                 // 花火に驚いて逃げる速さ
+  stride: 13,                     // 走るときの脚の動く速さ（rad/s）
+  stopDist: 1.3,                  // 止まって投げる位置の、焚き火の中心からの距離（石の外）
+  holdTime: 0.8,                  // 止まってから腕を振り上げ始めるまでの秒数
+  throwTime: 0.4,                 // 腕を振り上げて投げるまでの秒数
+  lookAngle: 0.25,                // 上がる花火を見上げて、頭を上へ傾ける最大の角度（rad。約 14 度）
+  startleTime: 0.5,               // 花火が開いてから、リスが逃げ出すまでの秒数（そのあいだは開いた花火を見上げたまま）
+  returnTime: 0.4,                // 投げたあと、手が最初の位置（どんぐりを持っていた位置）に戻るまでの秒数
+};
+const ACORN = {
+  time: 0.7,                      // どんぐりが飛ぶ秒数
+  arc: 0.25,                      // どんぐりの放物線の高さ（直線から持ち上げる量）
+  size: 0.045,                    // どんぐりの半径
+  reach: 0.34,                    // どんぐりが手から飛び出す点の、リスの中心から焚き火側へのずれ（手の先は、体の外まで届く）
+  land: 0.2,                      // どんぐりが落ちる所の、焚き火の中心からリスの側へのずれ
+  height: 0.35,                   // 落ちる所の高さ（炎の根もと）
+  sparks: 10,                     // どんぐりが落ちたときに飛ぶ火の粉の数
+  flare: 0.6,                     // そのとき一瞬明るくなる強さ
+};
+
+const MAX_FIREWORKS = 420;        // 同時に飛ぶ花火の粒（尾・星・閃光）の上限
+const ROCKET = {
+  delay: 0.6,                     // どんぐりが落ちてから花火が上がるまでの秒数
+  time: 1.1,                      // 上がって開くまでの秒数
+  from: 0.5,                      // 上がり始める高さ
+  color: [3, 2.2, 1],             // 上っている先頭の色（光の強さそのままの値）
+  size: 0.07,                     // 先頭の粒の大きさ
+};
+const TRAIL = {                   // 上がるときに残す尾の粒
+  rate: 100,                      // 1 秒に生まれる数
+  life: 0.45,                     // 消えるまでの秒数
+  color: [2.4, 1.1, 0.3],         // 色（光の強さそのままの値）
+};
+const BURST = {                   // 開いた花火
+  y: 2.7,                         // 開く高さ（炎の先の少し上）
+  stars: 170,                     // 星の数
+  speed: 2.6,                     // 星の飛び出す速さ
+  drag: 2.2,                      // 空気の抵抗（大きいほど早く止まって、開く大きさが小さくなる）
+  gravity: 0.9,                   // 開いたあと星が落ちる強さ
+  life: [1.5, 2.4],               // 星が消えるまでの秒数の範囲
+  size: 0.05,                     // 星の大きさ
+  twoTone: 0.3,                   // 星のうち、もう 1 色になる割合
+  colors: [                       // 花火の色（光の強さそのままの値）
+    [3, 0.5, 0.35], [0.6, 2.6, 0.8], [0.6, 1.3, 3.2], [3, 2.3, 0.6], [2.6, 0.8, 3],
+  ],
+  light: 14,                      // 開いた瞬間の周囲の明るさ
+  lightTime: 0.5,                 // 明るさが 1/e に戻るまでの秒数
+};
 
 // 煙
 const MAX_SMOKE = 120;
@@ -295,6 +354,11 @@ scene.add(fireLight);
 const baseLight = new THREE.PointLight(BASE_LIGHT_COLOR, BASE_LIGHT_INTENSITY, 2.5, 2);
 baseLight.position.set(0, BASE_LIGHT_HEIGHT, 0);
 scene.add(baseLight);
+
+// 花火が開いたときの明かり（色は開くたびに変える。影は落とさない）
+const burstLight = new THREE.PointLight(0xffffff, 0, 0, 2);
+burstLight.position.set(0, BURST.y, 0);
+scene.add(burstLight);
 
 // ---- 状態 ----
 let fire = BASE_FIRE;      // 火の強さ
@@ -761,6 +825,7 @@ function flushParticles(sys, n) {
 const smoke = createParticles(MAX_SMOKE, { blending: THREE.NormalBlending, order: 1 });
 const flames = createParticles(MAX_FLAMES, { order: 2 });
 const embers = createParticles(MAX_EMBERS, { minSize: 1.5, order: 3 });
+const fireworks = createParticles(MAX_FIREWORKS, { minSize: 1.5, order: 4 });
 
 // ---- 炎 ----
 // 炎の舌。根もとの位置が薪の範囲をゆっくりさまよい、そこから出た粒は同じ位相で揺れる。
@@ -967,6 +1032,346 @@ function updateCrackle(dt) {
   crackleWait = randomInterval(CRACKLE_INTERVAL);
 }
 
+// ---- リスと花火（隠し要素） ----
+// リスは canvas に描いたシルエットの板で、カメラの方を向ける（焚き火のまわりを回るカメラに合わせて向きを変える）。
+// 画面の横から現れて焚き火へ走り、石の外で立ち上がってどんぐりを投げ、花火に驚いて逃げる。毎フレーム描き直す（脚が動くため）
+// 絵を描く canvas とそれを貼った板（SQUIRREL.size 四方）を作る。最初は非表示
+function createSprite(order, extraMaterial = {}) {
+  const canvas = Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(SQUIRREL.size, SQUIRREL.size),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false, ...extraMaterial }),   // 霧の影響は受けない
+  );
+  mesh.visible = false;
+  mesh.renderOrder = order;
+  scene.add(mesh);
+  return { canvas, texture, mesh };
+}
+const { canvas: squirrelCanvas, texture: squirrelTexture, mesh: squirrelMesh } = createSprite(2);
+// シルエットのまわりのほのかな光。シルエットを少しにじませた絵を、加算合成で後ろ（renderOrder が 1 つ小さい）に敷く。
+// ctx.filter は Safari で効かないので、輪郭の外へ向けてずらした複数の重ね描きでにじませる
+const { canvas: glowCanvas, texture: glowTexture, mesh: glowMesh } = createSprite(1, { blending: THREE.AdditiveBlending });
+// 光の絵を描く。シルエットを、12 方向 × 3 段階（半径の 1・2・3 倍）にずらして、薄く（透明度 0.14）重ねる
+function drawGlow() {
+  const g = glowCanvas.getContext('2d'), n = glowCanvas.width;
+  g.clearRect(0, 0, n, n);
+  g.globalAlpha = 0.14;
+  for (const k of [1, 2, 3]) {
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * TAU;
+      g.drawImage(squirrelCanvas, Math.cos(a) * k * SQUIRREL.glowRadius * n, Math.sin(a) * k * SQUIRREL.glowRadius * n);
+    }
+  }
+  g.globalAlpha = 1;
+}
+const acornMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(ACORN.size, 8, 6).scale(1, 1.3, 1),
+  new THREE.MeshBasicMaterial({ fog: false }),   // 色はリスのシルエットと同じにする（updateSquirrel で毎フレーム合わせる）。霧の影響は受けない
+);
+acornMesh.visible = false;
+scene.add(acornMesh);
+
+let squirrel = null;       // いるリス { phase: 'run' | 'throw' | 'flee', t（その段階の経過秒）, dist（焚き火からの距離）, dir（焚き火から見たリスの向き）, start（現れた距離）, thrown（どんぐりを投げたか）, startle（花火が開いてから逃げ出すまでの残り秒。開くまでは無い） }。いなければ null
+let squirrelWait = randomInterval(SQUIRREL.interval);   // 次に現れるまでの秒数
+let acorn = null;          // 飛んでいるどんぐり { t, from（飛び始める点）, to（落ちる点） }。なければ null
+let rocket = null;         // 上がっている花火 { t, x, z }。なければ null（上がり始める前は rocketDelay が数える）
+let rocketDelay = 0;       // どんぐりが落ちてから花火が上がるまでの残り秒数（0 のときは待っていない）
+
+// リスの姿を板に描く（顔は右向き。足もとは板の高さの 0.9）。pose: 'run' なら走る、'sit' なら立ち上がる。
+// ph は走る脚の位相、armU は投げる腕の進み (0..1)、armBack は投げたあと手が最初の位置へ戻る進み (0..1)、
+// look は頭を上へ傾ける進み (0..1。花火を見上げるとき)。どんぐりは描かない（投げる瞬間に別のメッシュが手から飛ぶ）
+function drawSquirrel(pose, ph, armU, armBack = 0, look = 0) {
+  const ctx = squirrelCanvas.getContext('2d');
+  const s = squirrelCanvas.width;
+  ctx.clearRect(0, 0, s, s);
+  ctx.fillStyle = '#fff';
+  const oval = (x, y, rx, ry, rot = 0) => {
+    ctx.beginPath();
+    ctx.ellipse(x * s, y * s, rx * s, ry * s, rot, 0, TAU);
+    ctx.fill();
+  };
+  // 楕円 [x, y, rx, ry] をいくつか重ねた 1 つの形（和集合）
+  const union = (list) => {
+    ctx.beginPath();
+    for (const [x, y, rx, ry] of list) {
+      ctx.moveTo((x + rx) * s, y * s);
+      ctx.ellipse(x * s, y * s, rx * s, ry * s, 0, 0, TAU);
+    }
+    ctx.fill();
+  };
+  // 卵型。中心 (cx, cy)、長さ方向の半径 a、幅方向の半径 b、細い側が向く角度 rot (rad。0 で右、正で時計回り)、細さ k (0..1)
+  const egg = (cx, cy, a, b, rot, k) => {
+    ctx.beginPath();
+    for (let i = 0; i <= 48; i++) {
+      const t = i / 48 * TAU, u = Math.cos(t), v = Math.sin(t) * (1 - k * u);   // 細い側 (u=1) ほど幅が狭い
+      const x = u * a, y = v * b;
+      const px = cx + x * Math.cos(rot) - y * Math.sin(rot), py = cy + x * Math.sin(rot) + y * Math.cos(rot);
+      if (i === 0) ctx.moveTo(px * s, py * s); else ctx.lineTo(px * s, py * s);
+    }
+    ctx.closePath();
+    ctx.fill();
+  };
+  // 尾。体側の縁はほぼ真っすぐ、外側は先で大きく膨らみ、その下でくびれて付け根へ細くなる（炎のような形）。
+  // 支点 (0.4, 0.86) を (bx, by) に置き、傾き rot (rad、負で後ろへ倒れる)・大きさ k にして描く
+  const tail = (bx, by, rot, k) => {
+    ctx.save();
+    ctx.translate(bx * s, by * s);
+    ctx.rotate(rot);
+    ctx.scale(k, k);
+    ctx.translate(-0.4 * s, -0.86 * s);
+    ctx.beginPath();
+    ctx.moveTo(0.385 * s, 0.86 * s);   // アンカー点 A（支点 (0.4, 0.86) の左。F に近づけて、根もとを細くする。立ち絵では脚の丸の内側に隠れる）
+    ctx.bezierCurveTo(0.566 * s, 0.787 * s, 0.463 * s, 0.559 * s, 0.446 * s, 0.431 * s);   // A→B 体側の縁。B（楕円の右端）のハンドルは縦に近い向きで、滑らかにつなぐ
+    // 先の膨らみの上半分は、B→C→D の 2 本の曲線（縦にわずかにつぶれた楕円に近い形）
+    ctx.bezierCurveTo(0.432 * s, 0.330 * s, 0.378 * s, 0.237 * s, 0.241 * s, 0.245 * s);   // B→C 右上
+    ctx.bezierCurveTo(0.144 * s, 0.250 * s, 0.077 * s, 0.327 * s, 0.084 * s, 0.437 * s);   // C→D 左上
+    ctx.bezierCurveTo(0.088 * s, 0.509 * s, 0.152 * s, 0.547 * s, 0.208 * s, 0.570 * s);   // D→E くびれへ。E は先の膨らみのすぐ下の角（上下のハンドルのなす角は約 115 度の鈍角）
+    ctx.bezierCurveTo(0.211 * s, 0.632 * s, 0.214 * s, 0.721 * s, 0.345 * s, 0.847 * s);   // E→F 下側の縁
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+  // 輪郭は、座って尾を立てたリスのイラスト風（卵型の大きな頭、頭の上の丸い耳、先で丸く膨らんでくびれのある尾）。走る姿も同じパーツを使う
+  if (pose === 'run') {
+    const bob = -0.03 * Math.abs(Math.sin(ph));   // 跳ねて体が上下する
+    const sw = 0.05 * Math.sin(ph + 1);   // 尾の揺れ（rad）
+    // 立ち絵と同じ大きさ・同じ相対位置のパーツを、足もと (0.5, 0.9) を基準に縮めて描く（板に収めるため）。
+    // 体は立ち絵と同じ楕円を、長い方向が横になるよう回す
+    ctx.save();
+    ctx.translate(0.5 * s, 0.9 * s);
+    ctx.scale(SQUIRREL.runScale, SQUIRREL.runScale);
+    ctx.translate(-0.5 * s, -0.9 * s);
+    const bx = 0.58, by = 0.66 + bob;                                      // 体の中心
+    const hx = bx + 0.3, hy = by - 0.07;                                   // 頭の中心（体の前上）
+    tail(bx - 0.11, by + 0.06, -0.55 + sw, 1);
+    oval(bx, by, 0.17, 0.205, Math.PI / 2 + 0.12);                         // 体（立ち絵と同じ大きさ）
+    egg(hx, hy, 0.183, 0.145, 0.24, 0.18);                                 // 頭（立ち絵と同じ）
+    oval(hx - 0.127, hy - 0.163, 0.076, 0.076);                            // 耳（立ち絵と同じ頭との相対位置）
+    // 足は、付け根から足先へ向けて傾けた楕円（短くてよい）。付け根は、体の楕円の下側の輪郭より少し内側（輪郭の高さから 0.04 上）に置く。体の外に出ると、足が浮いて見える
+    for (const [dx, off] of [[-0.13, Math.PI], [-0.05, Math.PI + 0.5], [0.1, 0], [0.18, 0.5]]) {
+      const lx = bx + dx, ly = by + 0.17 * Math.sqrt(1 - (dx / 0.205) ** 2) - 0.04;
+      const a = 0.9 * Math.sin(ph + off);
+      const x = lx + 0.14 * Math.sin(a), y = Math.min(ly + 0.14 * Math.cos(a), 0.93);
+      oval((lx + x) / 2, (ly + y) / 2, Math.hypot(x - lx, y - ly) / 2 + 0.025, 0.05, Math.atan2(y - ly, x - lx));
+    }
+    ctx.restore();
+    return;
+  }
+  ctx.save();
+  ctx.translate(0.5 * s, 0.9 * s);
+  ctx.scale(SQUIRREL.sitScale, SQUIRREL.sitScale);
+  ctx.translate(-0.5 * s, -0.9 * s);
+  tail(0.4, 0.86, 0, 1);                                                   // 座った姿
+  oval(0.57, 0.685, 0.17, 0.205, 0.12);                                       // 体
+  union([[0.454, 0.797, 0.104, 0.093], [0.696, 0.850, 0.065, 0.058], [0.587, 0.885, 0.164, 0.023]]);   // 脚（腰・前足の丸・足もとの和集合）
+  // 頭と耳は、首の付け根 (0.62, 0.58) を支点に、見上げるとき上へ（反時計回りに）傾ける。耳は頭と同じだけ動く
+  ctx.save();
+  ctx.translate(0.62 * s, 0.58 * s);
+  ctx.rotate(-look * SQUIRREL.lookAngle);
+  ctx.translate(-0.62 * s, -0.58 * s);
+  egg(0.708, 0.489, 0.183, 0.145, 0.24, 0.18);                                  // 頭（卵型。細い側が右下の鼻先）
+  oval(0.581, 0.326, 0.076, 0.076);                                            // 耳
+  ctx.restore();
+  // 腕: 胸の前でどんぐりを持つ → 後ろへ振り上げる → 前へ投げ出す
+  const hold = [0.791, 0.704], wind = [0.86, 0.42], throwTo = [0.96, 0.54];
+  const lerp = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+  const hand = armBack > 0 ? lerp(throwTo, hold, smoothstep(armBack, 0, 1))
+    : armU < 0.6 ? lerp(hold, wind, smoothstep(armU, 0, 0.6)) : lerp(wind, throwTo, smoothstep(armU, 0.6, 1));
+  // 手は体につながった 1 つの楕円。肩 (0.616, 0.646) から手の先へ伸ばす（持っているときは 4 時方向に傾く）
+  const shoulder = [0.616, 0.646];
+  const dx = hand[0] - shoulder[0], dy = hand[1] - shoulder[1];
+  oval((shoulder[0] + hand[0]) / 2, (shoulder[1] + hand[1]) / 2, Math.hypot(dx, dy) / 2 + 0.03, 0.057, Math.atan2(dy, dx));
+  ctx.restore();
+}
+
+// カメラの右向き（水平面での単位ベクトル [x, z]）。画面の左右を、ワールドの向きで決めるのに使う
+const cameraRight = () => [camera.position.z / CAM_DIST, -camera.position.x / CAM_DIST];
+
+// リスと光の板の表示を切り替える
+function showSquirrel(visible) {
+  squirrelMesh.visible = glowMesh.visible = visible;
+}
+
+// 焚き火から見たリスの向き dir に立つ点のワールド座標
+const squirrelPos = (r) => new THREE.Vector3(squirrel.dir.x * r, 0, squirrel.dir.z * r);
+
+function startSquirrel() {
+  if (squirrel) return;
+  squirrelWait = randomInterval(SQUIRREL.interval);
+  // 画面の左右どちらかの外から現れる。横長・縦長の画面に合わせ、画面の端より少し外から
+  const side = randSign();
+  const [rightX, rightZ] = cameraRight();
+  const edge = CAM_DIST * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2) * camera.aspect;
+  const start = clamp(edge + SQUIRREL.size, 3, 12);
+  squirrel = { phase: 'run', t: 0, dist: start, start, dir: new THREE.Vector3(rightX * side, 0, rightZ * side) };
+  showSquirrel(true);
+}
+
+// 花火を上げる（どんぐりが落ちた少しあと）
+function launchRocket() {
+  rocket = { t: 0, x: 0, z: 0 };
+}
+
+// 花火が開いたら、少し（SQUIRREL.startleTime 秒）見上げたあと、リスは驚いて逃げ出す（それまでは、座って花火を見上げている）
+function scareSquirrel() {
+  if (squirrel) squirrel.startle = SQUIRREL.startleTime;
+}
+
+function updateSquirrel(dt) {
+  if (!squirrel) {
+    if ((squirrelWait -= dt) <= 0) startSquirrel();
+  }
+  if (rocketDelay > 0 && (rocketDelay -= dt) <= 0) {
+    rocketDelay = 0;
+    launchRocket();
+  }
+
+  // 飛んでいるどんぐり
+  if (acorn) {
+    acorn.t += dt;
+    const u = Math.min(acorn.t / ACORN.time, 1);
+    acornMesh.position.set(
+      acorn.from.x + (acorn.to.x - acorn.from.x) * u,
+      acorn.from.y + (acorn.to.y - acorn.from.y) * u + 4 * ACORN.arc * u * (1 - u),
+      acorn.from.z + (acorn.to.z - acorn.from.z) * u);
+    acornMesh.rotation.z = acorn.t * 14;
+    if (u >= 1) {   // 炎に落ちる。火の粉が飛んで、一瞬明るくなる
+      const o = acorn.to;
+      acorn = null;
+      acornMesh.visible = false;
+      for (let i = 0; i < ACORN.sparks; i++) addParticle(embers, spawnSpark(o, new THREE.Vector3()));
+      flare = Math.max(flare, ACORN.flare);
+      rocketDelay = ROCKET.delay;
+    }
+  }
+
+  if (!squirrel) return;
+  const q = squirrel;
+  q.t += dt;
+  let pose = 'run', armU = 0, armBack = 0, look = 0, toward = -1;   // toward: 焚き火へ向かうとき -1、離れるとき 1（顔の向きを決める）
+  if (q.phase === 'run') {
+    q.dist = Math.max(SQUIRREL.stopDist, q.dist - SQUIRREL.runSpeed * dt);
+    if (q.dist <= SQUIRREL.stopDist) { q.phase = 'throw'; q.t = 0; }
+  }
+  if (q.phase === 'throw') {
+    pose = 'sit';
+    armU = clamp((q.t - SQUIRREL.holdTime) / SQUIRREL.throwTime, 0, 1);
+    armBack = clamp((q.t - SQUIRREL.holdTime - SQUIRREL.throwTime) / SQUIRREL.returnTime, 0, 1);   // 投げ終えたあと、手を元の位置へ戻す
+    if (rocket) {   // 花火の昇る高さ（updateFireworks と同じ式）に合わせて、頭を上げていく
+      const u = Math.min(rocket.t / ROCKET.time, 1);
+      look = 1 - (1 - u) * (1 - u);
+    } else if (q.startle !== undefined) {   // 花火が開いたあと、逃げ出すまでは上を向いたまま
+      look = 1;
+      if ((q.startle -= dt) <= 0) { q.phase = 'flee'; q.t = 0; }
+    }
+    if (armU >= 1 && !acorn && !q.thrown) {   // 腕を振り切ったところで手を離れる
+      q.thrown = true;
+      const hand = squirrelPos(q.dist).addScaledVector(q.dir, -ACORN.reach);
+      hand.y = SQUIRREL.size * 0.5;
+      acorn = { t: 0, from: hand, to: squirrelPos(ACORN.land).setY(ACORN.height) };
+      acornMesh.visible = true;
+    }
+  } else if (q.phase === 'flee') {
+    toward = 1;
+    q.dist += SQUIRREL.fleeSpeed * dt;
+    if (q.dist > q.start + SQUIRREL.size) {
+      squirrel = null;
+      showSquirrel(false);
+      return;
+    }
+  }
+  drawSquirrel(pose, q.t * SQUIRREL.stride, armU, armBack, look);
+  squirrelTexture.needsUpdate = true;
+  drawGlow();
+  glowTexture.needsUpdate = true;
+
+  // カメラの方を向け、顔は進む向きに（画面の左右で決める）
+  const p = squirrelPos(q.dist);
+  const [rightX, rightZ] = cameraRight();
+  const face = Math.sign((q.dir.x * rightX + q.dir.z * rightZ) * toward) || 1;
+  squirrelMesh.position.set(p.x, SQUIRREL.size * 0.4, p.z);   // 足もと（板の高さの 0.9）が地面に着く高さ
+  squirrelMesh.rotation.y = Math.atan2(camera.position.x - p.x, camera.position.z - p.z);
+  squirrelMesh.scale.x = face;
+  glowMesh.position.copy(squirrelMesh.position);
+  glowMesh.rotation.copy(squirrelMesh.rotation);
+  glowMesh.scale.copy(squirrelMesh.scale);
+  // 色は周囲の光（炎の近さ・明滅）と霧に左右されない一定の色。どんぐりもシルエットなので、同じ色にする
+  squirrelMesh.material.color.setRGB(...SQUIRREL.color, THREE.SRGBColorSpace);
+  glowMesh.material.color.setRGB(...SQUIRREL.glowColor, THREE.SRGBColorSpace);
+  acornMesh.material.color.copy(squirrelMesh.material.color);
+}
+
+// 花火の粒（尾・星・閃光）。vx・vy・vz と抵抗 drag・重力 gravity で動き、色 color は消えるにつれて暗くなる
+function addFirework(x, y, z, v, life, size, color, drag, gravity) {
+  addParticle(fireworks, {
+    x, y, z, vx: v[0], vy: v[1], vz: v[2], age: 0, life, size, color, drag, gravity,
+    phase: rand(0, TAU), freq: rand(10, 24),
+  });
+}
+
+function burst() {
+  const main = pick(BURST.colors);
+  const sub = pick(BURST.colors.filter((c) => c !== main));
+  for (let i = 0; i < BURST.stars; i++) {
+    // 球面に一様に散らす
+    const cz = rand(-1, 1), a = rand(0, TAU), r = Math.sqrt(1 - cz * cz);
+    const v = BURST.speed * rand(0.85, 1);
+    addFirework(0, BURST.y, 0, [r * Math.cos(a) * v, cz * v, r * Math.sin(a) * v],
+      randIn(BURST.life), BURST.size * rand(0.8, 1.2), rand(0, 1) < BURST.twoTone ? sub : main, BURST.drag, BURST.gravity);
+  }
+  addFirework(0, BURST.y, 0, [0, 0, 0], 0.25, 0.9, [0.8, 0.7, 0.6], 0, 0);   // 開いた瞬間の閃光
+  burstLight.color.setRGB(...main.map((c) => Math.min(c, 1)));
+  burstLight.intensity = BURST.light;
+}
+
+function updateFireworks(dt) {
+  if (rocket) {
+    rocket.t += dt;
+    const u = Math.min(rocket.t / ROCKET.time, 1);
+    rocket.x = 0.02 * Math.sin(rocket.t * 17);   // 上るにつれてわずかに揺れる
+    rocket.y = ROCKET.from + (BURST.y - ROCKET.from) * (1 - (1 - u) * (1 - u));
+    emit(fireworks, TRAIL.rate, dt, () => ({
+      x: rocket.x + rand(-0.02, 0.02), y: rocket.y, z: rocket.z + rand(-0.02, 0.02),
+      vx: rand(-0.1, 0.1), vy: rand(-0.4, -0.1), vz: rand(-0.1, 0.1),
+      age: 0, life: TRAIL.life * rand(0.6, 1), size: ROCKET.size * 0.5, color: TRAIL.color,
+      drag: 1, gravity: 0, phase: 0, freq: 0,
+    }));
+    if (u >= 1) {
+      burst();
+      scareSquirrel();
+      rocket = null;
+    }
+  }
+  for (const p of fireworks.list) {
+    p.age += dt;
+    const drag = Math.exp(-p.drag * dt);
+    p.vx *= drag;
+    p.vz *= drag;
+    p.vy = (p.vy - p.gravity * dt) * drag;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+  }
+  removeDead(fireworks);
+  let n = 0;
+  for (const p of fireworks.list) {
+    const t = p.age / p.life;
+    const twinkle = p.freq ? 0.75 + 0.25 * Math.sin(p.phase + p.age * p.freq) : 1;
+    writeParticle(fireworks, n, p.x, p.y, p.z, twinkle * Math.min(1, (1 - t) * 3), p.size);
+    for (let c = 0; c < 3; c++) fireworks.color[n * 4 + c] = p.color[c] * (1.1 - 0.8 * t);
+    n++;
+  }
+  if (rocket) {   // 上っている先頭
+    writeParticle(fireworks, n, rocket.x, rocket.y, rocket.z, 1, ROCKET.size);
+    for (let c = 0; c < 3; c++) fireworks.color[n * 4 + c] = ROCKET.color[c];
+    n++;
+  }
+  flushParticles(fireworks, n);
+  burstLight.intensity *= Math.exp(-dt / BURST.lightTime);
+}
+
 // ---- カメラ ----
 function updateCamera() {
   const a = time * TAU / ORBIT_PERIOD;
@@ -1001,6 +1406,8 @@ function step(dt) {
   updateStars();
   updateCrackle(dt);
   updateCamera();
+  updateSquirrel(dt);
+  updateFireworks(dt);
 }
 
 let last = performance.now();
@@ -1017,6 +1424,8 @@ function tick(now) {
 setupControls({
   // シーン切替（Space・左右スワイプ）。焚き火は場面が 1 つだけなので無い
   changeScene: null,
+  // 隠し要素のリスを呼び出す（操作ガイドには表示しない）
+  keys: { KeyC: startSquirrel },
   // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
   intensity: {
     up: () => setFire(fire * FIRE_STEP),

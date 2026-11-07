@@ -69,6 +69,13 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: なし / 強度: 火の強さ
 
+<details>
+<summary>隠し要素（ネタバレ注意）</summary>
+
+ときどきリスが走ってきて、どんぐりを焚き火に投げ込むと打ち上げ花火が上がります。**C** キーですぐに呼び出せます。
+
+</details>
+
 ## [クラゲ水槽](https://yohhoy.github.io/vibe-screensaver/jellyfish.html)
 
 [<img src="docs/images/jellyfish.jpg" width="480" alt="クラゲ水槽">](https://yohhoy.github.io/vibe-screensaver/jellyfish.html)

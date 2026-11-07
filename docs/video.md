@@ -42,7 +42,7 @@ node tools/video-export.mjs aurora --seconds 15 --warmup 0 --at "1:startSanta()"
 
 ## 隠し要素
 
-隠し要素（tube・aurora・ripple・penguins・diamond・sandpicture）の出し方は `--hidden` で決める。
+隠し要素（tube・aurora・ripple・penguins・diamond・sandpicture・campfire）の出し方は `--hidden` で決める。
 
 - `auto`（既定）: 作品に任せる。待ち時間が切れたときに出る。
 - `off`: 出さない。サムネイルや、隠し要素を写したくない動画に使う。

@@ -28,6 +28,7 @@ export const HIDDEN = {
   penguins: 'startChick',
   diamond: 'startSpider',
   sandpicture: 'startCamel',
+  campfire: 'startSquirrel',
 };
 
 // option で場面を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）
