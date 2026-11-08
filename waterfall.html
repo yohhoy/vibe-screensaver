@@ -92,7 +92,7 @@ const BURST_PUFF_RISE = [2, 5];   // 水煙が上る速さの範囲
 const MAX_MIST = IS_TOUCH ? 180 : 560;
 const MIST_RATE = IS_TOUCH ? 12 : 34;  // 1 秒に生まれる数（水量 1 のとき）
 const MIST_LIFE = [6, 12];        // 消えるまでの秒数の範囲
-const MIST_RISE = [1, 2.6];     // 上る速さの範囲
+const MIST_RISE = [1, 2.6];       // 上る速さの範囲
 const MIST_DRIFT = 3;             // 手前へ流れる速さの上限
 const MIST_SIZE = [7, 27];        // 生まれたとき / 消えるときの大きさ
 const BOIL_SHARE = 0.7;           // そのうち、滝の足もとで低くわき立つ霧の割合（滝と水面の境をぼかす）
@@ -143,6 +143,7 @@ const LEAF_ALPHA_TEST = 0.45;     // 葉の板のテクスチャで、不透明�
 const RIM_TREE_COUNT = IS_TOUCH ? 160 : 240;   // 崖の上の木の数
 const RIM_TREE_HEIGHT = [8, 15];
 const RIM_TREE_DEPTH = 65;        // 崖の上の木を置く奥行き。これより奥は崖に隠れて見えない
+const RIM_CLEARING = [10, 40];    // 滝口の真上で木を置かない範囲 [中央からの横の距離, 崖の上端からの奥行き]。川の上で、昇り始めの龍が見えるように空ける
 const FERN_COUNT = IS_TOUCH ? 60 : 110;    // シダの株の数
 const FERN_FRONDS = 9;            // シダ 1 株の葉の枚数
 const FERN_LEAFLETS = 8;          // シダの葉 1 枚の片側の小葉の数
@@ -188,6 +189,7 @@ const SHAFT_SIZE = [75, 26];      // 光の筋の板の長さと幅
 const SHAFT_PULSE = [0.3, 0.17];  // 光の筋の濃さの揺らぎ [幅（割合）, 速さ（rad/秒）]
 const VIEW_SLOPE = 1.05;          // 画面に入る横の広がり（横の画角の半分の tan）。21:9 まで収まる値。これより外には木や草木を置かない
 const CONIFER_COLORS = [[0.03, 0.08, 0.05], [0.16, 0.3, 0.16]];     // 針葉樹の枝の色（根もと / 先）
+const RIM_TREE_BRIGHTNESS = 2;    // 崖の上の木の板（樹冠・針葉樹）の明るさ。景色の foliage にさらに掛ける。空を背にして黒い影に沈まないように
 const BROADLEAF_COLORS = [[0.06, 0.13, 0.05], [0.3, 0.43, 0.16]];   // 広葉樹と低木の葉の色（暗い葉 / 明るい葉）
 const TRUNK_COLOR = [0.2, 0.16, 0.12];
 
@@ -210,6 +212,62 @@ const RAINBOW_TINT = 3.5;          // 下の景色の色を虹の色に置き換
 const RAINBOW_SPREAD = 14;         // 霧の広がり。滝の端からこのくらいの距離で虹が薄れる
 const RAINBOW_TOP = 38;            // 虹が消える高さ
 
+// 鯉の滝登り（隠し要素）。鯉が滝壺から滝を登って滝口の奥へ去り、少しおいて遠くの空を龍が昇る
+const CARP_INTERVAL = [640, 300, 1200];   // 現れる間隔 [指数分布の平均, 下限, 上限]（秒）。下限・上限で丸めたあとの実際の平均が約 600 秒になる値
+const CARP_LENGTH = 6;             // 鯉の板の一辺（鯉の全長とほぼ同じ）。実物より大きくして、遠くからでも形が分かるようにする
+const CARP_SWIM_TIME = 8;          // 手前から滝の足もとの霧の手前まで泳ぐ秒数
+const CARP_SWIM_FROM = [5, 58];    // 泳ぎ始める位置（滝の中央からの横の距離, z）。画面の下端の少し外
+const CARP_SWIM_DEPTH = 0.4;       // 泳ぐ深さ。水面は奥行きを書かないので、水中の鯉が透けて見える
+const CARP_WATER_STRETCH = 3.2;    // 水中の鯉を奥行きの向きに伸ばす倍率。低い所から斜めに見るので、そのままだと細い線につぶれる
+const CARP_WATER_ALPHA = 0.75;     // 水中の鯉の不透明度
+const CARP_WATER_TINT = 0.35;      // 水中の鯉の色を、水の色へ寄せる割合
+const CARP_SWIM_GAP = 8;           // 泳ぐ道の終わりの、滝の落ちる線より手前への距離。足もとの霧の手前で泳ぎ終え、すぐに登り始める（霧の中を泳ぐ間は見えず、間延びする）
+const CARP_FADE = [0.75, 1];       // 泳ぐ道のこの区間（0 = 手前 〜 1 = 終わり）で薄れて消える。登り始めへの切り替わりを見せない
+const CARP_APPEAR = 2.0;           // 登り始めに、滝の足もとから現れるまでの秒数
+const CARP_CLIMB_TIME = 8;         // 滝を登る秒数
+const CARP_CLIMB_SCALE = 0.8;      // 滝を登るときの鯉の大きさの倍率（泳ぐときに対して）
+const CARP_CLIMB_SURGES = 4;       // 登る間に勢いをつける回数
+const CARP_CLIMB_SURGE = 0.75;     // 勢いの強さ（0 で一定の速さ、1 で勢いの合間に止まる）
+const CARP_FRONT = 1.2;            // 落ちる水より手前に置く距離
+const CARP_SPLASH_INTERVAL = 0.35; // 登る間に水しぶきを跳ね散らす間隔（秒）
+const CARP_SPLASH_COUNT = 90;      // 1 回に跳ねるしぶきの粒の数（平均の速さのとき。勢いのあるときほど多い）
+const CARP_SPLASH_SPEED = [3, 8];  // しぶきの飛ぶ速さの範囲
+const CARP_SPLASH_LIFE = [0.5, 1.2];   // しぶきが消えるまでの秒数の範囲（水面まで落とさず、跳ねた所の近くで消す）
+const CARP_SPLASH_SPREAD = 0.5;    // しぶきの横向きの速さに掛ける倍率。小さいほど、左右へ広がる幅が狭い
+const CARP_SPLASH_SIZE = [0.25, 0.45];    // しぶきの粒の大きさの範囲（滝壺のしぶきより大きくして、白い滝の上でも粒が見えるように）
+const CARP_TOP_RISE = 0.25;        // 登り切ったときに、頭の先が滝口の縁より上に出る高さ（鯉の長さに対する割合）
+const CARP_OVER_TIME = 0.5;        // 滝口を越えて、奥へ倒れ込む秒数
+const CARP_TAIL_BEAT = [4, 20];    // 体をくねらせる速さ（rad/秒。泳ぐとき / 登るとき）
+const CARP_TAIL_AMP = [0.08, 0.13];   // 体をくねらせる幅（板の一辺に対する割合。泳ぐとき / 登るとき）
+const CARP_PAUSE = 1.5;            // 鯉が去ってから龍が現れるまでの秒数
+// 龍は空に描いた道（つづら折り）を、頭が一定の速さで進み、胴は頭が通った跡をそのままなぞる（昔ばなしの龍のように）
+const DRAGON_LENGTH = 45;         // 龍の胴の長さ
+const DRAGON_SIZE = 84;           // 龍の板の一辺。胴が弧を描いても収まる大きさ
+const DRAGON_DIST = 450;          // 龍の奥行き（滝口から奥へ）
+const DRAGON_X = 25;              // 龍が昇り始める横の位置の範囲（±）。この中から、崖の上の木が空に突き出していない所を選ぶ
+const DRAGON_START = { tries: 24, rise: 15 };   // 昇り始める位置の選び方 [試す位置の数, 木に隠れないか調べる道の高さ（昇り始めからこの高さまで）]
+const DRAGON_RISE_TIME = 14;      // 龍が現れてから空の奥へ消えるまでの秒数
+const DRAGON_START_ELEVATION = 24.5;   // 頭が昇り始める所の仰角（度）。滝口の縁（仰角約 25 度）の陰に隠れた所から昇る
+// 頭が通る道。上下に詰めた S 字の連なりのように、少し斜め上へ進む直線と、丸い U 字の折り返し（円弧）を交互につなぐ。
+// つなぎ目で進む向きを揃えるので、角ができない。最初に進む向き（左右）は毎回選ぶ
+//   width: 左右に振れる幅の半分、turn: 折り返しの円弧の半径、slope: 直線の区間の傾き（度）、
+//   drift: 画面の上端の高さまで昇るあいだに左右へずれる距離
+const DRAGON_PATH = { width: 28, turn: 17, slope: 35, drift: 15 };
+// 頭の進む速さの緩急。折り返しの円弧ではゆっくり、斜めに昇る直線では速く進む（どちらも区間の中ほどで最も変わり、つなぎ目では平均の速さに戻る）。
+//   arc: 円弧の中ほどで遅くする割合、leg: 直線の中ほどで速くする割合
+const DRAGON_PACE = { arc: 0.4, leg: 0.3 };
+// 胴のうねり。道をなぞる胴に、頭から尾へ伝わる小さな遅い波を重ねる（大きく速いと、せわしなく見える）。頭は道の上から外さない。
+//   amp: 道から横へ外れる幅、period: 1 回うねる秒数、waves: 胴の長さに乗る波の数
+const DRAGON_WAVE = { amp: 1.2, period: 3.5, waves: 1 };
+// 昇るにつれて空の奥へ遠ざかり、小さく薄れて消える（画面の上へは抜けない）。
+//   from: 遠ざかり始める高さ、range: 遠ざかる速さ（この高さだけ昇るごとに、大きさが 1 / (1 + 昇った高さ / range) になる）。どちらも画面の上端の高さに対する割合
+//   fade: 大きさがこの範囲 [消え始め, 消え終わり] のあいだに薄れて消える、haze: 遠ざかるにつれて色を低い空の色へ寄せる割合（大きさが 0 になったとき）
+const DRAGON_RECEDE = { from: 0.55, range: 0.45, fade: [0.52, 0.36], haze: 0.25 };
+const DRAGON_WHISKER = { length: 0.3, gap: [0.06, 0.13] };   // ひげ [胴に沿って流れる長さ（胴の長さに対する割合）, 胴の輪郭からの離れ [頭の側, 先]（胴の長さの 0.58 倍に対する割合）]
+const DRAGON_HAZE = [0.95, 0.1];  // 龍を遠くの空に霞ませる [不透明度, 色を低い空の色へ寄せる割合]
+const DRAGON_BLUR = 8;            // 龍の輪郭のぼかし（テクスチャの画素）
+const SILHOUETTE_GLOW = 4;        // シルエットの後ろの光の広がり（テクスチャの画素）
+
 // 描画
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。高解像度画面での負荷を抑える）
 const BLOOM_SCALE = 0.5;          // ブルームを描く解像度の倍率（ぼかすだけなので粗くてよい）
@@ -225,6 +283,7 @@ const MSAA_OFF_PIXEL_RATIO = 1.25;   // 解像度の倍率がこれ以上なら 
 //   lit / shade / glass: 滝の白い所 / 影の所 / 滝口のなめらかな水の色
 //   mist: 霧の色と不透明度 [r, g, b, a]、spray: しぶきの色
 //   deep / foam: 滝壺の水そのものの色 / 泡の色
+//   carp / dragon: 鯉 / 龍のシルエットの色と、後ろの光の色 { color, glow }（glow は線形の値で、加算する。0 なら光を描かない）
 //   rainbow: 虹の濃さ（0 で無し）、bloom: ブルーム { strength, threshold }（strength が 0 なら描かない）、exposure: 全体の明るさ
 const SCENES = [
   {
@@ -237,6 +296,9 @@ const SCENES = [
     lit: [0.98, 0.99, 1], shade: [0.42, 0.54, 0.58], glass: [0.52, 0.58, 0.6],
     mist: [0.92, 0.94, 0.97, 0.046], spray: [1, 1, 1],
     deep: [0.03, 0.17, 0.16], foam: [0.96, 0.98, 1],
+    // 鯉と龍は、景色全体の寒色（青〜青緑）の補色のオレンジ〜赤茶にして、空や滝の上で浮かせる
+    carp: { color: [0.5, 0.22, 0.08], glow: [0, 0, 0] },
+    dragon: { color: [0.42, 0.22, 0.1], glow: [0, 0, 0] },
     rainbow: 0.09, bloom: { strength: 0, threshold: 1 }, exposure: 1,
   },
   {
@@ -249,6 +311,9 @@ const SCENES = [
     lit: [1, 0.84, 0.74], shade: [0.54, 0.42, 0.44], glass: [0.42, 0.33, 0.36],
     mist: [1, 0.78, 0.68, 0.06], spray: [1, 0.9, 0.8],
     deep: [0.06, 0.06, 0.12], foam: [1, 0.86, 0.78],
+    // 鯉と龍は、景色全体の暖色（オレンジ〜赤紫）の補色の青緑にして、空や滝の上で浮かせる
+    carp: { color: [0.16, 0.36, 0.4], glow: [0, 0, 0] },
+    dragon: { color: [0.14, 0.3, 0.34], glow: [0, 0, 0] },
     rainbow: 0, bloom: { strength: 0.3, threshold: 0.8 }, exposure: 1,
   },
   {
@@ -261,6 +326,8 @@ const SCENES = [
     lit: [0.64, 0.74, 0.92], shade: [0.16, 0.21, 0.33], glass: [0.06, 0.11, 0.17],
     mist: [0.5, 0.6, 0.82, 0.055], spray: [0.8, 0.88, 1],
     deep: [0.008, 0.016, 0.035], foam: [0.62, 0.74, 0.92],
+    carp: { color: [1, 0.78, 0.3], glow: [0.3, 0.18, 0.03] },
+    dragon: { color: [0.62, 0.68, 0.82], glow: [0.06, 0.08, 0.13] },
     rainbow: 0, bloom: { strength: 0.4, threshold: 0.5 }, exposure: 1,
   },
 ];
@@ -624,8 +691,8 @@ let mistOpacity = 0;       // いまの景色の霧の不透明度
 // ---- テクスチャ ----
 const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
 
-// canvas に描くテクスチャ。background で塗ってから draw(context, 一辺の画素数) で描く。繰り返して貼れる
-function canvasTexture(n, draw, { background = null, flipY = true } = {}) {
+// canvas に描くテクスチャ。background で塗ってから draw(context, 一辺の画素数) で描く。wrap を省くと繰り返して貼れる
+function canvasTexture(n, draw, { background = null, flipY = true, wrap = THREE.RepeatWrapping } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = n;
   const g = c.getContext('2d');
@@ -635,7 +702,7 @@ function canvasTexture(n, draw, { background = null, flipY = true } = {}) {
   }
   draw(g, n);
   const texture = new THREE.CanvasTexture(c);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.wrapS = texture.wrapT = wrap;
   texture.flipY = flipY;
   texture.anisotropy = maxAnisotropy;
   return texture;
@@ -744,7 +811,8 @@ const puffTexture = canvasTexture(128, (g, n) => {
     g.fillStyle = grad;
     g.fillRect(0, 0, n, n);
   }
-}, { background: '#000' });
+  // 粒を回すと四角の隅がテクスチャの外を読む。繰り返すと反対側の模様を拾い、粒の四角の角が見える
+}, { background: '#000', wrap: THREE.ClampToEdgeWrapping });
 
 // 葉の束。透明の地に細長い葉を散らす。先に暗い葉を、あとから明るい葉を描き、束に奥行きを出す。色は頂点の色で付ける。
 const leafTexture = canvasTexture(256, (g, n) => {
@@ -1082,8 +1150,10 @@ const plainMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: 
 // 葉の板は表（外向き）だけ描く。裏も描くと、法線が反転して真っ黒な塊に見える
 const leafMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, map: leafTexture, alphaTest: LEAF_ALPHA_TEST });
 const foliageMaterials = [plainMaterial, leafMaterial];   // 景色の foliage を掛ける材質
+const rimTreeMaterials = [];   // 崖の上の木の板の材質。RIM_TREE_BRIGHTNESS も掛ける
+const rimTreeShapes = [];      // 崖の上の木の輪郭 { x, z, halfW（見える幅の半分）, top（てっぺんの高さ） }。龍の昇り始める位置を、木の無い所から選ぶのに使う
 
-// 崖の上の木。滝口の真上は川なので、少し奥まで空ける。奥ほど背を高くして稜線を作る
+// 崖の上の木。滝口の真上は川なので、広めに奥まで空ける（隠し要素の龍の昇り始めも見やすくなる）。奥ほど背を高くして稜線を作る
 function rimTree() {
   for (;;) {
     const x = rand(-CLIFF_HALF, CLIFF_HALF);
@@ -1092,7 +1162,7 @@ function rimTree() {
     if ((Math.abs(x) < FALL_MAX_HALF * 0.8 && d < 30) || !inView(x, z)) continue;
     const h = randIn(RIM_TREE_HEIGHT) * (1 + d / RIM_TREE_DEPTH * 0.7);
     return {
-      x, y: plateauY(x, d) - 0.3, z,
+      x, y: plateauY(x, d) - 0.3, z, d,
       scale: [h * rand(0.85, 1.2), h, h * rand(0.85, 1.2)], brightness: rand(0.7, 1.25),
     };
   }
@@ -1127,22 +1197,26 @@ function plantRimTrees() {
   };
   const coniferCount = Math.round(RIM_TREE_COUNT * CONIFER_SHARE);
   for (let i = 0; i < RIM_TREE_COUNT; i++) {
-    const { x, y, z, scale: [width, height], brightness } = rimTree();
+    const { x, y, z, d, scale: [width, height], brightness } = rimTree();
+    // 滝口の真上の広めの範囲の木は、捨てる入れ物に描いて取り除く（乱数の引き方を変えず、ほかの木や草木の配置を変えない）
+    const cleared = Math.abs(x) < RIM_CLEARING[0] && d < RIM_CLEARING[1] ? triangleSoup() : null;
+    // 見える幅は板より狭い（針葉樹は先が細く、樹冠の絵は板のふちに余白がある）
+    if (!cleared) rimTreeShapes.push({ x, z, halfW: width * (i < coniferCount ? RIM_CONIFER_WIDTH * 0.3 : CROWN_SIZE * 0.42), top: y + height });
     if (i < coniferCount) {
       const tint = tinter(CONIFER_COLORS, brightness);
       const halfW = width * RIM_CONIFER_WIDTH / 2, halfH = height / 2;
-      addFacingCard(conifers, x, y + halfH, z, halfW, halfH, 0, tint(0.5), tint(1), 4, 2);
+      addFacingCard(cleared ?? conifers, x, y + halfH, z, halfW, halfH, 0, tint(0.5), tint(1), 4, 2);
     } else {
       const tint = tinter(BROADLEAF_COLORS, brightness);
       const halfW = width * CROWN_SIZE / 2, halfH = height * CROWN_SIZE / 2;
-      addLimb(trunks, [x, y, z], [x, y + height * 0.55, z], height * 0.04, height * 0.015, 3);
+      addLimb(cleared ?? trunks, [x, y, z], [x, y + height * 0.55, z], height * 0.04, height * 0.015, 3);
       // 板を幹より手前に出す。幹が葉の上に透けて見えないように
-      addFacingCard(crowns, x, y + height - halfH, z, halfW, halfH, height * 0.05, tint(0.25), tint(0.65), 2, 2);
+      addFacingCard(cleared ?? crowns, x, y + height - halfH, z, halfW, halfH, height * 0.05, tint(0.25), tint(0.65), 2, 2);
     }
   }
   const cardMaterial = (map) => {
     const material = new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: LEAF_ALPHA_TEST });
-    foliageMaterials.push(material);
+    rimTreeMaterials.push(material);
     return material;
   };
   for (const mesh of [
@@ -1396,6 +1470,14 @@ function moveParticle(p, dt) {
   p.z += p.vz * dt;
 }
 
+// 寿命（life 秒）を持つ粒（登る鯉の水しぶき）は、時間が来たら消す。返り値は不透明度に掛ける倍率で、最後の 0.2 秒で薄れ、0 なら消す。
+// 寿命の無い粒は 1（水面に落ちるまで残る）
+function ageParticle(p, dt) {
+  if (p.life === undefined) return 1;
+  p.life -= dt;
+  return clamp(p.life / 0.2, 0, 1);
+}
+
 // いま噴き上がっている所。水の線と水煙はここから出す
 const bursts = [];
 let nextBurst = 0;
@@ -1451,10 +1533,11 @@ function updateDrops(dt) {
   for (const p of drops.list) {
     p.vy -= FALL_GRAVITY * dt;
     moveParticle(p, dt);
-    if (p.y <= 0) continue;
+    const a = p.a * ageParticle(p, dt);
+    if (p.y <= 0 || a <= 0) continue;
     position.set([p.x, p.y, p.z,
       p.x - p.vx * DROP_STREAK, p.y - p.vy * DROP_STREAK, p.z - p.vz * DROP_STREAK], n * 6);
-    color.set([tint[0] * p.a, tint[1] * p.a, tint[2] * p.a, 0, 0, 0], n * 6);
+    color.set([tint[0] * a, tint[1] * a, tint[2] * a, 0, 0, 0], n * 6);
     drops.list[n++] = p;
   }
   drops.list.length = n;
@@ -1528,8 +1611,9 @@ function updateSpray(dt) {
   for (const p of spray.list) {
     p.vy -= SPRAY_GRAVITY * dt;
     moveParticle(p, dt);
-    if (p.y <= 0) continue;
-    writeParticle(spray, n, p, p.a, p.size);
+    const a = p.a * ageParticle(p, dt);
+    if (p.y <= 0 || a <= 0) continue;
+    writeParticle(spray, n, p, a, p.size);
     spray.list[n++] = p;
   }
   spray.list.length = n;
@@ -1715,6 +1799,398 @@ function updateRainbow() {
   rainbowUniforms.uReach.value = activeHalf + RAINBOW_SPREAD;
 }
 
+// ---- 鯉の滝登り（隠し要素） ----
+// 鯉と龍は canvas に描いた白いシルエットの板で、色は材質の色で付ける。体をくねらせるので毎フレーム描き直す。
+// 夜は後ろに、シルエットをにじませた絵を加算合成で敷く（ctx.filter は Safari で効かないので、ずらした重ね描きでにじませる）。
+// 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。現れるまでは Math.random を引かないので、
+// 隠し要素の出ない場面は追加の前と同じ絵になる。現れたときは、種を Math.random から取り直す。動画のツールで乱数を固定すると、
+// 現れたあとの動き（向き・位置・水滴）も毎回同じになる。three.js も板を作るときに Math.random を引くので、板は最初に現れるときに作る
+const carpRandom = (() => {
+  let s = Date.now() >>> 0;   // mulberry32
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
+  return next;
+})();
+const carpRand = (a, b) => a + carpRandom() * (b - a);
+const carpInterval = ([mean, min, max]) => clamp(-Math.log(1 - carpRandom()) * mean, min, max);
+
+// シルエットの板（幅 w、高さ h、テクスチャ tw × th 画素）と、その後ろの光の板。最初は非表示
+function silhouetteSprite(w, h, tw, th) {
+  const plane = (canvas, extra) => {
+    const texture = new THREE.CanvasTexture(canvas);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({
+      map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false, ...extra,   // 霧の影響は受けない
+    }));
+    mesh.layers.set(MAIN_ONLY_LAYER);   // 水面には映さない
+    mesh.frustumCulled = false;
+    return mesh;
+  };
+  const canvas = Object.assign(document.createElement('canvas'), { width: tw, height: th });
+  const glowCanvas = Object.assign(document.createElement('canvas'), { width: tw, height: th });
+  const mesh = plane(canvas, {});
+  const glow = plane(glowCanvas, { blending: THREE.AdditiveBlending });
+  mesh.renderOrder = 3;   // 滝（2）より後に描き、落ちる水に隠れないようにする
+  glow.renderOrder = 2.5;
+  mesh.add(glow);
+  mesh.visible = false;
+  return { canvas, glowCanvas, mesh, glow };
+}
+
+// シルエットを描き終えたあとに呼ぶ。光の絵を作り、2 枚のテクスチャを更新する
+function finishSprite(sp) {
+  const g = sp.glowCanvas.getContext('2d');
+  g.clearRect(0, 0, sp.glowCanvas.width, sp.glowCanvas.height);
+  g.globalAlpha = 0.14;
+  for (const k of [1, 2, 3]) {
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * TAU;
+      g.drawImage(sp.canvas, Math.cos(a) * k * SILHOUETTE_GLOW, Math.sin(a) * k * SILHOUETTE_GLOW);
+    }
+  }
+  g.globalAlpha = 1;
+  sp.mesh.material.map.needsUpdate = true;
+  sp.glow.material.map.needsUpdate = true;
+}
+
+// 色を当てる。color は画面に出る値、glow は線形の値。alpha は不透明度。dim は色を toward（既定は水の色）へ寄せる割合
+function tintSprite(sp, { color, glow }, alpha = 1, dim = 0, toward = SCENES[sceneIndex].deep) {
+  sp.mesh.material.color.copy(srgb(color)).lerp(srgb(toward), dim);
+  sp.mesh.material.opacity = alpha;
+  sp.glow.material.color.setRGB(glow[0] * alpha, glow[1] * alpha, glow[2] * alpha);
+  sp.glow.visible = glow.some((v) => v > 0);   // 光の無い景色では描かない
+}
+
+// 点の列 pts（[x, y]）に沿った幅 width(s) の体の輪郭を塗る（s は 0..1）。各点の向きと横の向きも返す
+function fillBody(ctx, pts, width) {
+  const n = pts.length - 1, frames = [];
+  for (let i = 0; i <= n; i++) {
+    const [ax, ay] = pts[Math.max(0, i - 1)], [bx, by] = pts[Math.min(n, i + 1)];
+    const len = Math.hypot(bx - ax, by - ay);
+    const dx = (bx - ax) / len, dy = (by - ay) / len;   // 頭から尾への向き
+    frames.push({ x: pts[i][0], y: pts[i][1], dx, dy, px: -dy, py: dx, w: width(i / n) });
+  }
+  ctx.beginPath();
+  for (const f of frames) ctx.lineTo(f.x + f.px * f.w, f.y + f.py * f.w);
+  for (let i = n; i >= 0; i--) ctx.lineTo(frames[i].x - frames[i].px * frames[i].w, frames[i].y - frames[i].py * frames[i].w);
+  ctx.fill();
+  return frames;
+}
+
+// 楕円。中心 (x, y)、向き (dx, dy) に長さの半径 a、横に半径 b
+function ellipseAlong(ctx, x, y, dx, dy, a, b) {
+  ctx.beginPath();
+  ctx.ellipse(x, y, a, b, Math.atan2(dy, dx), 0, TAU);
+  ctx.fill();
+}
+
+// 鯉を背の側から見た形（頭が上）。胴と胸びれと三角の尾びれだけの単純な形。beat は体のくねりの位相、amp はくねらせる幅。
+// 振りは頭から尾へ遅れて伝わり、尾ほど大きい（体全体が揃って揺れると板に見える）
+function drawCarpTop(sp, beat, amp) {
+  const ctx = sp.canvas.getContext('2d'), n = sp.canvas.width;
+  ctx.clearRect(0, 0, n, n);
+  ctx.fillStyle = '#fff';
+  const pts = [];
+  for (let i = 0; i <= 24; i++) {
+    const s = i / 24;
+    pts.push([n / 2 + amp * n * (0.15 + 0.85 * s * s) * Math.sin(beat - 3.5 * s), n * (0.06 + 0.72 * s)]);
+  }
+  // 頭は丸く、胴の前の方がいちばん太く、尾の付け根へ細くなる
+  const width = (s) => n * (s < 0.3 ? 0.1 * Math.sin(s / 0.3 * Math.PI / 2) ** 0.6 : 0.1 - 0.078 * ((s - 0.3) / 0.7) ** 1.2);
+  const f = fillBody(ctx, pts, width);
+  // 胸びれ。後ろへ向けて左右に開く
+  const fin = f[7];
+  for (const sd of [-1, 1]) {
+    const fx = sd * fin.px * 0.8 + fin.dx * 0.6, fy = sd * fin.py * 0.8 + fin.dy * 0.6;
+    ellipseAlong(ctx, fin.x + sd * fin.px * fin.w + fx * 0.05 * n, fin.y + sd * fin.py * fin.w + fy * 0.05 * n, fx, fy, 0.065 * n, 0.028 * n);
+  }
+  // 尾びれ（三角）
+  const { x, y, dx, dy, px, py } = f[24];
+  const at = (along, side) => [x + dx * along * n + px * side * n, y + dy * along * n + py * side * n];
+  ctx.beginPath();
+  for (const p of [at(0, 0.02), at(0.15, 0.08), at(0.15, -0.08), at(0, -0.02)]) ctx.lineTo(...p);
+  ctx.fill();
+  finishSprite(sp);
+}
+
+// 龍を横から見た形。pts は胴の点の列（板のテクスチャの画素。頭が先頭）、scales は各点の大きさ（遠ざかると小さくなる）。
+// 遠くて小さいので、胴と角の輪郭を優先し、ひげは実物より長く描く。たてがみと尾の先の房は見分けられず、足はとげが出てせわしなく見えるので描かない
+function drawDragon(sp, pts, scales) {
+  const ctx = sp.canvas.getContext('2d'), W = sp.canvas.width, H = sp.canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = ctx.strokeStyle = '#fff';
+  ctx.lineCap = 'round';
+  ctx.shadowColor = '#fff';   // 輪郭をぼかして霞ませる（ctx.filter は Safari で効かないので、影でぼかす）
+  ctx.shadowBlur = DRAGON_BLUR * scales[0];   // 遠ざかって小さくなっても、ぼかしに埋もれないよう一緒に縮める
+  const N = pts.length - 1;
+  const U0 = 0.58 * DRAGON_LENGTH * W / DRAGON_SIZE;   // 胴の太さや角・ひげなどの大きさの単位（胴の長さの 0.58 倍ぶんの画素。遠ざかる前）
+  const U = U0 * scales[0];   // 頭のまわりの大きさの単位
+  // 首のあたりがいちばん太く、尾の近くまで太さを保ってから細く絞り、尾の先は糸のように消える
+  // （前から一気に細くすると、小さく見えたときにおたまじゃくしやうなぎに見える）
+  const width = (s) => U0 * scales[Math.round(s * N)] * (s < 0.12 ? mix(0.055, 0.075, s / 0.12) : Math.max(0.003, 0.075 * (1 - ((s - 0.12) / 0.88) ** 2.2)));
+  const f = fillBody(ctx, pts, width);
+  const line = (w, ...p) => {
+    ctx.lineWidth = w * U;
+    ctx.beginPath();
+    ctx.moveTo(...p[0]);
+    if (p.length === 3) ctx.quadraticCurveTo(...p[1], ...p[2]);
+    else for (const q of p.slice(1)) ctx.lineTo(...q);
+    ctx.stroke();
+  };
+  // 頭（d は頭の向き = 胴と逆）。頭と鼻先、後ろへ伸びる角、胴に沿って流れるひげ
+  const { x, y, dx, dy, px, py } = f[0];
+  const at = (fwd, side) => [x - dx * fwd * U + px * side * U, y - dy * fwd * U + py * side * U];
+  ellipseAlong(ctx, ...at(0.03, 0), dx, dy, 0.075 * U, 0.05 * U);
+  ellipseAlong(ctx, ...at(0.1, -0.005), dx, dy, 0.05 * U, 0.032 * U);
+  for (const sd of [-1, 1]) {
+    line(0.028, at(0.01, sd * 0.03), at(-0.08, sd * 0.1), at(-0.21, sd * 0.085));
+    // ひげ: 鼻先から頬を回って、胴の脇に沿って後ろへ流れる。独自には揺らさず、胴と一緒にくねる
+    const whisker = [at(0.12, sd * 0.025), at(0.02, sd * 0.07)];
+    const last = Math.round(N * DRAGON_WHISKER.length);
+    for (let i = 2; i <= last; i++) {
+      const b = f[i], gap = b.w + U0 * scales[i] * mix(DRAGON_WHISKER.gap[0], DRAGON_WHISKER.gap[1], i / last);
+      whisker.push([b.x + b.px * sd * gap, b.y + b.py * sd * gap]);
+    }
+    line(0.012, ...whisker);
+  }
+  finishSprite(sp);
+}
+
+let carp = null;            // 出ている鯉と龍 { phase（CARP_PHASES の番号）, t（その段階の経過秒）, dir（泳ぎ始める位置の左右）, dragonPath（龍の頭が通る道。昇り始めに作る）, beat（体のくねりの位相）, splashWait（次に水しぶきを跳ね散らすまでの秒数）, burst（登り始めの水を噴き上げたか） }。いなければ null
+let carpWait = carpInterval(CARP_INTERVAL);   // 次に現れるまでの秒数
+
+// 段階の名前と秒数（泳ぐ、登る、滝口を越えて奥へ消える、間をおく、龍が昇る）
+const CARP_PHASES = [
+  ['swim', CARP_SWIM_TIME], ['climb', CARP_CLIMB_TIME], ['over', CARP_OVER_TIME],
+  ['pause', CARP_PAUSE], ['dragon', DRAGON_RISE_TIME],
+];
+
+// 鯉と龍の板 { group（鯉の位置と大きさ。水中では奥行きの向きに伸ばす）, carp, dragon }。最初に現れるときに作る
+let carpParts = null;
+function createCarpParts() {
+  const group = new THREE.Group();
+  const carpSprite = silhouetteSprite(CARP_LENGTH, CARP_LENGTH, 256, 256);
+  group.add(carpSprite.mesh);
+  const dragon = silhouetteSprite(DRAGON_SIZE, DRAGON_SIZE, 512, 512);
+  scene.add(group, dragon.mesh);
+  return { group, carp: carpSprite, dragon };
+}
+
+function startCarp() {
+  if (carp) return;
+  carpRandom.reseed();
+  carpParts ??= createCarpParts();
+  carp = { phase: 0, t: 0, dir: carpRandom() < 0.5 ? -1 : 1, dragonPath: null, beat: 0, splashWait: 0, burst: false };
+  carpWait = carpInterval(CARP_INTERVAL);
+}
+
+const CARP_CLIMB_LENGTH = CARP_LENGTH * CARP_CLIMB_SCALE;   // 滝を登るときの鯉の長さ
+const CARP_HEAD = 0.44;   // 背から見た鯉の絵の、板の中心から頭の先までの距離（板の一辺に対する割合）
+// 滝の中央の滝口の高さと奥行き
+const CARP_LIP_Y = rimY(0), CARP_LIP_Z = lipZ(0) + 0.2;
+// 泳ぐ道は、画面の手前から滝の足もとの霧の手前までのまっすぐな線
+const CARP_SWIM_TO = IMPACT_Z + CARP_SWIM_GAP;
+// 落ちる水の手前で、高さ y の所の奥行き
+const climbZ = (y) => fallZ(CARP_LIP_Z, fallTime(clamp(CARP_LIP_Y - y, 0, CARP_LIP_Y))) + CARP_FRONT;
+
+// 龍の頭が通る道。空の板の上の座標 (u: 右, v: 上) で、昇り始めの点（anchor）が原点。
+// 直線と円弧を、進む向きを揃えてつなぎ、0.1 ごとの点の列にする。昇り始めより下（滝口の縁の陰）から作り始め、
+// 頭が薄れて消える所まで作る。道の長さ s で点を引けるよう、長さの表も作る。緩急を付けるため、頭が各点に着く時刻の表も作る。
+// start / end は、頭が昇り始める所（v が 0 を越える所）と、頭が消える所の時刻（速さ 1 で進んだときの道の長さの単位）。
+// headAt は時刻から頭の位置の s を引く。
+// view は道の上の点を、空の奥へ遠ざかったときに見える位置と大きさ [u, v, 大きさ] に移す
+function dragonPath() {
+  const dist = CAM_POS[2] + DRAGON_DIST, toRad = THREE.MathUtils.degToRad;
+  const e0 = toRad(DRAGON_START_ELEVATION);
+  const top = Math.atan2(CAM_TARGET_Y - CAM_POS[1], CAM_POS[2]) + toRad(camera.fov / 2);
+  const vTop = dist / Math.cos(e0) * (top - e0);   // 画面の上端までの v（板は視線に垂直なので、角度 × 距離）
+  const dir = carpRandom() < 0.5 ? -1 : 1;
+  const { width, turn, slope, drift } = DRAGON_PATH;
+  const a = toRad(slope), leg = 2 * (width - turn);
+  const us = [], vs = [], ss = [], ts = [];
+  let u = -dir * leg / 2, v = -DRAGON_LENGTH, h = dir > 0 ? a : Math.PI - a, s = 0, time = 0;
+  const push = (speed = 1) => {
+    if (us.length) {
+      const d = Math.hypot(u - us[us.length - 1], v - vs[vs.length - 1]);
+      s += d; time += d / speed;
+    }
+    us.push(u); vs.push(v); ss.push(s); ts.push(time);
+  };
+  push();
+  // 遠ざかり始める高さ v0 より上では、昇った高さに応じて小さくなる。頭が消える高さ vEnd まで道を作る
+  const v0 = DRAGON_RECEDE.from * vTop, R = DRAGON_RECEDE.range * vTop;
+  const vEnd = v0 + R * (1 / DRAGON_RECEDE.fade[1] - 1);
+  const STEP = 0.1;
+  for (let side = dir; v < vEnd + 10; side = -side) {
+    for (let d = 0; d < leg; d += STEP) {   // 直線
+      u += Math.cos(h) * STEP; v += Math.sin(h) * STEP; push(1 + DRAGON_PACE.leg * Math.sin(Math.PI * d / leg));
+    }
+    // 円弧: 進む向きを π − 2a だけ回して、反対向きの直線につなぐ（右へ進んでいたら左回り、左へ進んでいたら右回り）
+    const total = Math.PI - 2 * a, dh = STEP / turn * side;
+    for (let t = 0; t < total; t += STEP / turn) {
+      h += dh; u += Math.cos(h) * STEP; v += Math.sin(h) * STEP; push(1 - DRAGON_PACE.arc * Math.sin(Math.PI * t / total));
+    }
+    h = side > 0 ? Math.PI - a : a;   // 丸めの誤差を残さない
+  }
+  // 画面の上端の高さまで昇るあいだに、左右へ drift だけずらす（ずらしても、なめらかさは変わらない）
+  for (let i = 0; i < us.length; i++) us[i] += dir * drift * vs[i] / vTop;
+  // 増えていく表 keys で q を挟む 2 点と、その間の割合
+  const find = (keys, q) => {
+    let lo = 0, hi = keys.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (keys[mid] < q) lo = mid; else hi = mid; }
+    return [lo, hi, clamp((q - keys[lo]) / (keys[hi] - keys[lo]), 0, 1)];
+  };
+  const at = (q) => {
+    const [lo, hi, k] = find(ss, q);
+    return [mix(us[lo], us[hi], k), mix(vs[lo], vs[hi], k)];
+  };
+  const headAt = (T) => {
+    const [lo, hi, k] = find(ts, T);
+    return mix(ss[lo], ss[hi], k);
+  };
+  // 遠ざかる: 大きさ g = 1 / (1 + (v − v0) / R)。見える高さは g を積んだもの（昇る速さも g の割合で遅くなる）。
+  // 横は、左右へずれる中心の線からの離れを g 倍する
+  const center = (y) => dir * drift * y / vTop;
+  const view = ([pu, pv]) => {
+    if (pv <= v0) return [pu, pv, 1];
+    const g = 1 / (1 + (pv - v0) / R), y = v0 + R * Math.log(1 + (pv - v0) / R);
+    return [center(y) + (pu - center(pv)) * g, y, g];
+  };
+  const first = vs.findIndex((y) => y >= 0), last = vs.findIndex((y) => y >= vEnd);
+  // 昇り始める横の位置: 崖の上の木が空に突き出していない所を優先する。
+  // 昇り始めから DRAGON_START.rise の高さまでに道が通る横の範囲で、木の稜線の高さ（見上げる角度の正接）を平均し、いちばん低い所を選ぶ
+  const rising = us.filter((_, i) => vs[i] >= 0 && vs[i] <= DRAGON_START.rise);
+  const uMin = Math.min(...rising), uMax = Math.max(...rising);
+  const skyline = (x) => {   // 龍の奥行きで横の位置 x の方向に、木が昇り始めの高さより上へ突き出す量（突き出す木が無ければ 0）
+    let top = 0;
+    for (const t of rimTreeShapes) {
+      const depth = CAM_POS[2] - t.z;
+      if (Math.abs(x * depth / dist - t.x) < t.halfW) top = Math.max(top, (t.top - CAM_POS[1]) / depth - Math.tan(e0));
+    }
+    return top;
+  };
+  let startX = 0, best = Infinity;
+  for (let k = 0; k < DRAGON_START.tries; k++) {   // 位置はランダムに試すので、木の無い所が何か所もあれば、そのどれかになる
+    const x = carpRand(-DRAGON_X, DRAGON_X);
+    let score = 0;
+    for (let j = 0; j <= 6; j++) score += skyline(x + mix(uMin, uMax, j / 6));
+    if (score < best) { best = score; startX = x; }
+  }
+  const anchor = new THREE.Vector3(startX, CAM_POS[1] + dist * Math.tan(e0), -DRAGON_DIST);
+  return { at, headAt, view, anchor, start: ts[first], end: ts[last] };
+}
+
+function updateCarp(dt) {
+  if (!carp) {
+    carpWait -= dt;
+    if (carpWait <= 0) startCarp();
+    return;
+  }
+  carp.t += dt;
+  while (carp.t >= CARP_PHASES[carp.phase][1]) {
+    carp.t -= CARP_PHASES[carp.phase][1];
+    if (++carp.phase === CARP_PHASES.length) {
+      carp = null;
+      carpParts.carp.mesh.visible = carpParts.dragon.mesh.visible = false;
+      return;
+    }
+  }
+  const [name, duration] = CARP_PHASES[carp.phase], t = carp.t, u = t / duration;
+  const { group, carp: sp, dragon } = carpParts;
+  const mesh = sp.mesh, colors = SCENES[sceneIndex].carp;
+  mesh.visible = name !== 'pause' && name !== 'dragon';
+  dragon.mesh.visible = name === 'dragon';
+  group.scale.set(1, 1, 1);
+
+  if (name === 'swim') {
+    // 手前から滝の下へ、水中をゆったり泳ぐ。奥行きの向きに伸ばす。滝壺に近づくほど薄れて消える
+    const fromX = carp.dir * CARP_SWIM_FROM[0], fromZ = CARP_SWIM_FROM[1];
+    const k = u ** 1.5;   // 手前ほどゆっくり、滝に近づくと速く（画面の上では奥ほど遅く見えるので、ならす。滝壺の近くで間延びしない）
+    group.position.set(mix(fromX, 0, k), -CARP_SWIM_DEPTH, mix(fromZ, CARP_SWIM_TO, k));
+    group.scale.z = CARP_WATER_STRETCH;
+    mesh.rotation.set(-Math.PI / 2, 0, Math.atan2(fromX, fromZ - CARP_SWIM_TO));   // 水平に寝かせ、頭を進む向きへ
+    carp.beat = (carp.beat + dt * CARP_TAIL_BEAT[0]) % TAU;
+    drawCarpTop(sp, carp.beat, CARP_TAIL_AMP[0]);
+    tintSprite(sp, colors, CARP_WATER_ALPHA * (1 - smoothstep(u, ...CARP_FADE)), CARP_WATER_TINT);
+  } else if (name === 'climb') {
+    // 落ちる水の手前を、何度も勢いをつけながら登る（速さが変わる）。体のくねりは一定。
+    // 滝の足もと（霧の中）で薄く現れ、頭が滝口の縁を越えるまで登る
+    if (!carp.burst) {   // 現れる所を、噴き上がる水でごまかす
+      bursts.push({ x: 0, left: BURST_TIME });
+      carp.burst = true;
+    }
+    const w = TAU * CARP_CLIMB_SURGES;
+    const y = mix(-CARP_CLIMB_LENGTH * 0.2, CARP_LIP_Y + CARP_CLIMB_LENGTH * (CARP_TOP_RISE - CARP_HEAD), u - CARP_CLIMB_SURGE * Math.sin(w * u) / w);
+    group.position.set(0, y, climbZ(y));
+    group.scale.setScalar(CARP_CLIMB_SCALE);
+    mesh.rotation.set(0, 0, 0);
+    carp.beat = (carp.beat + dt * CARP_TAIL_BEAT[1]) % TAU;
+    drawCarpTop(sp, carp.beat, CARP_TAIL_AMP[1]);
+    const wet = 1 - smoothstep(y, -CARP_CLIMB_LENGTH * 0.3, CARP_CLIMB_LENGTH * 0.2);   // 水の中にいる割合
+    tintSprite(sp, colors, mix(1, CARP_WATER_ALPHA, wet) * smoothstep(t, 0, CARP_APPEAR), CARP_WATER_TINT * wet);
+    // 尾びれのあたりから下で、バシャッと水しぶきを跳ね散らす（胴に重なると、鯉の形が読みにくい）。勢いのあるときほど多く、強く飛ばす
+    const surge = 1 - CARP_CLIMB_SURGE * Math.cos(w * u);   // いまの速さ（平均 1）
+    carp.splashWait -= dt;
+    if (y > 0 && y < CARP_LIP_Y && carp.splashWait <= 0) {
+      carp.splashWait += CARP_SPLASH_INTERVAL;
+      const count = Math.round(CARP_SPLASH_COUNT * surge), L = CARP_CLIMB_LENGTH;
+      for (let i = 0; i < count; i++) {
+        const a = carpRand(0, Math.PI), speed = carpRand(...CARP_SPLASH_SPEED) * (0.6 + 0.4 * surge);   // 上向きの半円に飛ばす
+        const p = {
+          x: group.position.x + carpRand(-0.2, 0.2) * L, y: y + carpRand(-0.5, -0.35) * L, z: group.position.z + 0.4,
+          vx: Math.cos(a) * speed * CARP_SPLASH_SPREAD, vy: Math.sin(a) * speed * 0.8, vz: carpRand(0.5, 2.5),
+          life: carpRand(...CARP_SPLASH_LIFE),
+        };
+        // 丸い粒（しぶき）と、速さの向きに伸びた線（水滴）を混ぜる
+        if (i % 3 === 0) {
+          if (drops.list.length < drops.max) drops.list.push({ ...p, a: carpRand(0.5, 0.9) });
+        } else if (spray.list.length < spray.max) {
+          spray.list.push({ ...p, size: carpRand(...CARP_SPLASH_SIZE), a: carpRand(0.4, 0.9) });
+        }
+      }
+    }
+  } else if (name === 'over') {
+    // 滝口を越えて、奥の川へ倒れ込む（縁の陰に隠れる）
+    const k = smoothstep(u, 0, 1);
+    group.position.set(0, mix(CARP_LIP_Y + CARP_CLIMB_LENGTH * (CARP_TOP_RISE - CARP_HEAD), CARP_LIP_Y - 0.3, k), mix(climbZ(CARP_LIP_Y), lipZ(0) - 1.5, k));
+    group.scale.setScalar(CARP_CLIMB_SCALE);
+    mesh.rotation.set(-Math.PI / 2 * k, 0, 0);
+    carp.beat = (carp.beat + dt * CARP_TAIL_BEAT[0]) % TAU;
+    drawCarpTop(sp, carp.beat, CARP_TAIL_AMP[0]);
+    tintSprite(sp, colors);
+  } else if (name === 'dragon') {
+    // 遠くの空を、つづら折りの道で昇る。滝口の縁の陰から現れ、空の奥へ遠ざかって小さく薄れて消える。
+    // 頭は道を緩急を付けて進み（折り返しでゆっくり）、胴の各点は、道の上で頭から胴の長さぶん後ろまでの所に置く。
+    // 胴には、頭から尾へ伝わる小さな波を重ねて、道から少し横へ外す
+    carp.dragonPath ??= dragonPath();
+    const path = carp.dragonPath, head = path.headAt(mix(path.start, path.end, u));
+    const { amp, period, waves } = DRAGON_WAVE, phase = TAU * t / period;
+    const body = [];
+    for (let i = 0; i <= 48; i++) {
+      const s = i / 48, q = head - DRAGON_LENGTH * s;
+      const [pu, pv] = path.at(q), [au, av] = path.at(q - 0.5), [bu, bv] = path.at(q + 0.5);
+      const len = Math.hypot(bu - au, bv - av), off = amp * smoothstep(s, 0, 0.3) * Math.sin(phase - TAU * waves * s);
+      body.push(path.view([pu - (bv - av) / len * off, pv + (bu - au) / len * off]));
+    }
+    // 板の中心は胴の外接矩形の中心（道が折り返すので、頭と尾の中点では胴が板からはみ出すことがある）
+    const us = body.map((b) => b[0]), vs = body.map((b) => b[1]);
+    const cu = (Math.min(...us) + Math.max(...us)) / 2, cv = (Math.min(...vs) + Math.max(...vs)) / 2;
+    dragon.mesh.position.copy(path.anchor);
+    dragon.mesh.lookAt(camera.position);
+    dragon.mesh.translateX(cu);
+    dragon.mesh.translateY(cv);
+    const n = dragon.canvas.width;
+    drawDragon(dragon, body.map(([pu, pv]) => [n / 2 + (pu - cu) / DRAGON_SIZE * n, n / 2 - (pv - cv) / DRAGON_SIZE * n]), body.map((b) => b[2]));
+    // 遠くの空に霞ませる。遠ざかるほど空の色に寄せ、頭が十分小さくなったら薄れて消える
+    const g = body[0][2], { fade, haze } = DRAGON_RECEDE;
+    tintSprite(dragon, SCENES[sceneIndex].dragon, DRAGON_HAZE[0] * smoothstep(g, fade[1], fade[0]), mix(DRAGON_HAZE[1], haze, 1 - g), SCENES[sceneIndex].horizon);
+  }
+}
+
 // ---- カメラ ----
 // 縦長の画面では縦の画角を広げて、滝の幅が収まるようにする
 function fitCamera() {
@@ -1757,6 +2233,7 @@ function setScene(index) {
   keyLight.position.fromArray(s.light.dir);
   const foliage = srgb(s.foliage);
   for (const material of foliageMaterials) material.color.copy(foliage);
+  for (const material of rimTreeMaterials) material.color.copy(foliage).multiplyScalar(RIM_TREE_BRIGHTNESS);
   streamUniforms.uLit.value.copy(srgb(s.lit));
   streamUniforms.uShade.value.copy(srgb(s.shade));
   streamUniforms.uGlass.value.copy(srgb(s.glass));
@@ -1800,6 +2277,7 @@ function step(dt) {
   time += dt;
   updateStreams();
   updateBursts(dt);
+  updateCarp(dt);   // 登る鯉が跳ねる水しぶきを、水滴・しぶきより先に足す
   updateDrops(dt);
   updateSpray(dt);
   updateMist(dt);
@@ -1830,6 +2308,8 @@ function tick(now) {
 setupControls({
   // シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る。何が変わるかは作品ごとに違う
   changeScene: nextScene,
+  // 隠し要素の鯉の滝登りを呼び出す（操作ガイドには表示しない）
+  keys: { KeyC: startCarp },
   // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
   intensity: {
     up: () => setWater(water * WATER_STEP),

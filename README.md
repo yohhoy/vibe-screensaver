@@ -107,6 +107,13 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 次の景色 / 強度: 水量
 
+<details>
+<summary>隠し要素（ネタバレ注意）</summary>
+
+ときどき、鯉が滝を登り、そのあと龍が空へ昇ります（登竜門）。**C** キーですぐに呼び出せます。
+
+</details>
+
 ## [溶岩ランプ](https://yohhoy.github.io/vibe-screensaver/lavalamp.html)
 
 [<img src="docs/images/lavalamp.jpg" width="480" alt="溶岩ランプ">](https://yohhoy.github.io/vibe-screensaver/lavalamp.html)
