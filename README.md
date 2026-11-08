@@ -167,6 +167,16 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [無限の和室](https://yohhoy.github.io/vibe-screensaver/infcastle.html)
+
+[<img src="docs/images/infcastle.jpg" width="480" alt="無限の和室">](https://yohhoy.github.io/vibe-screensaver/infcastle.html)
+
+人の気配のない仄暗い和室を歩き続けます。襖や障子が開くと、その先にまた別の和室があり、どこまでも終わりません。
+
+> ⚠️ **3D 酔いにご注意ください。** 一人称視点で歩き続け、視点が大きく回る場面があります。
+
+シーン切替: 別の部屋へ飛ぶ / 強度: 歩く速さ
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。

@@ -2,7 +2,7 @@
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）
-export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture'];
+export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle'];
 
 // 作品ごとの場面の選び方。ここに無い作品は場面を選べない。
 // - option: 番号を渡す引数。シーンの定義（SCENES）がある作品は 'scenes'、配色の定義（COLOR_PRESETS）がある作品は 'presets'
