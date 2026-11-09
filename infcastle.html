@@ -133,6 +133,7 @@ const VIGNETTE_ROLL_LEAD = 0.9;      // 敷居の何秒手前から濃くし始�
 const VIGNETTE_ROLL_FADE = [0.8, 0.6];   // 周辺減光が濃くなる時間と、元に戻る時間（秒）
 const VIGNETTE_TURN_LEVEL = 0.4;     // 方向転換のあいだの周辺減光の濃さ（0 が通常、1 が重力の回転のとき）
 const VIGNETTE_DIST = 0.06;        // 周辺減光の板とカメラの距離（m。カメラの near より遠くする）
+const POT_SHADOW = [0.8, 0.3, 0.04];   // 壺の足もとの暗がり [中心の暗さ（0..1）, 広がり（m）, 手前へのずれ（m。壺の胴に隠れない床まで届かせる）]
 const POT_TONE = 1.3;              // 壺の明るさの倍率
 const POT_COLOR_FIX = [1, 1.18, 1.65];   // 暖色の灯りを打ち消す壺の材質の色（線形の RGB の倍率）
 const SEIGAIHA_COLOR_FIX = [1, 1.05, 1.25];   // 青海波の白地と藍を暖色の灯りの下でも残す、襖の材質の色（線形の RGB の倍率）
@@ -162,15 +163,54 @@ const LAMP_Z = 0.42;               // 吊り行灯と廊下の中心線の距離
 const LAMP_TONE = 0.75;            // 吊り行灯の和紙の明るさの倍率（小さく、ぼんやり見せる）
 const LAMP_LIGHT = 0.9;            // 吊り行灯のまわりが明るくなる量（線形の明るさ。CORRIDOR_DIM を掛ける前の値）
 const LAMP_GLOW_SIZE = 0.6;        // 吊り行灯のまわりのにじみの大きさ（m）
+const LAMP_SHEEN_WIDTH = 0.13;     // 磨かれた床に映る吊り行灯の光の、幅の半分（m）
+const LAMP_SHEEN_LENGTH = 0.15;    // 同じく、奥行きの半分（行灯までの水平距離に対する割合。遠いほど床の上で長く伸びる）
+const LAMP_SHEEN_OPACITY = 0.5;    // 床に映る光の濃さ（0..1）
+const LAMP_SHEEN_SPREAD = 2;        // 床に映る光を行灯の側へ寄せる倍率（1 で実際の反射の位置。正確さより、手前の行灯の真下に見える印象を優先して 2 にする）
+const LAMP_SHEEN_Y = 0.004;        // 床に映る光の板を床板から浮かせる高さ（m）
 const CORRIDOR_WALL_BOARDS = 14;   // 板張りの壁の 1 区画の板の枚数
 const CORRIDOR_DIM = 0.28;         // 廊下の明るさの倍率
 const CORRIDOR_PAPER = 1.1;        // 廊下の障子紙の明るさの倍率（暗い中でほの白く浮かばせる）
-const CORRIDOR_FOG = [0.8, 8];     // 廊下が暗くなり始める距離と、真っ暗になる距離（m）
+const CORRIDOR_FOG = [0.8, 10.73];   // 廊下が暗くなり始める距離と、真っ暗になる距離（m）
 const CORRIDOR_FOG_COLOR = 0x000000;   // 廊下の奥の暗がりの色（背景と同じ黒にして、廊下の端を見せない）
 const CORRIDOR_BOARDS = 6;         // 廊下の床板の枚数（幅方向）
 const CORRIDOR_FLOOR_TONE = 0.6;   // 廊下の床板の明るさの倍率（敷居との境目が見えるよう、敷居より暗くする）
 const CORRIDOR_SILL_TONE = 1.7;    // 廊下の敷居の明るさの倍率（暗い床の上で細い線として見えるようにする）
 const CORRIDOR_CEILING_BOARDS = 5; // 廊下の天井板の枚数（幅方向）
+
+// 隠し要素（行き止まりの隠し部屋、着物と刀）
+const HIDDEN_ROOM_INTERVAL = [640, 300, 1200];   // 現れる間隔 [指数分布の平均, 下限, 上限]（秒）。下限・上限で丸めたあとの実際の平均が約 600 秒になる値
+const HIDDEN_ROOM_HALF_X = KEN;    // 隠し部屋（幅 2 間、奥行き 2.5 間の 10 畳。着物のある正面が短い辺）の中心から左右の壁の面まで
+const HIDDEN_ROOM_HALF_Z = KEN * 1.25;   // 同じく、正面と入口の壁の面まで
+const HIDDEN_ROOM_BRIGHT = 1.25;  // 隠し部屋の明るさの倍率（ほかの部屋より気持ち明るくする。行灯そのものには掛けない）
+const HIDDEN_ROOM_BLOOM = 0.20;    // 隠し部屋のブルームの強さ（BLOOM_STRENGTH の代わりに使う）
+const BLOOM_FADE = 0.25;           // 部屋を移ったときにブルームの強さが変わる速さ（1 秒あたり）
+const LOOK_TIME = 6;               // 部屋の中央で床の間の側へ 180 度回る時間（秒。最初の歩く速さ INITIAL_SPEED のときの値で、速さに反比例する）
+const LOOK_HOLD = 2;               // 回る前に着物を見て止まる時間（秒）
+const KIMONO_WALL_GAP = 0.42;      // 着物の面と正面の壁の距離（m）
+const KIMONO_TOP = 1.8;            // 着物の上端の高さ（m）
+const KIMONO_HEM = 0.06;           // 裾の高さ（m）
+const KIMONO_BODY = 0.31;          // 身頃の幅の半分（m）
+const KIMONO_SLEEVE = 0.66;        // 袖先までの幅の半分（m）
+const KIMONO_SLEEVE_LEN = 0.95;    // 袖丈（m）
+const KIMONO_K = 0.62;             // 着物の明るさ
+const KIMONO_COLOR_FIX = [1, 1.5, 3.3];   // 暖色の灯りの下でも白地と藤の紫が残るようにする、材質の色（線形の RGB の倍率）
+const KIMONO_GROUND = ['#efe6d6', '#e8dcc8', '#d8c8b0'];   // 着物の地色（上端から裾へ）
+const HIDDEN_EARTH_LIFT = 1.3;     // 隠し部屋の土壁の地を暗くして描き、材質の色で持ち上げる倍率（金の砂子を地より明るく見せる）
+const ROUND_WINDOW = { y: 1.2, r: 0.3, tone: 1.35 };   // 丸い下地窓 [中心の高さ, 半径（m）, 障子紙の明るさの倍率]
+const KIMONO_CANVAS = IS_TOUCH ? [792, 1044] : [1056, 1392];   // 着物の canvas の大きさ
+const IKO_RAIL_HALF = 0.92;        // 衣桁の笠木の、反りを除いた長さの半分（m）
+const IKO_POST_X = 0.8;            // 衣桁の柱の x の位置（m）
+const KATANA_SCALE = 1.5;          // 刀と刀掛けの倍率（1 が実寸。部屋の中央からも目立つよう、実物より大きくする）
+const KATANA_LEN = 1.04;           // 日本刀の全長（m。KATANA_SCALE を掛ける前の値。次の 2 つと addKatana の寸法も同じ）
+const KATANA_HEIGHT = 0.3;         // 床の間の床板から刀の中心までの高さ（m）
+const KATANA_SORI = 0.03;          // 刀の反り（中ほどと両端の高さの差。m）
+const KATANA_DEPTH = 0.62;         // 刀の位置（床の間の奥の壁から手前へ、奥行きに対する割合）
+const BLADE_COLOR = [0.55, 1.0, 2.6];   // 暖色の灯りの下でも鋼の色に見せる、刀身の材質の色（線形の RGB の倍率）
+const BLADE_TONES = { shinogi: 0.07, ridge: 0.2, ji: 0.11, nioi: 0.24, hamon: 0.42 };   // 刀身の各部の明るさ（地鉄は暗く、白いのは刃文だけ）
+const BLADE_SHIMMER = 0.5;         // 刀身が蝋燭の揺らぎを受ける割合（0..1）
+const BLADE_GLINT = 0.15;          // 床の間の正面を向いたときに、刀身がわずかに光る量（明るさの割合）
+const KATANA_TONE = 1.5;           // 刀の明るさの倍率（床の間の奥は暗いので持ち上げる）
 
 const HAZE_OPACITY = 0.92;          // 開いた建具の先に掛かる霞の濃さ（0..1）
 const HAZE_COLOR = 0x9c6a42;        // 霞の色
@@ -602,6 +642,135 @@ const textures = {
 };
 
 
+// ---- 着物 ----
+// 温かみのある白の地に、図案化した藤の房を垂らす。身頃と袖で 1 枚につながる絵（袖先から袖先までが canvas の幅）。
+// 隠し要素なので、最初に現れるときに作る（起動時に作ると Math.random の列がずれる）
+
+// 藤の房。垂れ下がる蔓に花を付け、全体を細長い逆三角形にする。上のほうは左右へ互い違いに 3〜4 列（位置を乱して自然に見せる）、
+// 先のほうは同じ高さから左右へ 1 輪ずつ対にする。len は房の長さ、r は上端の半幅
+function drawWisteria(ctx, x, y, len, r) {
+  const phase = rand(0, TAU);
+  const stemX = (t) => x + Math.sin(t * 2.6 + phase) * r * 0.3;
+  let d = 0, odd = false;
+  while (d < len) {
+    const t = d / len, paired = t > 0.55;
+    const half = r * 1.15 * (1 - t) + r * 0.26, loose = paired ? 0 : (1 - t) * r;   // loose は上ほど大きい、花の位置の乱れ
+    for (const side of paired ? [-1, 1] : [odd ? 1 : -1]) {
+      const columns = paired ? 1 : 1 + Math.floor((1 - t) * 3 + rand(0, 1));
+      for (let j = 0; j < columns; j++) {
+        if (!paired && rand(0, 1) < 0.07) continue;   // ところどころ花を抜いて、列が揃って見えないようにする
+        ctx.fillStyle = `hsla(${rand(262, 276)},58%,${lerp(32, 66, t) + rand(-7, 7)}%,0.92)`;
+        ctx.beginPath();
+        ctx.ellipse(stemX(t) + side * (j + 0.6) / columns * half + rand(-0.3, 0.3) * loose, y + d + rand(-0.28, 0.28) * loose, r * 0.26, r * 0.16,
+          paired ? side * 0.5 : side * rand(0.2, 0.8) + rand(-0.8, 0.8) * (1 - t), 0, TAU);
+        ctx.fill();
+      }
+    }
+    d += r * (paired ? 0.5 : lerp(0.2, 0.3, t));
+    odd = !odd;
+  }
+  // 蔓は花の上に描く（花に隠れると、房の中心の線が見えない）
+  ctx.strokeStyle = '#6e5a3e';
+  ctx.lineWidth = r * 0.07;
+  ctx.beginPath();
+  for (let i = 0; i <= 24; i++) ctx.lineTo(stemX(i / 24), y + i / 24 * len);
+  ctx.stroke();
+}
+
+function drawLeaf(ctx, x, y, len, angle, fill) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(len * 0.5, -len * 0.3, len, 0);
+  ctx.quadraticCurveTo(len * 0.5, len * 0.3, 0, 0);
+  ctx.fill();
+  ctx.restore();
+}
+
+function makeKimonoTexture() {
+  const [w, h] = KIMONO_CANVAS;
+  const [c, ctx] = makeCanvas(w, h);
+  const ground = ctx.createLinearGradient(0, 0, 0, h);
+  KIMONO_GROUND.forEach((color, i) => ground.addColorStop(i / (KIMONO_GROUND.length - 1), color));
+  ctx.fillStyle = ground;
+  ctx.fillRect(0, 0, w, h);
+
+  // 裾を淡い藤色へぼかす
+  const hemFade = ctx.createLinearGradient(0, h * 0.62, 0, h);
+  hemFade.addColorStop(0, 'rgba(150,120,200,0)');
+  hemFade.addColorStop(1, 'rgba(150,120,200,0.55)');
+  ctx.fillStyle = hemFade;
+  ctx.fillRect(0, h * 0.62, w, h * 0.38);
+
+  // 蔓は左肩から右へ、下がりながら伸びる（右袖の先までは届かせない）
+  const vineEnd = w * 0.84;
+  const vineAt = (x) => h * 0.065 + x / w * h * 0.07 + h * 0.012 * Math.sin(x * 0.012);
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#7a6448';
+  ctx.lineWidth = w * 0.006;
+  traceCurve(ctx, vineEnd, 6, vineAt);
+  ctx.stroke();
+  for (let i = 0; i < 14; i++) {
+    const x = vineEnd * rand(0, 1) ** 1.4;   // 左に多く
+    drawLeaf(ctx, x, vineAt(x), w * rand(0.04, 0.065), rand(0.2, 2.9), i % 2 ? '#7fa76a' : '#94b67c');
+  }
+
+  // 藤の房 [x, 長さ]（幅と高さに対する割合）。左寄りに長い房を集め、右へ行くほど短く疎らにする。房の先は、絵の上端から 50% までに収める
+  for (const [fx, fl] of [[0.07, 0.26], [0.18, 0.31], [0.35, 0.35], [0.47, 0.39], [0.61, 0.23], [0.79, 0.13]]) {
+    drawWisteria(ctx, w * fx, vineAt(w * fx), h * fl, w * rand(0.04, 0.05));
+  }
+
+  // 房から裾へ散る花びら（上に多く、左に寄せる）
+  for (let i = 0; i < 34; i++) {
+    ctx.fillStyle = `hsla(${rand(262, 280)},55%,${rand(52, 74)}%,0.85)`;
+    ctx.beginPath();
+    ctx.ellipse(w * (0.27 + 0.46 * rand(0, 1) ** 1.3), h * (0.5 + 0.46 * rand(0, 1) ** 1.5), w * 0.008, w * 0.005, rand(0, TAU), 0, TAU);
+    ctx.fill();
+  }
+
+  // 袖の縁と衿（裏地の藤色がのぞく）
+  const bodyL = w * (KIMONO_SLEEVE - KIMONO_BODY) / (2 * KIMONO_SLEEVE), sleeveY = h * KIMONO_SLEEVE_LEN / (KIMONO_TOP - KIMONO_HEM), edge = w * 0.009;
+  ctx.fillStyle = '#8d72ab';
+  for (const x of [0, w - edge]) ctx.fillRect(x, 0, edge, sleeveY);
+  for (const x of [0, w - bodyL]) ctx.fillRect(x, sleeveY - edge, bodyL, edge);
+  ctx.fillRect(w * 0.44, 0, w * 0.12, h * 0.016);
+
+  // 背縫いと裾のふき
+  ctx.fillStyle = 'rgba(90,70,60,0.4)';
+  ctx.fillRect(w / 2 - 1, 0, 2, h);
+  ctx.fillStyle = '#7a5f96';
+  ctx.fillRect(0, h * 0.975, w, h * 0.025);
+
+  ageSurface(ctx, w, h, 0.3, { stain: 0.3, edge: false });   // 古びを薄く付ける
+  return c;
+}
+
+// 隠し部屋の土壁。ふつうの土壁に金の砂子を蒔く。砂子が地より明るく見えるよう、地を少し暗くして描き、材質の色で持ち上げる（HIDDEN_EARTH_LIFT）
+function makeGoldEarthTexture() {
+  const size = textures.earth.image.width;
+  const [c, ctx] = makeCanvas(size, size);
+  ctx.drawImage(textures.earth.image, 0, 0);
+  ctx.fillStyle = `rgba(0,0,0,${1 - 1 / HIDDEN_EARTH_LIFT})`;
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#ffe9b0';
+  for (let i = 0; i < 1800; i++) {
+    ctx.beginPath();
+    ctx.arc(rand(0, size), rand(0, size), rand(0.6, 1.5), 0, TAU);
+    ctx.fill();
+  }
+  return toTexture(c);
+}
+let goldEarthTex = null;
+const goldEarthTexture = () => (goldEarthTex ??= makeGoldEarthTexture());
+
+let kimonoTex = null;
+const kimonoTexture = () => (kimonoTex ??= toTexture(makeKimonoTexture(), false));
+
+
+
 // ---- 部屋の計画 ----
 function randomDoorKind() {
   return Math.random() < 0.5 ? { kind: 'fusuma' } : { kind: 'shoji', layout: pick(SHOJI_LAYOUTS) };
@@ -632,7 +801,7 @@ function pickAndons(exit) {
 }
 
 // 部屋の中心から出口の面までの距離
-const exitDist = (plan) => (plan.corridor ? CORRIDOR_HALF : H);
+const exitDist = (plan) => (plan.corridor ? CORRIDOR_HALF : plan.halfZ ?? H);
 
 // 廊下の区画の番号（-CORRIDOR_BAYS から）を、sides の添字にする
 const corridorIndex = (n) => n + CORRIDOR_BAYS;
@@ -719,6 +888,35 @@ function planRoom(previous) {
   return plan;
 }
 
+// 隠し部屋（10 畳の行き止まり）。出口は入ってきた建具で、正面は着物を掛けた土壁、左右の片方に床の間を置く
+function planHiddenRoom(previous) {
+  const entry = previous.walls[previous.exit];
+  const tokoWall = pick([1, 3]);
+  const walls = [];
+  walls[0] = { kind: 'plain' };
+  walls[tokoWall] = { kind: 'toko', katana: true };   // 幅いっぱいの床の間に、日本刀だけを飾る
+  walls[4 - tokoWall] = { kind: 'plain' };
+  walls[ENTRY_WALL] = { kind: entry.kind, layout: entry.layout };
+  const cx = HIDDEN_ROOM_HALF_X - ANDON_INSET, cz = HIDDEN_ROOM_HALF_Z - ANDON_INSET;
+  return {
+    hiddenRoom: true,
+    halfX: HIDDEN_ROOM_HALF_X,
+    halfZ: HIDDEN_ROOM_HALF_Z,
+    walls,
+    exit: ENTRY_WALL,
+    exitX: 0,
+    lookDir: tokoWall === 3 ? 1 : -1,   // 回る向き（床の間の側を通って入口を向く）
+    tatamiTurn: 1,
+    saoAlongX: false,      // 床の間は左右の壁にあるので、竿縁を z に沿わせる（床差しを避ける）
+    earth: pick(EARTH_COLORS),
+    edge: pick(EDGE_COLORS),
+    ceiling: pick(CEILING_COLORS),
+    fusuma: pick(textures.fusuma.filter((t) => t !== previous.fusuma)),
+    andons: [[-cx, -cz], [cx, -cz], [cx, cz], [-cx, cz]],   // 四隅すべて。材質は 2 系統を交互に使うので、隣り合う行灯は別々に揺らぐ
+    roll: 0,
+  };
+}
+
 
 // ---- 部屋の組み立て ----
 const aoAt = (d) => 1 - AO_STRENGTH * Math.exp(-Math.max(0, d) / AO_RADIUS);   // 面と面の境からの距離 d での暗さ
@@ -729,6 +927,9 @@ const lampZ = (plan) => plan.lampSide * LAMP_Z;   // 吊り行灯の z
 class RoomBuilder {
   constructor(plan) {
     this.plan = plan;
+    this.halfX = plan.halfX ?? H;   // 部屋の中心から左右の壁の面まで
+    this.halfZ = plan.halfZ ?? H;   // 部屋の中心から正面・入口の壁の面まで
+    this.span = H;                  // 壁の長さの半分（廊下の区画は H のまま。部屋の壁は setRoomWall で決める）
     this.buckets = new Map();
     this.target = 'static';   // 'static' | 'entry' | 'left' | 'right'（入れる先のグループ）
     this.shojiWalls = plan.walls.flatMap((w, i) => (w.kind === 'shoji' ? [i] : []));
@@ -745,6 +946,15 @@ class RoomBuilder {
     this.s = WALL_SIN[i];
     this.ox = ox;
     this.oz = oz;
+  }
+
+  // 部屋の中心から壁 i の面まで
+  wallDist(i) { return i % 2 === 0 ? this.halfZ : this.halfX; }
+
+  // 部屋の壁 i を選ぶ。壁の座標の z = -H が壁の面になるようにずらす。span は壁の長さの半分
+  setRoomWall(i) {
+    this.setWall(i, 0, H - this.wallDist(i));
+    this.span = i % 2 === 0 ? this.halfX : this.halfZ;
   }
 
   // fn が足す頂点を、部屋に入れずに取り出す（stamp で何度も置く）
@@ -796,12 +1006,12 @@ class RoomBuilder {
   // 部屋の中の位置と面の向きから、その点の明るさを決める
   shade(x, y, z, nx, ny, nz) {
     const corridor = this.plan.corridor;   // 廊下は奥へ続いて見えるよう、進行方向（x）には変えない
-    const dx = corridor ? Infinity : H - Math.abs(x), dz = (corridor ? CORRIDOR_HALF : H) - Math.abs(z);
+    const dx = corridor ? Infinity : this.halfX - Math.abs(x), dz = (corridor ? CORRIDOR_HALF : this.halfZ) - Math.abs(z);
     const ao = aoAt;
     const glow = this.andonGlow(x, y, z);
     let k = LIGHT_BASE * (ny > 0.5 ? FACE_UP : ny < -0.5 ? FACE_DOWN : FACE_SIDE);
     k *= lerp(1, TOP_DIM, smoothstep(y, 0.1, CEIL_H));
-    if (!corridor) k *= 1 - RADIAL_DIM * Math.hypot(x, z) / (H * Math.SQRT2);
+    if (!corridor) k *= 1 - RADIAL_DIM * Math.hypot(x, z * this.halfX / this.halfZ) / (this.halfX * Math.SQRT2);
     const out = corridor ? 0 : Math.max(-dx, -dz, 0);
     if (out > 0.09) {
       k *= lerp(1, RECESS_DIM, smoothstep(out, 0.09, TOKO_D));   // 床の間の奥
@@ -816,7 +1026,7 @@ class RoomBuilder {
     }
     if (ny > 0.5) {
       // 障子の面までの距離で明るくする（廊下は両側が障子）
-      const dists = corridor ? [dz] : this.shojiWalls.map((i) => H + WALL_SIN[i] * x + WALL_COS[i] * z);
+      const dists = corridor ? [dz] : this.shojiWalls.map((i) => this.wallDist(i) + WALL_SIN[i] * x + WALL_COS[i] * z);
       for (const d of dists) k *= 1 + SHOJI_GLOW * Math.exp(-Math.max(0, d) / 0.7);
     }
     return k + glow;
@@ -833,8 +1043,8 @@ class RoomBuilder {
     m.color.push(k * lerp(SHADOW[0], WARM[0], t), k * lerp(SHADOW[1], WARM[1], t), k * lerp(SHADOW[2], WARM[2], t));
   }
 
-  // 平行四辺形。o は角、u・v は辺（u×v が表の向き）。nu・nv は分割数、uv は [u0, v0, u1, v1]、swap は u と v を入れ替える、lit は kFn の明るさに足す行灯の光の割合
-  quad(key, o, u, v, { nu = 1, nv = 1, uv = [0, 0, 1, 1], swap = false, tone = 1, kFn = null, lit = 0 } = {}) {
+  // 平行四辺形。o は角、u・v は辺（u×v が表の向き）。nu・nv は分割数、uv は [u0, v0, u1, v1]、swap は u と v を入れ替える、lit は kFn の明るさに足す行灯の光の割合、zFn は壁の座標の z に足すずれ（布のひだ）、dimFn は壁の座標の (x, z) で明るさに掛ける倍率
+  quad(key, o, u, v, { nu = 1, nv = 1, uv = [0, 0, 1, 1], swap = false, tone = 1, kFn = null, lit = 0, zFn = null, dimFn = null } = {}) {
     const m = this.bucket(key);
     const { c, s, ox, oz } = this;
     const [rnx, ny, rnz] = this.roomNormal(u, v);
@@ -843,12 +1053,12 @@ class RoomBuilder {
         const a = i / nu, b = j / nv;
         const lx = o[0] + u[0] * a + v[0] * b;
         const y = o[1] + u[1] * a + v[1] * b;
-        const lz = o[2] + u[2] * a + v[2] * b;
+        const lz = o[2] + u[2] * a + v[2] * b + (zFn ? zFn(lx, y) : 0);
         const x = (lx + ox) * c + (lz + oz) * s, z = -(lx + ox) * s + (lz + oz) * c;
         m.position.push(x, y, z);
         const ta = swap ? b : a, tb = swap ? a : b;
         m.uv.push(uv[0] + (uv[2] - uv[0]) * ta, uv[1] + (uv[3] - uv[1]) * tb);
-        this.pushColor(m, tone * (kFn ? kFn(lx, y, lz) + lit * this.andonGlow(x, y, z) : this.shade(x, y, z, rnx, ny, rnz)));
+        this.pushColor(m, tone * (kFn ? kFn(lx, y, lz) + lit * this.andonGlow(x, y, z) : this.shade(x, y, z, rnx, ny, rnz)) * (dimFn ? dimFn(lx, lz) : 1));
       }
     }
     const base = m.count;
@@ -931,18 +1141,25 @@ class RoomBuilder {
   }
 }
 
+// 10 畳の敷き方: [列, 行, 列数, 行数]（行 0 が正面の壁の側）。四隅が 1 点に集まらず、左右の列の行 1..3（床の間の前）は長辺が壁に沿う
+const MATS_10 = [
+  [0, 0, 2, 1], [2, 0, 2, 1], [0, 1, 1, 2], [1, 1, 2, 1], [3, 1, 1, 2],
+  [1, 2, 1, 2], [2, 2, 1, 2], [0, 3, 1, 2], [3, 3, 1, 2], [1, 4, 2, 1],
+];
+
 function buildFloor(b) {
   const cell = KEN / 2;
   const turn = b.plan.tatamiTurn;
+  const { halfX, halfZ } = b;
   // 土台（畳の合わせ目から見える暗い面）
-  b.quad('base', [-H, -0.012, H], [ROOM, 0, 0], [0, 0, -ROOM]);
+  b.quad('base', [-halfX, -0.012, halfZ], [halfX * 2, 0, 0], [0, 0, -halfZ * 2]);
   // 卍形: [列, 行, 列数, 行数]。turn が -1 なら左右に反転する
   const MATS = [[0, 0, 2, 1], [2, 0, 1, 2], [1, 2, 2, 1], [0, 1, 1, 2], [1, 1, 1, 1]];
   const seam = 0.0035, edge = 0.03;
-  for (const [col, row, cols, rows] of MATS) {
-    let x0 = -H + col * cell, x1 = x0 + cols * cell;
+  for (const [col, row, cols, rows] of halfZ > H ? MATS_10 : MATS) {
+    let x0 = -halfX + col * cell, x1 = x0 + cols * cell;
     if (turn < 0) [x0, x1] = [-x1, -x0];
-    const z0 = -H + row * cell + seam, z1 = -H + (row + rows) * cell - seam;
+    const z0 = -halfZ + row * cell + seam, z1 = -halfZ + (row + rows) * cell - seam;
     x0 += seam;
     x1 -= seam;
     const alongX = cols >= rows;
@@ -962,25 +1179,28 @@ function buildCeiling(b) {
   const seam = 0.002;
   const pt = (a, y, c) => (along ? [a, y, c] : [c, y, a]);
   const s = along ? 1 : -1;
-  b.quad('base', pt(-H, CEIL_H + 0.004, s * H), pt(0, 0, -s * ROOM), pt(ROOM, 0, 0));
-  const bw = ROOM / CEILING_BOARDS;
-  for (let i = 0; i < CEILING_BOARDS; i++) {
+  const halfA = along ? b.halfX : b.halfZ, halfC = along ? b.halfZ : b.halfX;   // 竿縁の沿う向きと、天井板の沿う向きの半分の長さ
+  const sizeA = halfA * 2, sizeC = halfC * 2;
+  b.quad('base', pt(-halfA, CEIL_H + 0.004, s * halfC), pt(0, 0, -s * sizeC), pt(sizeA, 0, 0));
+  const boards = Math.round(CEILING_BOARDS * halfA / H), saoCount = Math.round(SAO_COUNT * halfC / H);   // 広い部屋では板と竿縁を増やす
+  const bw = sizeA / boards;
+  for (let i = 0; i < boards; i++) {
     const u0 = Math.random(), v0 = Math.random();
-    const opts = { nu: 18, nv: 3, tone: rand(0.82, 1.1), uv: [u0, v0, u0 + ROOM / CEILING_TILE, v0 + (bw - seam * 2) / CEILING_TILE] };
-    const c0 = -H + i * bw + seam, width = bw - seam * 2;
-    b.quad('ceiling', pt(c0, CEIL_H, s * H), pt(0, 0, -s * ROOM), pt(width, 0, 0), opts);
+    const opts = { nu: 18, nv: 3, tone: rand(0.82, 1.1), uv: [u0, v0, u0 + sizeC / CEILING_TILE, v0 + (bw - seam * 2) / CEILING_TILE] };
+    const c0 = -halfA + i * bw + seam, width = bw - seam * 2;
+    b.quad('ceiling', pt(c0, CEIL_H, s * halfC), pt(0, 0, -s * sizeC), pt(width, 0, 0), opts);
   }
   const hw = 0.016, depth = 0.038;
-  for (let i = 0; i < SAO_COUNT; i++) {
-    const c = -H + (i + 0.5) * ROOM / SAO_COUNT;
-    b.box('wood', pt(-H, CEIL_H - depth, c - hw), pt(H, CEIL_H, c + hw), { skip: '+y' });
+  for (let i = 0; i < saoCount; i++) {
+    const c = -halfC + (i + 0.5) * sizeC / saoCount;
+    b.box('wood', pt(-halfA, CEIL_H - depth, c - hw), pt(halfA, CEIL_H, c + hw), { skip: '+y' });
   }
 }
 
 function buildPosts(b) {
   for (let i = 0; i < 4; i++) {
-    b.setWall(i);
-    b.box('wood', [-H, 0, -H], [-H + POST_W, CEIL_H, -H + POST_W], { tone: 0.92, skip: '+y-y' });
+    b.setRoomWall(i);
+    b.box('wood', [-b.span, 0, -H], [-b.span + POST_W, CEIL_H, -H + POST_W], { tone: 0.92, skip: '+y-y' });
   }
 }
 
@@ -1043,6 +1263,10 @@ function addDoorWall(b, wall, isExit) {
   b.quad('earth', [-H, y, -H], [w, 0, 0], [0, h, 0], { nu: 22, nv: 4, uv: earthUv(w, h) });
   b.box('wood', [-P, KAMOI_H, -H - WALL_T], [P, KAMOI_H + KAMOI_T, -H + 0.008], { skip: '+y-z' });
   b.box('sill', [-P, -0.012, -H - WALL_T], [P, 0.007, -H + 0.006], { skip: '-y-z', tone: b.plan.corridor ? CORRIDOR_SILL_TONE : 1 });
+  // 隅の柱と外側の建具のあいだの隙間をふさぐ。柱と建具は奥行きがずれているので、斜めの視線は柱の裏を通って壁の幅の外まで抜け、その先の部屋が覗く。
+  // 板は建具の裏に置き、建具の裏へ少し重ねて、壁の幅の外まで広げる（裏面は描かれないので、隣の部屋からは見えない）。box は Math.random を引くので quad で作る
+  const gapOut = 0.6, gapW = gapOut + POST_W + 0.03;
+  for (const x of [-H - gapOut, H + gapOut - gapW]) b.quad('wood', [x, 0, BACK_TRACK - PANEL_T - 0.005], [gapW, 0, 0], [0, KAMOI_H + KAMOI_T, 0], { uv: [0, 0, 0.1, 0.4] });
   // 外側の 2 枚（奥の溝）と中央の 2 枚（手前の溝）
   panel(-P, -PANEL_W, BACK_TRACK, -P + 0.09);
   panel(PANEL_W, P, BACK_TRACK, P - 0.09);
@@ -1059,10 +1283,23 @@ function addPlainWall(b) {
   b.box('wood', [-H, 0, -H], [H, 0.04, -H + 0.01], { skip: '-y-z' });
 }
 
+// 隠し部屋で、壁の中央の 1.5 間（土壁・建具・床の間）の両脇に続く土壁と、その境の柱
+function addWallMargins(b, wall) {
+  const w = b.span - H;
+  for (const sx of [-1, 1]) {
+    const x0 = sx > 0 ? H : -b.span;
+    b.quad('earth', [x0, 0, -H], [w, 0, 0], [0, CEIL_H, 0], { nu: Math.ceil(w / 0.12), nv: 18, uv: earthUv(w, CEIL_H) });
+    b.box('wood', [x0, 0, -H], [x0 + w, 0.04, -H + 0.01], { skip: '-y-z' });
+    const px = sx > 0 ? P : -H;
+    b.box('wood', [px, 0, -H], [px + POST_W, CEIL_H, -H + POST_W], { tone: 0.92, skip: '+y-y' });
+    if (wall.kind === 'toko') b.box('wood', [x0, KAMOI_H + KAMOI_T, -H], [x0 + w, WALL_TOP, -H + 0.045], { skip: '-z', tone: 0.95 });   // 長押は床の間の前だけ切る
+  }
+}
+
 // 床の間・床脇のくぼみ（奥と両側の土壁、天井）
 function addRecess(b, x0, x1, yBottom, yTop) {
   const zB = -H - TOKO_D, w = x1 - x0, h = yTop - yBottom;
-  const uv = (a, c) => earthUv(a, c, 0.4, 0.4);
+  const uv = (a, c) => earthUv(a, c, Math.min(0.4, 1 - a / EARTH_TILE), 0.4);   // 幅の広い床の間でも、貼り始めをテクスチャの中に収める
   b.quad('earth', [x0, yBottom, zB], [w, 0, 0], [0, h, 0], { nu: 10, nv: 10, uv: uv(w, h) });
   b.quad('earth', [x0, yBottom, -H], [0, 0, -TOKO_D], [0, h, 0], { nu: 5, nv: 10, uv: uv(TOKO_D, h) });
   b.quad('earth', [x1, yBottom, zB], [0, 0, TOKO_D], [0, h, 0], { nu: 5, nv: 10, uv: uv(TOKO_D, h) });
@@ -1078,12 +1315,55 @@ function addPot(b, cx, cz) {
   b.lathe('lacquer', cx, cz, [[0.066, y + 0.34], [0, y + 0.335]], 16, 2);   // 口の中
 }
 
+// 抜身の日本刀を黒漆の刀掛けに、柄を左、刃を上にして飾る。cx・z は刀の中心
+function addKatana(b, cx, z) {
+  const k = KATANA_SCALE;
+  const y0 = TOKO_FLOOR, yc = y0 + KATANA_HEIGHT * k, half = KATANA_LEN / 2 * k, guard = cx - half + 0.25 * k, end = cx + half, hw = 0.016 * k;
+  const curveAt = (x) => yc - KATANA_SORI * k * ((x - cx) / half) ** 2;   // 刃を上にすると、中ほどが高い弓なりになる
+  // x0..x1 に沿う帯。lo・hi は下端と上端の高さ
+  const strip = (key, x0, x1, n, lo, hi, tone) => {
+    for (let i = 0; i < n; i++) {
+      const xa = lerp(x0, x1, i / n), xb = lerp(x0, x1, (i + 1) / n);
+      b.face(key, [xa, lo(xa), z], [xb, lo(xb), z], [xb, hi(xb), z], [xa, hi(xa), z], tone);
+    }
+  };
+  const baseTop = y0 + 0.04 * k;
+  b.box('lacquer', [cx - 0.44 * k, y0, z - 0.11 * k], [cx + 0.44 * k, baseTop, z + 0.11 * k], { skip: '-y' });   // 台
+  for (const sx of [-1, 1]) {
+    const x = cx + sx * 0.3 * k;
+    b.box('lacquer', [x - 0.018 * k, baseTop, z - 0.03 * k], [x + 0.018 * k, curveAt(x) - hw, z + 0.03 * k], { skip: '-y' });   // 支え
+  }
+  // 柄（黒の柄糸に、白い鮫皮の菱形）と鍔
+  strip('lacquer', cx - half, guard, 6, (x) => curveAt(x) - hw, (x) => curveAt(x) + hw, KATANA_TONE);
+  for (let i = 0; i < 7; i++) {
+    const x = lerp(cx - half + 0.018 * k, guard - 0.018 * k, i / 6), y = curveAt(x), d = 0.012 * k, zf = z + 0.001;
+    b.face('paper', [x - d, y, zf], [x, y - d, zf], [x + d, y, zf], [x, y + d, zf], KATANA_TONE);
+  }
+  const bladeStart = guard + 0.008 * k, guardR = 0.042 * k;
+  b.box('metal', [guard, curveAt(guard) - guardR, z - 0.03 * k], [bladeStart, curveAt(guard) + guardR, z + 0.03 * k], { skip: '-y', tone: KATANA_TONE });
+  // はばき（鍔のすぐ先の金具）
+  const habaki = bladeStart + 0.035 * k;
+  strip('metal', bladeStart, habaki, 2, (x) => curveAt(x) - hw * 1.05, (x) => curveAt(x) + hw * 1.05, KATANA_TONE);
+  // 刀身。下が棟、上が刃。棟の線はまっすぐ切先まで通し、刃の側だけが丸く落ちて切先になる
+  const tip = 0.065 * k, sharp = (x) => Math.sqrt(1 - clamp((x - (end - tip)) / tip, 0, 1) ** 2);
+  const span = (x) => 2 * hw * lerp(1, 0.72, (x - habaki) / (end - habaki)) * sharp(x);   // 棟から刃までの幅（先へ細くなる）
+  const at = (f) => (x) => curveAt(x) - hw + f * span(x);   // 棟を 0、刃を 1 とした高さ
+  const hamon = (x) => 0.72 + 0.07 * Math.sin(x * 70 / k) + 0.035 * Math.sin(x * 173 / k);
+  const shifted = (d) => (x) => at(hamon(x) + d)(x);
+  // [下端, 上端, 明るさ]。鎬地、鎬筋、平地、匂い（刃文の境のぼかし）、刃文
+  for (const [lo, hi, tone] of [[at(0), at(0.3), BLADE_TONES.shinogi], [at(0.3), at(0.35), BLADE_TONES.ridge], [at(0.35), shifted(-0.04), BLADE_TONES.ji],
+    [shifted(-0.04), shifted(0.05), BLADE_TONES.nioi], [shifted(0.05), at(1), BLADE_TONES.hamon]]) {
+    strip('blade', habaki, end, 60, lo, hi, KATANA_TONE * tone);
+  }
+}
+
 function addTokonoma(b, wall) {
   const s = wall.side;
-  const [x0, x1] = s > 0 ? [H - KEN, H] : [-H, -H + KEN];    // 床の間
-  const [w0, w1] = s > 0 ? [-H, H - KEN] : [-H + KEN, H];    // 床脇
-  const post = s > 0 ? x0 : x1;
+  const [x0, x1] = wall.katana ? [-H, H] : s > 0 ? [H - KEN, H] : [-H, -H + KEN];    // 床の間（刀を飾るときは幅いっぱいで、床脇は作らない）
   const zB = -H - TOKO_D;
+  const cx = (x0 + x1) / 2, potZ = zB + TOKO_D * 0.45;
+  // 壺が浮いて見えないよう、足もとの床板を丸く暗くする（光源の計算はせず、頂点の色に焼き込む）
+  const potShadow = (x, z) => 1 - POT_SHADOW[0] * Math.exp(-((x - cx) ** 2 + (z - potZ - POT_SHADOW[2]) ** 2) / POT_SHADOW[1] ** 2);
 
   // 床の間
   addRecess(b, x0, x1, TOKO_FLOOR, TOKO_CEIL);
@@ -1091,18 +1371,24 @@ function addTokonoma(b, wall) {
   const smallWallUv = (w, h) => earthUv(w, h, 0.3, 0.4);
   b.quad('earth', [x0, wtop, -H], [x1 - x0, 0, 0], [0, CEIL_H - wtop, 0], { nu: 12, nv: 3, uv: smallWallUv(x1 - x0, CEIL_H - wtop) });
   b.box('lacquer', [x0, 0, -H - 0.05], [x1, TOKO_FLOOR, -H + 0.004], { skip: '-y' });
-  b.quad('sill', [x0, TOKO_FLOOR, -H - 0.05], [x1 - x0, 0, 0], [0, 0, -(TOKO_D - 0.05)], { nu: 8, nv: 4, uv: [0, 0, 1.4, 0.6] });
+  b.quad('sill', [x0, TOKO_FLOOR, -H - 0.05], [x1 - x0, 0, 0], [0, 0, -(TOKO_D - 0.05)], { nu: 32, nv: 16, uv: [0, 0, 1.4, 0.6], dimFn: wall.katana ? null : potShadow });
   b.box('wood', [x0, OTOSHI_Y, -H - 0.03], [x1, wtop, -H + 0.01], { skip: '+y-z', tone: 0.9 });
 
+  if (wall.katana) {
+    addKatana(b, cx, zB + TOKO_D * KATANA_DEPTH);   // 刀のほかは何も置かない
+    return;
+  }
+  const [w0, w1] = s > 0 ? [-H, H - KEN] : [-H + KEN, H];    // 床脇
+  const post = s > 0 ? x0 : x1;
+
   // 掛け軸（床の間の中央）
-  const cx = (x0 + x1) / 2;
   const sw = 0.2, sy0 = 0.42, sy1 = 1.88, sz = zB + 0.012;
   b.quad('scroll', [cx - sw, sy0, sz], [sw * 2, 0, 0], [0, sy1 - sy0, 0], { nv: 8 });
   b.box('lacquer', [cx - sw - 0.018, sy0 - 0.014, sz - 0.002], [cx + sw + 0.018, sy0 + 0.006, sz + 0.016]);
   b.box('wood', [cx - sw - 0.006, sy1 - 0.008, sz - 0.002], [cx + sw + 0.006, sy1 + 0.012, sz + 0.01]);
   b.box('base', [cx - 0.003, sy1 + 0.012, zB + 0.012], [cx + 0.003, 2.05, zB + 0.018], { skip: '-z' });
 
-  addPot(b, cx, zB + TOKO_D * 0.45);
+  addPot(b, cx, potZ);
 
   // 床脇
   const wm = (w0 + w1) / 2;
@@ -1114,7 +1400,8 @@ function addTokonoma(b, wall) {
   b.box('wood', [w0, wy, -H], [w1, WALL_TOP, -H + 0.045], { tone: 0.95, skip: '-z' });   // 長押（床の間の前では切るので、床脇の前だけ）
   // 地袋（下の戸棚）
   const fz = -H - 0.28, fy0 = 0.02, fy1 = 0.42, fw = (w1 - w0) / 2;
-  b.box('lacquer', [w0, fy1, zB], [w1, fy1 + 0.024, fz + 0.006], { skip: '-y-z' });
+  // 地袋の天板と違い棚の、両側の壁に接する端の面は描かない（床の間の側壁と同じ面に重なり、ちらついて壁を透けて見える）
+  b.box('lacquer', [w0, fy1, zB], [w1, fy1 + 0.024, fz + 0.006], { skip: '-y-z-x+x' });
   for (const [a0, a1] of [[w0, w0 + fw], [w0 + fw, w1]]) {
     const inset = 0.004;   // 戸のあいだに細い隙間を残す
     b.quad('fusuma', [a0 + inset, fy0 + inset, fz], [a1 - a0 - inset * 2, 0, 0], [0, fy1 - fy0 - inset * 2, 0], { uv: [0.1, 0.12, 0.42, 0.42], nv: 3 });
@@ -1123,8 +1410,8 @@ function addTokonoma(b, wall) {
   // 違い棚
   const shelfZ1 = -H - 0.24;
   const yL = 1.0, yR = 1.2, t = 0.024;
-  b.box('sill', [w0, yL, zB], [wm + 0.07, yL + t, shelfZ1], { skip: '-z', tone: 0.95 });
-  b.box('sill', [wm - 0.07, yR, zB], [w1, yR + t, shelfZ1], { skip: '-z', tone: 0.95 });
+  b.box('sill', [w0, yL, zB], [wm + 0.07, yL + t, shelfZ1], { skip: '-z-x', tone: 0.95 });
+  b.box('sill', [wm - 0.07, yR, zB], [w1, yR + t, shelfZ1], { skip: '-z+x', tone: 0.95 });
   b.box('wood', [wm - 0.012, yL + t, shelfZ1 - 0.04], [wm + 0.012, yR, shelfZ1 - 0.016], { skip: '+y-y-z' });
 
   // 床柱（丸太）
@@ -1136,19 +1423,21 @@ function addTokonoma(b, wall) {
 
 function addWall(b, i, isExit) {
   const wall = b.plan.walls[i];
-  b.setWall(i);
+  b.setRoomWall(i);
   if (i === ENTRY_WALL) b.target = 'entry';
   if (wall.kind === 'toko') addTokonoma(b, wall);
   else if (wall.kind === 'plain') addPlainWall(b);
   else addDoorWall(b, wall, isExit);
+  if (b.span > H) addWallMargins(b, wall);
   // 長押（床の間の壁は床脇の前だけ）と廻り縁
   addWallTrim(b, wall.kind !== 'toko');
   b.target = 'static';
 }
 
 function addWallTrim(b, withNageshi) {
-  if (withNageshi) b.box('wood', [-H, KAMOI_H + KAMOI_T, -H], [H, WALL_TOP, -H + 0.045], { skip: '-z', tone: 0.95 });
-  b.box('wood', [-H, CEIL_H - 0.05, -H], [H, CEIL_H, -H + 0.05], { skip: '+y-z', tone: 0.9 });
+  const span = b.span;
+  if (withNageshi) b.box('wood', [-span, KAMOI_H + KAMOI_T, -H], [span, WALL_TOP, -H + 0.045], { skip: '-z', tone: 0.95 });
+  b.box('wood', [-span, CEIL_H - 0.05, -H], [span, CEIL_H, -H + 0.05], { skip: '+y-z', tone: 0.9 });
 }
 
 // 廊下の 1 区画ぶんの床（板張り）と天井
@@ -1286,10 +1575,72 @@ function addAndon(b, cx, cz, index) {
   b.quad(`andonFlame${index}`, [cx - r, y1 - 0.04, cz + r], [r * 2, 0, 0], [0, 0, -r * 2], { kFn: () => ANDON_PAPER_K });
 }
 
+// 衣桁（黒漆の鳥居形の台）と、袖を広げて掛けた着物（背中を見せて掛ける）
+function addKimono(b) {
+  b.setRoomWall(0);
+  const z = -H + KIMONO_WALL_GAP, top = KIMONO_TOP, hem = KIMONO_HEM, railZ = z - 0.03, railHw = 0.02;
+  const railY0 = top - 0.048, railY1 = top - 0.006;
+  for (const sx of [-1, 1]) {
+    const x = sx * IKO_POST_X;
+    b.box('lacquer', [x - 0.04, 0, railZ - 0.24], [x + 0.04, 0.055, railZ + 0.24], { skip: '-y' });   // 足
+    b.box('lacquer', [x - 0.018, 0.055, railZ - 0.018], [x + 0.018, railY0, railZ + 0.018], { skip: '+y-y' });   // 柱
+    b.box('metal', [x - 0.024, railY0 - 0.018, railZ - 0.024], [x + 0.024, railY0, railZ + 0.024], { skip: '+y-y' });   // 柱の頭の金具
+  }
+  b.box('lacquer', [-IKO_POST_X, 0.58, railZ - 0.012], [IKO_POST_X, 0.615, railZ + 0.012]);      // 貫
+  b.box('lacquer', [-IKO_RAIL_HALF, railY0, railZ - railHw], [IKO_RAIL_HALF, railY1, railZ + railHw]);   // 笠木
+  // 笠木の両端の反り（下の面と正面だけ。目より高いので上の面は見えない）
+  const flareLen = 0.11, flareRise = 0.03;
+  for (const sx of [-1, 1]) {
+    const x0 = sx * IKO_RAIL_HALF, x1 = sx * (IKO_RAIL_HALF + flareLen);
+    const y0 = railY0, y1 = railY0 + flareRise, t = railY1 - railY0, zf = railZ + railHw, zb = railZ - railHw;
+    const front = [[x0, y0, zf], [x1, y1, zf], [x1, y1 + t, zf], [x0, y0 + t, zf]];
+    const under = [[x0, y0, zb], [x1, y1, zb], [x1, y1, zf], [x0, y0, zf]];
+    b.face('lacquer', ...(sx > 0 ? front : front.reverse()));
+    b.face('lacquer', ...(sx > 0 ? under : under.reverse()));
+  }
+
+  // 着物。絵は身頃と袖で 1 枚につながる（袖先から袖先までが canvas の幅、上端から裾までが高さ）
+  const us = (x) => (x + KIMONO_SLEEVE) / (2 * KIMONO_SLEEVE);
+  const vs = (y) => (y - hem) / (top - hem);
+  const folds = (x, phase) => 1 + 0.14 * Math.sin(x * 26 + phase) + 0.06 * Math.sin(x * 61 + phase * 2);
+  const bodyK = (x, y) => KIMONO_K * folds(x, 1.3) * lerp(0.8, 1.05, smoothstep(y, 0, 1.2));
+  b.quad('kimono', [-KIMONO_BODY, hem, z], [KIMONO_BODY * 2, 0, 0], [0, top - hem, 0], {
+    nu: 34, nv: 14, uv: [us(-KIMONO_BODY), 0, us(KIMONO_BODY), 1],
+    kFn: bodyK, zFn: (x, y) => 0.009 * Math.sin(x * 26 + 1.3) * smoothstep(top - y, 0, 0.5),
+  });
+  const sleeveBottom = top - KIMONO_SLEEVE_LEN;
+  for (const sx of [-1, 1]) {
+    const x0 = sx > 0 ? KIMONO_BODY : -KIMONO_SLEEVE;
+    const w = KIMONO_SLEEVE - KIMONO_BODY;
+    b.quad('kimono', [x0, sleeveBottom, z], [w, 0, 0], [0, KIMONO_SLEEVE_LEN, 0], {
+      nu: 16, nv: 8, uv: [us(x0), vs(sleeveBottom), us(x0 + w), 1],
+      kFn: (x, y) => KIMONO_K * folds(x, 4.1) * lerp(0.85, 1.05, smoothstep(y, 0.7, 1.6)),
+      // 袖は身頃の手前に重ね、袖先へ向けてわずかに手前へ反らせる
+      zFn: (x, y) => 0.012 + 0.03 * ((Math.abs(x) - KIMONO_BODY) / w) ** 2 + 0.006 * Math.sin(x * 26 + 4.1) * smoothstep(top - y, 0, 0.4),
+    });
+  }
+}
+
+// 床の間の脇の、入口に近い土壁に開けた丸い下地窓。障子紙がほの白く光り、細い組子を縦横に渡す
+function addRoundWindow(b, wall) {
+  b.setRoomWall(wall);
+  const { y, r, tone } = ROUND_WINDOW, cx = (wall === 1 ? 1 : -1) * (H + (b.span - H) / 2), z = -H + 0.008;   // 壁の座標の +x が入口の側になるのは壁 1
+  b.disc('wood', cx, y, -H + 0.004, r + 0.035, 0.8, 36);
+  b.disc('paper', cx, y, z, r, tone, 36);
+  for (const o of [-r / 3, r / 3]) {
+    const l = Math.sqrt(r * r - o * o), hw = 0.006;
+    b.box('wood', [cx + o - hw, y - l, z], [cx + o + hw, y + l, z + 0.012], { skip: '-z' });
+    b.box('wood', [cx - l, y + o - hw, z], [cx + l, y + o + hw, z + 0.012], { skip: '-z' });
+  }
+}
+
 const paperColorFix = new THREE.Color().setRGB(...PAPER_COLOR_FIX);
 const POOL_GEOMETRY = new THREE.PlaneGeometry(1, 1);
 const HAZE_GEOMETRY = new THREE.PlaneGeometry(PANEL_W * 2, KAMOI_H);
 const hazeTextures = HAZE_FLOW.map(() => textures.haze.clone());
+
+// 刀身の金属の光り。蝋燭の揺らぎを受け、視線が床の間の正面（左右の壁）を通るときにわずかに明るくなる
+const bladeShine = () => 1 + BLADE_SHIMMER * (candles[0].brightness - 1) + BLADE_GLINT * Math.exp(-(((Math.abs(yaw) - Math.PI / 2) / 0.3) ** 2));
 
 // 再利用する 1 部屋。材質は部屋ごとに持ち、選んだ色・テクスチャを当てる
 class Room {
@@ -1330,20 +1681,13 @@ class Room {
       this.materials[`andonPaper${i}`] = mat(textures.washi, ANDON_PAPER_COLOR);
       this.materials[`andonFlame${i}`] = mat(null, ANDON_FLAME_COLOR);
       this.materials[`andonGlow${i}`] = glowSprite(ANDON_GLOW_COLOR, ANDON_GLOW_OPACITY);
+      this.materials[`andonGlow${i}`].depthTest = false;   // 床や壁と交わる線で切れないよう、深度を見ない（手前の部屋に隠す処理は setDrawOrder）
       this.materials[`andonCore${i}`] = glowSprite(ANDON_CORE_COLOR, ANDON_CORE_OPACITY);
       this.materials[`andonPool${i}`] = new THREE.MeshBasicMaterial({
         map: textures.glow, color: ANDON_GLOW_COLOR, transparent: true, opacity: ANDON_POOL_OPACITY,
         blending: THREE.AdditiveBlending, depthWrite: false,
       });
-      const glow = new THREE.Sprite(this.materials[`andonGlow${i}`]);
-      glow.scale.setScalar(ANDON_GLOW_SIZE);
-      const core = new THREE.Sprite(this.materials[`andonCore${i}`]);
-      core.scale.set(ANDON_CORE_SIZE, ANDON_CORE_SIZE * 1.5, 1);
-      const pool = new THREE.Mesh(POOL_GEOMETRY, this.materials[`andonPool${i}`]);
-      pool.rotation.x = -Math.PI / 2;
-      pool.scale.setScalar(ANDON_POOL_SIZE);
-      this.group.add(glow, core, pool);
-      this.andonParts.push({ glow, core, pool });
+      this.addAndonParts(i);
     }
     // 開いた建具の先に掛ける霞の幕（2 枚を別々に流す）
     this.hazeLayers = hazeTextures.map((map) => {
@@ -1359,6 +1703,20 @@ class Room {
     this.plan = null;
   }
 
+  // 行灯 1 個ぶんのにじみ・芯・光だまり。材質は ANDON_MAX 系統を順に使い回す
+  addAndonParts(i) {
+    const m = i % ANDON_MAX;
+    const glow = new THREE.Sprite(this.materials[`andonGlow${m}`]);
+    glow.scale.setScalar(ANDON_GLOW_SIZE);
+    const core = new THREE.Sprite(this.materials[`andonCore${m}`]);
+    core.scale.set(ANDON_CORE_SIZE, ANDON_CORE_SIZE * 1.5, 1);
+    const pool = new THREE.Mesh(POOL_GEOMETRY, this.materials[`andonPool${m}`]);
+    pool.rotation.x = -Math.PI / 2;
+    pool.scale.setScalar(ANDON_POOL_SIZE);
+    this.group.add(glow, core, pool);
+    this.andonParts.push({ glow, core, pool });
+  }
+
   build(plan) {
     this.plan = plan;
     for (const g of Object.values(this.groups)) {
@@ -1369,9 +1727,18 @@ class Room {
       g.position.set(0, 0, 0);
     }
     this.baseColors.earth.set(plan.earth);
+    this.materials.earth.map = plan.hiddenRoom ? goldEarthTexture() : textures.earth;
+    if (plan.hiddenRoom) this.baseColors.earth.multiplyScalar(HIDDEN_EARTH_LIFT);
     this.baseColors.edge.set(plan.edge);
     this.baseColors.ceiling.set(plan.ceiling);
     this.baseColors.paper.set(PAPER_COLOR).multiply(paperColorFix).multiplyScalar(plan.corridor ? CORRIDOR_PAPER : 1);
+    // 着物と刀身の材質は最初に現れるときに作る（three.js が材質を作るときに Math.random を引くので、乱数の列をずらさないため）
+    if (plan.hiddenRoom && !this.materials.kimono) {
+      this.materials.kimono = new THREE.MeshBasicMaterial({ map: kimonoTexture(), vertexColors: true });
+      this.baseColors.kimono = new THREE.Color().setRGB(...KIMONO_COLOR_FIX);
+      this.materials.blade = new THREE.MeshBasicMaterial({ vertexColors: true });
+      this.baseColors.blade = new THREE.Color().setRGB(...BLADE_COLOR);
+    }
     this.materials.fusuma.map = plan.fusuma;
     this.baseColors.fusuma.setRGB(...(plan.fusuma.userData.colorFix ?? [1, 1, 1]));
 
@@ -1383,7 +1750,11 @@ class Room {
       buildCeiling(b);
       buildPosts(b);
       for (let i = 0; i < 4; i++) addWall(b, i, i === plan.exit);
-      plan.andons.forEach(([x, z], i) => addAndon(b, x, z, i));
+      plan.andons.forEach(([x, z], i) => addAndon(b, x, z, i % ANDON_MAX));
+      if (plan.hiddenRoom) {
+        addKimono(b);
+        addRoundWindow(b, plan.walls.findIndex((w) => w.kind === 'toko'));
+      }
     }
     // 霞は出口の建具のすぐ向こうに置く（建具が開くと見える）
     const hazeDist = exitDist(plan) + 0.09;
@@ -1392,6 +1763,8 @@ class Room {
       haze.rotation.y = WALL_YAW[plan.exit];
     }
     this.setHaze(0);
+    // ANDON_MAX を超える分は、最初に要るときに足す（three.js が板を作るときに Math.random を引くので、乱数の列をずらさないため）
+    while (this.andonParts.length < plan.andons.length) this.addAndonParts(this.andonParts.length);
     this.andonParts.forEach(({ glow, core, pool }, i) => {
       const at = plan.andons[i];
       glow.visible = core.visible = pool.visible = !!at;
@@ -1405,11 +1778,13 @@ class Room {
         this.group.add(glow);
         return glow;
       });
+      this.lampSheens ??= this.makeLampSheens();
     }
     this.lampGlows?.forEach((glow, i) => {
       glow.visible = !!plan.corridor;
       if (plan.corridor) glow.position.set((i - CORRIDOR_BAYS) * plan.walkDir * ROOM + H, LAMP_TOP - LAMP_H / 2, lampZ(plan));
     });
+    this.lampSheens?.forEach((mesh) => { mesh.visible = !!plan.corridor; });
     for (const m of b.buckets.values()) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(m.position, 3));
@@ -1417,6 +1792,60 @@ class Room {
       geo.setAttribute('color', new THREE.Float32BufferAttribute(m.color, 3));
       geo.setIndex(m.index);
       this.groups[m.target].add(new THREE.Mesh(geo, this.materials[m.key]));
+    }
+  }
+
+  // 吊り行灯の床への映り込みの板。行灯ごとに 1 枚の四角形を、揺らぎの系統（2 つ）ごとに 1 つのメッシュにまとめる
+  makeLampSheens() {
+    return [0, 1].map((m) => {
+      const key = `andonSheen${m}`;
+      const material = new THREE.MeshBasicMaterial({
+        map: textures.glow, color: ANDON_GLOW_COLOR, opacity: LAMP_SHEEN_OPACITY, vertexColors: true, transparent: true,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+        fog: false,   // 床の上の位置ではなく、映っている行灯までの距離で暗くするので、頂点の色で自前で掛ける
+      });
+      this.materials[key] = material;
+      this.baseColors[key] = material.color.clone();
+      const count = Math.ceil((CORRIDOR_BAY_COUNT - m) / 2);
+      const index = [], uv = [];
+      for (let i = 0; i < count; i++) {
+        const v = i * 4;
+        index.push(v, v + 2, v + 1, v, v + 3, v + 2);
+        uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+      }
+      const geometry = new THREE.BufferGeometry();
+      for (const name of ['position', 'color']) {
+        geometry.setAttribute(name, new THREE.Float32BufferAttribute(new Float32Array(count * 12), 3).setUsage(THREE.DynamicDrawUsage));
+      }
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      geometry.setIndex(index);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.frustumCulled = false;   // 頂点を毎フレーム動かすので、範囲の判定はしない
+      this.group.add(mesh);
+      return mesh;
+    });
+  }
+
+  // 吊り行灯の光を、視線が床で反射する位置へ置く（カメラが動くと床の上を滑る）。eye はこの部屋の座標でのカメラの位置
+  placeLampSheens(eye) {
+    const { near, far } = scene.fog;
+    this.lampGlows.forEach(({ position: lamp }, i) => {
+      const { position, color } = this.lampSheens[i % 2].geometry.attributes;
+      const first = (i >> 1) * 4;
+      const dx = lamp.x - eye.x, dz = lamp.z * LAMP_SHEEN_SPREAD - eye.z, dist = Math.hypot(dx, dz) || 1;
+      const hit = eye.y / (eye.y + lamp.y);   // カメラから行灯までのうち、反射する点までの割合（床を挟んだ鏡像への視線で求める）
+      const ux = dx / dist, uz = dz / dist;
+      const cx = eye.x + dx * hit, cz = eye.z + dz * hit;
+      const hl = LAMP_SHEEN_LENGTH * dist, hw = LAMP_SHEEN_WIDTH;
+      const bright = 1 - THREE.MathUtils.smoothstep(Math.hypot(dist, eye.y + lamp.y), near, far);
+      [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].forEach(([along, across], v) => {
+        position.setXYZ(first + v, cx + ux * along - uz * across, LAMP_SHEEN_Y, cz + uz * along + ux * across);
+        color.setXYZ(first + v, bright, bright, bright);
+      });
+    });
+    for (const { geometry } of this.lampSheens) {
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
     }
   }
 
@@ -1431,11 +1860,12 @@ class Room {
 
   // 部屋全体の明るさの倍率を当てる。行灯の材質には蝋燭の揺らぎも掛ける（名前の末尾が行灯の番号）
   setBrightness(value) {
-    const dim = this.plan.corridor ? CORRIDOR_DIM : 1;
+    const dim = this.plan.corridor ? CORRIDOR_DIM : this.plan.hiddenRoom ? HIDDEN_ROOM_BRIGHT : 1;
     for (const key in this.materials) {
       const isLantern = key.startsWith('andon');   // 灯りそのものは廊下でも暗くしない
       const candle = isLantern ? candles[Number(key.at(-1))].brightness : 1;
       this.materials[key].color.copy(this.baseColors[key]).multiplyScalar(value * candle * (isLantern ? 1 : dim));
+      if (key === 'blade') this.materials[key].color.multiplyScalar(bladeShine());
     }
   }
 
@@ -1443,35 +1873,44 @@ class Room {
   placeGlows() {
     this.group.updateMatrixWorld();
     const eye = this.group.worldToLocal(camera.position.clone());
-    if (this.plan.corridor) {   // 吊り行灯のにじみが天井と交わる線で切れないよう、廊下の中からは深度を見ない
-      for (let i = 0; i < ANDON_MAX; i++) this.materials[`andonGlow${i}`].depthTest = Math.abs(eye.z) > CORRIDOR_HALF;
-    }
     this.plan.andons.forEach(([x, z], i) => {
       const { glow, core } = this.andonParts[i];
-      // 目が部屋の中にあるときは、壁と交わる線で切れないよう深度を見ない。部屋の外からは壁を透けないよう深度を見る
-      glow.material.depthTest = Math.max(Math.abs(eye.x), Math.abs(eye.z)) > H;
       const dx = eye.x - x, dz = eye.z - z, len = Math.hypot(dx, dz) || 1;
       const front = ANDON_W / 2 + 0.02;
       const nx = dx / len, nz = dz / len;
       const y = ANDON_H * 0.55;
       glow.position.set(x + nx * front, y, z + nz * front);
-      core.position.set(x + nx * front - nz * candles[i].sway, y + candles[i].sway * 0.8, z + nz * front + nx * candles[i].sway);
+      const { sway } = candles[i % ANDON_MAX];
+      core.position.set(x + nx * front - nz * sway, y + sway * 0.8, z + nz * front + nx * sway);
     });
+    if (this.plan.corridor) this.placeLampSheens(eye);
   }
 
   // 床の高さ。廊下は全体を下げて置く（カメラの高さは変えないので、出入りで視線は上下しない）
   get floorY() { return this.plan.corridor ? -CORRIDOR_DROP : 0; }
 
+  // 描く順番を決める。次の部屋は、壁や床 → にじみの順に先に描き、そのあとでいまの部屋を上から描く。
+  // にじみは深度を見ないので、この順番で、いまの部屋の壁や建具に隠れる（three.js は不透明の一覧を Group の renderOrder の順に描く。
+  // 加算合成のまま不透明の一覧へ入れるため、次の部屋のにじみは transparent を切る）
+  setDrawOrder(isNext) {
+    for (const g of Object.values(this.groups)) g.renderOrder = isNext ? -2 : 0;
+    this.group.renderOrder = isNext ? -1 : 0;   // にじみの板はこのグループの直下にある
+    for (let i = 0; i < ANDON_MAX; i++) this.materials[`andonGlow${i}`].transparent = !isNext;
+  }
+
   // いまの部屋として原点に置く
   placeAtOrigin() {
+    this.setDrawOrder(false);
     this.group.position.set(0, this.floorY, 0);
     this.group.rotation.set(0, 0, 0);
     this.group.visible = true;
     this.groups.entry.visible = true;
+    this.groups.left.visible = this.groups.right.visible = true;
   }
 
   // 計画 from の部屋の出口の先へ置く（建具が開くまでは描かない）。重力が変わる部屋は、進行方向の軸（部屋の高さの中央）のまわりに回して置く
   placeBeyond(from) {
+    this.setDrawOrder(true);
     const { exit, exitX } = from;
     const pitch = exitDist(from) + WALL_T + exitDist(this.plan);
     this.group.rotation.set(0, WALL_YAW[exit], this.plan.roll);
@@ -1480,6 +1919,8 @@ class Room {
     this.group.position.set(exitX - WALL_SIN[exit] * pitch - turned.x, axis.y - turned.y + this.floorY, -WALL_COS[exit] * pitch - turned.z);
     this.group.visible = false;
     this.groups.entry.visible = false;
+    // 行き止まりの部屋は入口の建具が出口を兼ねるので、動く 2 枚も入口の壁と一緒に隠す
+    this.groups.left.visible = this.groups.right.visible = !this.plan.hiddenRoom;
   }
 
   // 出口の中央の 2 枚を動かす。open は 0..1
@@ -1501,7 +1942,7 @@ let next = rooms[1];
 const switchDist = (plan) => exitDist(plan) + WALL_T + ENTER_INSET + PIVOT_BACK;   // 背後の建具を切り替えるときの、部屋の中央からの歩いた距離
 const pivot = new THREE.Vector2();   // 体の中心（いまの部屋の xz）
 let yaw = 0;
-let phase = 'enter';   // 'enter' | 'pause' | 'turn' | 'corridor' | 'walk'
+let phase = 'enter';   // 'enter' | 'pause' | 'turn' | 'look' | 'corridor' | 'walk'
 let phaseTime = 0;
 let turnFrom = 0;      // 'turn' の始めの向き
 let turnDelta = 0;     // 'turn' で回る角度
@@ -1550,7 +1991,7 @@ function enterNextRoom() {
     rollProgress = carriedRoll;
     viewRoll = rollBase + rollAmount * ease(rollProgress);
   }
-  next.build(planRoom(current.plan));
+  next.build(planNextRoom());
   next.placeBeyond(current.plan);
 }
 
@@ -1570,7 +2011,9 @@ function startTurnOrWalk() {
   walked = 0;
   phaseTime = 0;
   const plan = current.plan;
-  if (plan.corridor) {
+  if (plan.hiddenRoom) {
+    phase = 'look';
+  } else if (plan.corridor) {
     corridorLeft = plan.walkDist;
     startTurn(plan.walkWall, 'corridor');
   } else if (plan.exit === 0) {
@@ -1607,7 +2050,20 @@ const rollSlowdown = () => (rollProgress < 1 ? 1 - ROLL_SLOW * Math.sin(Math.PI 
 
 const doorAhead = () => exitDist(current.plan) - (walked - PIVOT_BACK);   // カメラから建具までの距離
 
+// 隠し部屋の中央で着物を眺めてから、床の間の側を通って 180 度回る（回る時間は歩く速さに反比例）。回りきると入口を向くので、そのまま出ていく
+function updateLook(dt) {
+  const plan = current.plan;
+  phaseTime += phaseTime >= LOOK_HOLD ? dt * speed / INITIAL_SPEED : dt;   // 回っているあいだだけ、速さに合わせて時間を進める（強度を変えても向きは飛ばない）
+  yaw = plan.lookDir * Math.PI * ease(clamp((phaseTime - LOOK_HOLD) / LOOK_TIME, 0, 1));
+  if (phaseTime >= LOOK_HOLD + LOOK_TIME) {
+    phase = 'walk';
+    walked = 0;
+    walkSpeed = 0;
+  }
+}
+
 function updateWalk(dt) {
+  updateHiddenRoomWait(dt);
   updateRoll(dt);
   const accel = speed * speed / (2 * BRAKE_DIST);
   if (phase === 'enter') {
@@ -1648,6 +2104,8 @@ function updateWalk(dt) {
       walked = 0;
       walkSpeed = 0;
     }
+  } else if (phase === 'look') {
+    updateLook(dt);
   } else if (phase === 'corridor') {
     updateCorridorWalk(dt, accel);
   } else {
@@ -1722,7 +2180,14 @@ function updateLight(dt) {
     current.setHaze(HAZE_OPACITY * (1 - ease(t)));
   }
   updateFog();
+  updateBloom(dt);
   updateVignette(dt);
+}
+
+// ブルームの強さは部屋ごとに変える（隠し部屋だけ弱い）。部屋を移ったときは、なめらかに変える
+function updateBloom(dt) {
+  const target = current.plan.hiddenRoom ? HIDDEN_ROOM_BLOOM : BLOOM_STRENGTH, step = dt * BLOOM_FADE;
+  bloom.strength += clamp(target - bloom.strength, -step, step);
 }
 
 // 廊下の奥の暗がり。廊下にいるあいだだけ掛け、出入りの敷居をまたぐあいだに距離をなめらかに変える（0 に近いほど遠くへ退く）
@@ -1736,6 +2201,55 @@ function updateFog() {
   const scale = 1 / Math.max(amount, 1e-3);
   scene.fog.near = CORRIDOR_FOG[0] * scale;
   scene.fog.far = CORRIDOR_FOG[1] * scale;
+}
+
+
+// ---- 隠し部屋 ----
+// 待ち時間の乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。現れるまでは Math.random を引かないので、
+// 隠し要素の出ない場面は追加の前と同じ絵になる。現れたときは、種を Math.random から取り直す
+const hiddenRoomRandom = (() => {
+  let s = Date.now() >>> 0;   // mulberry32
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
+  return next;
+})();
+const hiddenRoomInterval = ([mean, min, max]) => clamp(-Math.log(1 - hiddenRoomRandom()) * mean, min, max);
+let hiddenRoomWait = hiddenRoomInterval(HIDDEN_ROOM_INTERVAL);   // 次に現れるまでの秒数
+let hiddenRoomPending = false;   // 次に組み立てる部屋を隠し部屋にするか（建具が開き始めていて、いま見えている次の部屋を差し替えられないとき）
+
+// 隠し部屋に向かっているか、いるか
+const hiddenRoomActive = () => current.plan.hiddenRoom || next.plan.hiddenRoom || hiddenRoomPending;
+
+// 次の部屋を、隠し部屋にする。建具が開き始めていなければすぐ差し替え、開き始めていたらその次の部屋にする
+function startHiddenRoom() {
+  if (hiddenRoomActive()) return;
+  hiddenRoomRandom.reseed();
+  hiddenRoomWait = hiddenRoomInterval(HIDDEN_ROOM_INTERVAL);
+  if (doorStarted) {
+    hiddenRoomPending = true;
+  } else {
+    next.build(planHiddenRoom(current.plan));
+    next.placeBeyond(current.plan);
+  }
+}
+
+// 次の部屋の中身を決める。隠し部屋が保留されていれば、それにする
+function planNextRoom() {
+  if (!hiddenRoomPending) return planRoom(current.plan);
+  hiddenRoomPending = false;
+  return planHiddenRoom(current.plan);
+}
+
+// 隠し部屋へ向かっているあいだと、部屋にいるあいだは、次の出現の待ち時間を進めない
+function updateHiddenRoomWait(dt) {
+  if (hiddenRoomActive()) return;
+  hiddenRoomWait -= dt;
+  if (hiddenRoomWait <= 0) startHiddenRoom();
 }
 
 
@@ -1779,6 +2293,7 @@ function tick(now) {
 // ---- 入力・UI ----
 setupControls({
   changeScene: reset,
+  keys: { KeyC: startHiddenRoom },   // 隠し部屋を呼び出す（操作ガイドには表示しない）
   intensity: {
     up: () => setSpeed(speed * SPEED_STEP),
     down: () => setSpeed(speed / SPEED_STEP),

@@ -30,6 +30,7 @@ export const HIDDEN = {
   sandpicture: 'startCamel',
   campfire: 'startSquirrel',
   waterfall: 'startCarp',
+  infcastle: 'startHiddenRoom',
 };
 
 // option で場面を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）
