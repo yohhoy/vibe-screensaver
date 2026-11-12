@@ -1,0 +1,1530 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Teapot</title>
+<link rel="stylesheet" href="common.css">
+<!-- ラベルのタイプライター風の書体。読み込めないときは端末の書体（American Typewriter など）になる -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Special+Elite&display=swap">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<style>
+/* いまの時代のラベル。画面の上端とポットの上端の間の、左右の中央に出す。top は layout で決める */
+#era {
+  position: fixed; left: 50%; transform: translate(-50%, -50%);
+  font: 20px/1.4 'Special Elite', 'American Typewriter', 'Courier New', monospace; letter-spacing: 0.06em;
+  white-space: pre; text-align: center; pointer-events: none;
+  /* 明るい壁の前でも読めるよう、ぼかしの小さい黒い影を重ねて縁取る */
+  color: rgba(255,255,255,0.85); text-shadow: 0 0 1px rgba(0,0,0,0.6), 0 0 2px rgba(0,0,0,0.6), 0 1px 3px rgba(0,0,0,0.6);
+}
+#era.green { color: rgba(90,255,130,0.75); text-shadow: 0 0 3px #000, 0 0 3px #000; }
+/* まだ打っていない文字。場所だけ取っておき、打ち出す間に文字列の位置が動かないようにする */
+#era .rest { visibility: hidden; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: 次の時代 / F・ダブルクリック: 全画面 / ↑↓: 速さ</span>
+  <span class="touch-only">左右スワイプ: 次の時代 / 上下スワイプ: 速さ</span>
+</div>
+<div id="era"><span class="typed"></span><span class="rest"></span></div>
+<script type="module">
+import * as THREE from 'three';
+import { TeapotGeometry } from 'three/addons/geometries/TeapotGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+
+// ---- 設定 ----
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。クロスフェード中は 2 つの時代を描くので抑える）
+const MSAA_SAMPLES = 4;
+
+// カメラ
+const CAM_FOV = 35;               // 縦の画角（度）
+const CAM_PITCH = 20;             // 見下ろす角度（度）
+const POT_SCREEN_HEIGHT = 0.6;    // ポットの幅 / 画面の高さ
+const POT_SCREEN_WIDTH = 0.7;     // 縦長の画面で、ポットの幅 / 画面の幅 の上限
+
+// ポット（長さの単位は、ポットの幅を 2 とした値）
+const POT_WIDTH = 2;              // 注ぎ口の先から取っ手の端まで
+const POT_LIFT = 1.4;             // 床からポットの底までの高さ（宙に浮かせる）。カメラはポットを向くので、高くするほど床と奥の壁の境が画面の下へ下がる（1.4 で画面の中央より 1 割下）
+const TURN_SECONDS = 30;          // 強度 1 倍のときの 1 周の秒数
+const TILT_MAX = 18;              // 回転軸に対するポットの傾きの最大（度）。-TILT_MAX〜TILT_MAX を行き来する
+const TILT_SECONDS = 47;          // 強度 1 倍のときの、傾きが 1 往復する秒数（回転の周期と揃わないようにする）
+
+// 時代の移り変わり
+const STEADY_TURNS = 1;           // 1 つの時代をそのまま見せる回転の数
+const FADE_TURNS = 1;             // 次の時代へクロスフェードする回転の数
+const SKIP_FADE_SECONDS = 2;      // シーン切替で次の時代へクロスフェードする秒数
+
+// 強度（回る速さの倍率）
+const BASE_SPEED = 1;
+const MIN_SPEED = 0.25;
+const MAX_SPEED = 4;
+const SPEED_STEP = 1.25;          // ↑↓ 1 回あたりの倍率
+
+// 部屋（手前は開いている。床の手前の端と左右の壁の手前の端は、画面に入らない所まで伸ばす）
+const ROOM = { halfWidth: 3.5, back: -3.5, front: 4.5, sideFront: 2, height: 4 };
+const CHECKER = 1;                // 市松のマス目の大きさ
+const FLOOR_COLORS = [0xb4b4b4, 0x4a4a4a];
+const WALL_COLORS = { left: 0xa8302a, right: 0x2e8a3c, back: 0xe6e2da };
+const BAKE_PX = 64;               // 壁の色のにじみと隅の暗さを焼き込むテクスチャの、長さ 1 あたりの画素数
+
+// 巡回ごとの変化の候補
+const POT_COLORS = [0xf3f1ec, 0xf0e2c0, 0xa8c4dc, 0xe2c2b4, 0xc4d6b0];   // 白・クリーム色・淡い青・淡い桃・淡い緑
+const PATTERNS = ['checker', 'indigo', 'stripe'];
+const LIGHT_X = [1.5, 3];         // 主な照明の左右の位置（左右はランダム）
+const LIGHT_Y = [4.5, 6.5];       // 主な照明の高さ
+const LIGHT_Z = [2, 3.5];         // 主な照明の手前への位置
+
+// 照明
+const SPOT_ANGLE = 0.6;           // スポットライトの広がり（rad）
+const SPOT_PENUMBRA = 0.6;
+const SPOT_TARGET = [0, 0, -0.8];
+const AMBIENT = 0.6;              // 環境光の強さ
+const SKY_COLOR = 0x8c929a;       // 部屋の上（天井の無い所）の色。映り込みとガラス越しにだけ見える
+const GOURAUD_BACK_SHADE = 0.35;  // Gouraud で、ポットの内側（裏面）に掛ける明るさ。頂点の光は外側の向きで計算するので、そのままでは内側も明るくなる
+
+// 線画（Wireframe・Hidden Line）
+const WIRE_COLOR = [0.25, 1.0, 0.45];   // 線の色（線形）
+const WIRE_POT = { gain: 1, width: 1.8 };     // ポットの線の明るさと太さ（CSS ピクセル）。部屋の線より太く保つ
+const WIRE_ROOM = { gain: 0.45, width: 1.5 }; // 部屋の線の明るさと太さ（CSS ピクセル）
+
+// ラジオシティのにじみ
+const BLEED = 0.45;               // ポットへの壁の色のにじみの強さ
+
+// Solid Texture（立体の柄）。size: ノイズの立体テクスチャの 1 辺の画素数、scale: ノイズの細かさ（長さ 1 あたりのテクスチャの周回数）
+const SOLID = { size: 32, scale: 0.04 };
+const SOLID_STYLES = 2;           // ポットの柄の数（大理石・木目。巡回ごとに選ぶ）
+
+// Path Tracing の面光源。half: 四隅に置くスポットライトの、中心からのずれ（長さ）。size・radius: 影の描画先の解像度とぼかし。
+// intensity: 4 つを合わせた強さ（影が周りの光に埋もれないよう、ほかの時代より強くし、環境光は置かない）。bleed: 壁の色の照り返しの倍率
+const AREA_LIGHT = { half: 0.2, size: 512, radius: 6, intensity: 5, bleed: 2 };
+const PATH_EXPOSURE = 0.6;        // Path Tracing 以降の露出（トーンマッピングの前に掛ける）
+
+// Path Tracing より後の時代
+const DISP_AMP = 0.028;           // Displacement Mapping の凹凸の高さ（長さ）
+// Displacement Mapping の壁のレンガ。gap: 目地の幅の半分、depth: 目地の深さ、grid: 壁を分割する細かさ（どれも長さ。レンガの大きさと gap は grid の倍数にする）
+const BRICK = { width: 0.8, height: 0.4, gap: 0.04, depth: 0.05, grid: 0.04 };
+const FUR = { shells: 28, length: 0.16, density: 46, segments: 12 };   // 殻の数・毛の長さ・毛の密度（パッチ 1 辺あたりの本数）・殻の分割数
+// Fur の敷物。density は長さ 1 あたりの毛の本数。床の広い範囲を殻の数だけ重ねて描くので、殻は少なくする
+const RUG = { width: 3.8, depth: 3, z: -0.8, shells: 12, length: 0.07, density: 40, color: 0x6f8fb8 };   // z: 中心の前後の位置（影が乗るよう、ポットの真下より奥へ寄せる）
+const NPR_STYLES = 3;   // Non-Photorealistic Rendering の時代の画風の数（トゥーン・Gooch の陰影・ハッチング。巡回ごとに選ぶ）
+const TOON_STEPS = [0.3, 0.62, 1];   // トゥーンの陰影の段の明るさ
+const OUTLINE_WIDTH = 0.025;      // ポットの輪郭線の太さ（長さ。裏面を法線の向きに膨らませる量）
+const INK_WIDTH = 2.5;            // 部屋の角の線の太さ（CSS ピクセル）
+const HATCH_PITCH = 7;            // ハッチングの線の間隔（CSS ピクセル）
+// Subsurface Scattering の逆光。z: 照明の前後の位置（ポットより奥）、height: 高さに掛ける倍率、glow: 透けて光る強さ。
+// intensity: 照明の強さ、ambient: 環境光の強さ、room・pot: 部屋とポットが周りの光を受ける割合（逆光が目立つよう、手前からの光を減らす）
+const BACKLIGHT = { z: -2.4, height: 0.6, glow: 3, intensity: 6, ambient: 0.15, room: 0.3, pot: 0.45 };
+// Physically Based Shading の床の、マスごとの粗さと金属らしさ（明るいマス・暗いマスの順）
+const PBS_FLOOR = { roughness: [0.8, 0.15], metalness: [0, 1] };
+
+// ラベル
+const LABEL_BELOW = 0.2;          // ラベルの位置。画面の上端とポットの上端の中間から、ポットの上端までの間を何割下げるか（0 で中間、1 でポットの上端）
+const TYPE_RATE = 20;             // 1 秒に打ち出す文字の数
+const LABEL_FADE = 6;             // 打ち終えてから薄れて消えるまでの秒数
+
+// ---- ユーティリティ ----
+const DEG = Math.PI / 180;
+const ease = (t) => t * t * (3 - 2 * t);   // 0..1 の始まりと終わりをゆるめる
+const linearColor = (hex) => new THREE.Color(hex);   // sRGB の 16 進を、線形の色にする（ColorManagement）
+
+// canvas に描いて、テクスチャにする。draw(ctx, w, h)
+function canvasTexture(w, h, draw, srgb = true) {
+  const canvas = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  draw(canvas.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(canvas);
+  if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+const css = (hex) => '#' + hex.toString(16).padStart(6, '0');
+
+// 端からの帯状のグラデーション。side: 'left' | 'right' | 'top' | 'bottom'、width: 帯の幅（px）
+function edgeGradient(ctx, w, h, side, width, color, alpha) {
+  const [x0, y0, x1, y1] = {
+    left: [0, 0, width, 0], right: [w, 0, w - width, 0], top: [0, 0, 0, width], bottom: [0, h, 0, h - width],
+  }[side];
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  g.addColorStop(0, color.replace('A', alpha));
+  g.addColorStop(1, color.replace('A', 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+// 灰色のむら（バンプマップ用）。小さな円を重ねてから、まとめて 1 回ぼかす。
+// 円ごとに ctx.filter でぼかすと、描いた数だけぼかしが走り、最初のコマが数秒止まる（canvas の描画は後でまとめて実行される）
+function noiseTexture(size, count, radius) {
+  const tex = canvasTexture(size, size, (ctx) => {
+    const raw = Object.assign(document.createElement('canvas'), { width: size, height: size });
+    const rc = raw.getContext('2d');
+    rc.fillStyle = '#808080';
+    rc.fillRect(0, 0, size, size);
+    for (let i = 0; i < count; i++) {
+      const v = randInt(256);
+      rc.fillStyle = `rgba(${v},${v},${v},0.35)`;
+      const x = rand(0, size), y = rand(0, size), r = rand(0.4, 1) * radius;
+      // 端でつながるよう、はみ出した分を反対側にも描く
+      for (const dx of [-size, 0, size]) for (const dy of [-size, 0, size]) {
+        rc.beginPath();
+        rc.arc(x + dx, y + dy, r, 0, TAU);
+        rc.fill();
+      }
+    }
+    // ぼかしも端でつながるよう、3×3 に並べて描く
+    ctx.filter = 'blur(1px)';
+    for (const dx of [-size, 0, size]) for (const dy of [-size, 0, size]) ctx.drawImage(raw, dx, dy);
+  }, false);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+// ---- シェーダー ----
+// グーロー: 頂点で光（拡散とハイライト）を計算し、面の中は色を補間するだけ
+const GOURAUD_VERTEX = /* glsl */`
+uniform vec3 lightPos;
+uniform vec3 baseColor;
+uniform float lightGain;
+uniform float falloff;     // 距離による減衰の強さ
+uniform float ambient;
+uniform float specular;
+uniform float shininess;
+varying vec3 vColor;
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vec3 n = normalize(mat3(modelMatrix) * normal);
+  vec3 l = lightPos - wp.xyz;
+  float d = length(l);
+  l /= d;
+  vec3 v = normalize(cameraPosition - wp.xyz);
+  float att = lightGain / (1.0 + falloff * d * d);
+  float diff = max(dot(n, l), 0.0);
+  float spec = diff > 0.0 ? pow(max(dot(n, normalize(l + v)), 0.0), shininess) : 0.0;
+  vec3 c = baseColor;
+#ifdef USE_COLOR
+  c *= color;
+#endif
+  vColor = c * (ambient + diff * att) + specular * spec * att;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const GOURAUD_FRAGMENT = /* glsl */`
+varying vec3 vColor;
+void main() { gl_FragColor = vec4(gl_FrontFacing ? vColor : vColor * ${GOURAUD_BACK_SHADE.toFixed(3)}, 1.0); }`;
+
+// 2 つの時代の画面を混ぜて、画面に出す。時代ごとにトーンマッピング（0: 切り詰めるだけ、1: ACES）と露出を持つ
+const COMPOSITE_FRAGMENT = /* glsl */`
+uniform sampler2D tA;
+uniform sampler2D tB;
+uniform float mixT;
+uniform vec2 toneA;        // x: トーンマッピングの種類、y: 露出
+uniform vec2 toneB;
+varying vec2 vUv;
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+vec3 tone(vec3 c, vec2 t) {
+  c *= t.y;
+  return t.x > 0.5 ? aces(c * 0.8) : clamp(c, 0.0, 1.0);
+}
+vec3 toSrgb(vec3 c) {
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+void main() {
+  vec3 c = tone(texture2D(tA, vUv).rgb, toneA);
+  if (mixT > 0.0) c = mix(c, tone(texture2D(tB, vUv).rgb, toneB), mixT);
+  gl_FragColor = vec4(toSrgb(c), 1.0);
+}`;
+
+// Solid Texture: 物体の座標から柄を決める（塊から削り出したように、柄がパッチの継ぎ目でも途切れない）。
+// ノイズは立体テクスチャから 3 回引いて重ねる。onBeforeCompile で three.js の材質に差し込み、拡散の色に掛ける
+const SOLID_HEAD = /* glsl */`
+precision highp sampler3D;
+uniform sampler3D solidNoise;
+varying vec3 vSolid;
+float solidTurb(vec3 p) {
+  p *= ${SOLID.scale.toFixed(4)};
+  return 0.5 * texture(solidNoise, p).r + 0.3 * texture(solidNoise, p * 2.03).r + 0.2 * texture(solidNoise, p * 4.1).r;
+}`;
+// 大理石: 斜めの縞をノイズで乱して、筋にする
+const SOLID_MARBLE = /* glsl */`
+vec3 solidPattern(vec3 p) {
+  float t = solidTurb(p);
+  float vein = smoothstep(0.0, 0.25, abs(sin(dot(p, vec3(2.2, 1.3, 0.7)) + t * 6.0)));
+  return mix(vec3(0.45, 0.47, 0.52), vec3(1.0), vein) * (0.8 + 0.4 * t);
+}`;
+// 木目: 丸太の年輪（軸は z の向き。中心をポットの外へ少しずらす）
+const SOLID_WOOD = /* glsl */`
+vec3 solidPattern(vec3 p) {
+  float ring = 0.5 + 0.5 * sin(length(p.xy + vec2(0.4, 1.3)) * 42.0 + solidTurb(p) * 8.0);
+  return mix(vec3(0.33, 0.17, 0.07), vec3(0.8, 0.55, 0.3), ring * ring);
+}`;
+
+// Displacement Mapping: 物体の座標から凹凸の高さを求めて法線の向きに押し出し、法線も押し出した形から求め直す。
+// 高さは物体の座標で決めるので、パッチの継ぎ目でも途切れない。onBeforeCompile で three.js の材質に差し込む
+const DISPLACE_POT = /* glsl */`
+float dispHeight(vec3 p) {
+  return ${DISP_AMP.toFixed(4)} * (sin(dot(p, vec3(23.1, 9.7, 13.3))) * sin(dot(p, vec3(-11.3, 22.9, 5.1)))
+    + 0.6 * sin(dot(p, vec3(7.9, -16.1, 29.7)) + 1.3) * sin(dot(p, vec3(33.3, 6.2, -18.1)) + 0.4));
+}`;
+// 壁のレンガ。目地だけを奥へへこませる。横の座標は x + z（左右の壁は x、奥の壁は z が一定なので、どの壁でも壁に沿った長さになる）
+const DISPLACE_BRICK = /* glsl */`
+float dispHeight(vec3 p) {
+  vec2 q = vec2(p.x + p.z, p.y) / vec2(${BRICK.width.toFixed(3)}, ${BRICK.height.toFixed(3)});
+  q.x += 0.5 * mod(floor(q.y), 2.0);   // 1 段おきに半分ずらす
+  vec2 f = abs(fract(q) - 0.5);
+  vec2 groove = smoothstep(0.5 - vec2(${(BRICK.gap / BRICK.width).toFixed(4)}, ${(BRICK.gap / BRICK.height).toFixed(4)}), vec2(0.5), f);
+  return -${BRICK.depth.toFixed(4)} * max(groove.x, groove.y);
+}`;
+const DISPLACE_NORMAL = /* glsl */`
+vec3 objectNormal = vec3(normal);
+vec3 dispT1 = normalize(cross(objectNormal, abs(objectNormal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+vec3 dispT2 = cross(objectNormal, dispT1);
+vec3 dispP0 = position + objectNormal * dispHeight(position);
+vec3 dispP1 = position + dispT1 * 0.01 + objectNormal * dispHeight(position + dispT1 * 0.01);
+vec3 dispP2 = position + dispT2 * 0.01 + objectNormal * dispHeight(position + dispT2 * 0.01);
+vec3 dispN = normalize(cross(dispP1 - dispP0, dispP2 - dispP0));
+objectNormal = dot(dispN, objectNormal) < 0.0 ? -dispN : dispN;
+#ifdef USE_TANGENT
+vec3 objectTangent = vec3(tangent.xyz);
+#endif`;
+
+// 毛皮（shell 法）。インスタンスの番号を殻の番号にし、外側の殻ほど法線の向きに膨らませる。
+// 殻ごとに、毛の根元の点の模様（UV の格子）で抜く。外側ほど細く、短い毛から順に抜けていく
+const FUR_VERTEX = /* glsl */`
+uniform float furLength;
+uniform float shells;
+varying vec2 vUv;
+varying float vShell;
+varying vec3 vNormal;
+varying vec3 vWorld;
+void main() {
+  float sh = float(gl_InstanceID) / (shells - 1.0);
+  vec4 w = modelMatrix * vec4(position + normal * furLength * sh, 1.0);
+  w.y -= furLength * 0.4 * sh * sh;   // 毛先が少し垂れる
+  vUv = uv;
+  vShell = sh;
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  vWorld = w.xyz;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+const FUR_FRAGMENT = /* glsl */`
+uniform vec3 baseColor;
+uniform vec3 lightPos;
+uniform float density;
+varying vec2 vUv;
+varying float vShell;
+varying vec3 vNormal;
+varying vec3 vWorld;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void main() {
+  vec2 g = vUv * density;
+  float len = 0.45 + 0.55 * hash(floor(g));   // この毛の長さ（0..1）
+  float r = length(fract(g) - 0.5);
+  if (vShell > 0.0 && (vShell > len || r > 0.5 * (1.0 - vShell / len))) discard;
+  vec3 l = normalize(lightPos - vWorld);
+  vec3 n = gl_FrontFacing ? vNormal : -vNormal;
+  float diff = 0.35 + 0.65 * max(dot(n, l), 0.0);
+  float ao = mix(0.2, 1.0, vShell);            // 根元ほど暗い
+  gl_FragColor = vec4(baseColor * diff * ao * 1.6, 1.0);
+}`;
+
+// Gooch の陰影・ハッチング（Non-Photorealistic Rendering の時代の画風）。ポットにも部屋にも使う
+const NPR_VERTEX = /* glsl */`
+varying vec3 vNormal;
+varying vec3 vWorld;
+varying vec3 vColor;
+void main() {
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  vWorld = w.xyz;
+  vColor = vec3(1.0);
+#ifdef USE_COLOR
+  vColor = color;
+#endif
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+// Gooch: 暗さではなく、光の側を暖かい色、陰の側を冷たい色にして形を見せる（技術イラスト風）
+const GOOCH_FRAGMENT = /* glsl */`
+uniform vec3 baseColor;
+uniform vec3 lightPos;
+varying vec3 vNormal;
+varying vec3 vWorld;
+varying vec3 vColor;
+void main() {
+  vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
+  vec3 l = normalize(lightPos - vWorld);
+  vec3 v = normalize(cameraPosition - vWorld);
+  vec3 base = baseColor * vColor;
+  vec3 cool = vec3(0.0, 0.0, 0.25) + 0.25 * base;
+  vec3 warm = vec3(0.25, 0.25, 0.0) + 0.6 * base;
+  float spec = pow(max(dot(n, normalize(l + v)), 0.0), 60.0);
+  gl_FragColor = vec4(mix(cool, warm, 0.5 + 0.5 * dot(n, l)) + spec, 1.0);
+}`;
+// ハッチング: 画面に固定した斜めの線を、暗い所ほど太くし、さらに暗い所には逆向きの線を重ねる
+const HATCH_FRAGMENT = /* glsl */`
+uniform vec3 baseColor;
+uniform vec3 lightPos;
+uniform float pitch;       // 線の間隔（画素）
+varying vec3 vNormal;
+varying vec3 vWorld;
+varying vec3 vColor;
+// dir の向きに並ぶ線の濃さ。amount（0..1）が大きいほど太い
+float stroke(vec2 dir, float amount) {
+  float d = abs(fract(dot(gl_FragCoord.xy, dir) / pitch) - 0.5);
+  return smoothstep(0.0, 0.3, amount) * (1.0 - smoothstep(0.0, 1.5 / pitch, d - 0.15 * amount));
+}
+void main() {
+  vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
+  vec3 base = baseColor * vColor;
+  float diff = max(dot(n, normalize(lightPos - vWorld)), 0.0);
+  float tone = sqrt(dot(base, vec3(0.3, 0.6, 0.1))) * (0.3 + 0.7 * diff);
+  float ink = max(stroke(vec2(0.707, 0.707), 1.0 - smoothstep(0.35, 0.7, tone)),
+                  stroke(vec2(0.707, -0.707), 1.0 - smoothstep(0.1, 0.4, tone)));
+  gl_FragColor = vec4(mix(mix(base, vec3(1.0), 0.5), base * 0.1, ink), 1.0);
+}`;
+
+// ---- three.js 初期化 ----
+// 時代はどれも描画先に描いてから合成するので、画面側のアンチエイリアスは効かない。無駄なので切る
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;   // 影のぼけは時代ごとに shadow.radius で変える
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.1, 100);
+
+// 時代を描く描画先（いまの時代と、クロスフェード中の次の時代）。色の形式は compactHdrFormat（common.js）で選ぶ
+const makeTarget = () => new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES });
+const targets = [makeTarget(), makeTarget()];
+
+const composite = new FullScreenQuad(new THREE.ShaderMaterial({
+  uniforms: {
+    tA: { value: null }, tB: { value: null }, mixT: { value: 0 },
+    toneA: { value: new THREE.Vector2(0, 1) }, toneB: { value: new THREE.Vector2(0, 1) },
+  },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: COMPOSITE_FRAGMENT,
+  depthTest: false, depthWrite: false,
+}));
+
+function resizeTargets() {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  for (const t of targets) t.setSize(size.x, size.y);
+  // 太い線は画素で太さを決めるので、描画先の大きさと解像度の倍率に合わせる
+  for (const m of lineMaterials) {
+    m.resolution.copy(size);
+    m.linewidth = m.userData.width * renderer.getPixelRatio();
+  }
+}
+
+// ---- 状態 ----
+let time = 0;              // 経過秒
+let speed = BASE_SPEED;    // 回る速さの倍率（強度）
+let angle = 0;             // ポットの回転の角度（0..2π）
+let tiltPhase = 0;         // 傾きの揺れの位相（0..2π）
+let eraIndex = 0;          // いまの時代（SCENES の番号）
+let eraTurns = 0;          // いまの時代に入ってから回った数（STEADY_TURNS を超えるとクロスフェード）
+let nextPrepared = false;  // クロスフェードの前に、次の時代の準備（キューブマップを撮るなど）を済ませたか
+let skipFade = -1;         // シーン切替のクロスフェードの進み具合（0..1）。していないときは -1
+let potColorIndex = -1;    // ポットの色（POT_COLORS の番号）
+let variation = null;      // いまの巡回で選んだもの（pickVariations）
+const lightPos = new THREE.Vector3();   // 主な照明の位置（巡回ごとに選ぶ）
+let potHeight = 1;         // ポットの高さ（ジオメトリを作るときに求める）
+let potCenterY = 1;        // ポットの中心の高さ（同上）
+
+// ---- ポット ----
+// 分割数ごとのジオメトリ。ポットの中心を原点にし、幅を POT_WIDTH にする（傾けるときに中心で回すため）
+const potGeometries = new Map();
+let potTransform = null;   // { scale, lift }。十分に細かい分割（24）で 1 回だけ求め、全部の分割数で同じにする（分割数で大きさがずれないように）
+function potGeometry(segments) {
+  if (!potGeometries.has(segments)) {
+    const g = new TeapotGeometry(1, segments, true, true, true, true, true);
+    if (!potTransform) {
+      const fine = new TeapotGeometry(1, 24, true, true, true, true, true);
+      fine.computeBoundingBox();
+      const b = fine.boundingBox;
+      const scale = POT_WIDTH / (b.max.x - b.min.x);
+      potTransform = { scale, lift: -(b.min.y + b.max.y) / 2 * scale };
+      potHeight = (b.max.y - b.min.y) * scale;
+      potCenterY = POT_LIFT + potHeight / 2;
+      fine.dispose();
+    }
+    g.scale(potTransform.scale, potTransform.scale, potTransform.scale);
+    g.translate(0, potTransform.lift, 0);
+    potGeometries.set(segments, g);
+  }
+  return potGeometries.get(segments);
+}
+
+// パッチの u・v の格子線（三角形の対角線を出さない）。頂点はパッチごとに (分割数+1)² 個、s・t の順に並ぶ
+const potLineGeometries = new Map();
+function potLineGeometry(segments) {
+  if (!potLineGeometries.has(segments)) {
+    const position = potGeometry(segments).attributes.position;
+    const row = segments + 1;
+    const patches = position.count / (row * row);
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    const index = [];
+    const add = (i, j) => {
+      // 注ぎ口の先・蓋のつまみなどの尖った所は、長さ 0 の線になるので省く
+      if (a.fromBufferAttribute(position, i).distanceToSquared(b.fromBufferAttribute(position, j)) > 1e-10) index.push(i, j);
+    };
+    for (let p = 0; p < patches; p++) {
+      for (let s = 0; s <= segments; s++) {
+        for (let t = 0; t <= segments; t++) {
+          const v = p * row * row + s * row + t;
+          if (t < segments) add(v, v + 1);
+          if (s < segments) add(v, v + row);
+        }
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', position);
+    g.setIndex(index);
+    potLineGeometries.set(segments, g);
+  }
+  return potLineGeometries.get(segments);
+}
+
+// ポットの柄（巡回ごとに選ぶ）。UV はパッチごとに 0〜1 なので、柄はパッチごとにくり返す
+const PATTERN_TEXTURES = {
+  checker: canvasTexture(256, 256, (ctx, w) => {
+    const n = 8, s = w / n;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      ctx.fillStyle = (i + j) % 2 ? '#b8452e' : '#f2ead8';
+      ctx.fillRect(i * s, j * s, s, s);
+    }
+  }),
+  indigo: canvasTexture(256, 256, (ctx, w) => {
+    ctx.fillStyle = '#f4f1ea';
+    ctx.fillRect(0, 0, w, w);
+    ctx.strokeStyle = ctx.fillStyle = '#26407a';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(0, 0, w, w);
+    ctx.lineWidth = 3;
+    // 真ん中の花と、四隅の唐草風の渦
+    for (let k = 0; k < 6; k++) {
+      const a = k / 6 * TAU;
+      ctx.beginPath();
+      ctx.ellipse(w / 2 + Math.cos(a) * 34, w / 2 + Math.sin(a) * 34, 26, 12, a, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(w / 2, w / 2, 12, 0, TAU); ctx.fill();
+    for (const [x, y] of [[0, 0], [w, 0], [0, w], [w, w]]) {
+      for (let r = 14; r <= 50; r += 12) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); }
+    }
+  }),
+  stripe: canvasTexture(256, 256, (ctx, w) => {
+    const bands = ['#f3efe4', '#2f5d8a', '#f3efe4', '#d9a441', '#f3efe4', '#2f5d8a'];
+    const s = w / bands.length;
+    bands.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(0, i * s, w, s); });
+  }),
+};
+
+const POT_BUMP = noiseTexture(256, 900, 6);
+
+// 左右の壁の色の照り返しを、面の法線が壁を向く度合いで環境光に混ぜる（左の赤い壁を向く面はほんのり赤く、右は緑に）。
+// Radiosity と Path Tracing のポットに使う
+function addBleed(material, gain = 1) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.bleedLeft = { value: linearColor(WALL_COLORS.left).multiplyScalar(BLEED * gain) };
+    shader.uniforms.bleedRight = { value: linearColor(WALL_COLORS.right).multiplyScalar(BLEED * gain) };
+    shader.fragmentShader = 'uniform vec3 bleedLeft;\nuniform vec3 bleedRight;\n' + shader.fragmentShader.replace(
+      '#include <aomap_fragment>',
+      `vec3 worldN = inverseTransformDirection(normal, viewMatrix);
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * (bleedLeft * max(-worldN.x, 0.0) + bleedRight * max(worldN.x, 0.0));
+      #include <aomap_fragment>`);
+  };
+  return material;
+}
+
+// 立体の柄のノイズ（Solid Texture）。乱数を詰めた立体テクスチャを、なめらかに補間して引く
+const SOLID_NOISE = (() => {
+  const data = new Uint8Array(SOLID.size ** 3);
+  for (let i = 0; i < data.length; i++) data[i] = randInt(256);
+  const tex = new THREE.Data3DTexture(data, SOLID.size, SOLID.size, SOLID.size);
+  tex.format = THREE.RedFormat;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+// 立体の柄（solidPattern の GLSL）を、拡散の色に掛ける（Solid Texture）
+function addSolid(material, pattern) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.solidNoise = { value: SOLID_NOISE };
+    shader.vertexShader = 'varying vec3 vSolid;\n' + shader.vertexShader
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSolid = position;');
+    shader.fragmentShader = SOLID_HEAD + pattern + '\n' + shader.fragmentShader
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= solidPattern(vSolid);');
+  };
+  material.customProgramCacheKey = () => pattern;
+  return material;
+}
+
+// 凹凸の高さ（dispHeight の GLSL）の分だけ頂点を押し出す（Displacement Mapping）
+function displace(material, height) {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n' + height)
+      .replace('#include <beginnormal_vertex>', DISPLACE_NORMAL)
+      .replace('#include <begin_vertex>', 'vec3 transformed = dispP0;');
+  };
+  // 既定では onBeforeCompile の文字列でシェーダーを使い回すので、高さの式ごとに分ける
+  material.customProgramCacheKey = () => height;
+  return material;
+}
+
+// Subsurface Scattering の逆光の位置（巡回ごとの照明の向きから決める）
+const backLightPos = new THREE.Vector3();
+// 逆光が透けて光る分を足す。視線が光の来る向きに近いほど明るく、面が横を向く縁ほど強い（厚みを測らない近似）
+function addBackGlow(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.glowLight = { value: backLightPos };
+    shader.fragmentShader = 'uniform vec3 glowLight;\n' + shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      vec3 glowL = normalize((viewMatrix * vec4(glowLight, 1.0)).xyz + vViewPosition);
+      float glow = pow(saturate(dot(normalize(vViewPosition), -normalize(glowL + normal * 0.4))), 3.0);
+      totalEmissiveRadiance += attenuationColor * (${BACKLIGHT.glow.toFixed(3)} * glow);`);
+  };
+  return material;
+}
+
+// Path Tracing の白磁。素材は変えず、光の回り方（壁の色の照り返し・広くぼけた影）を見せる
+const PORCELAIN = addBleed(new THREE.MeshPhysicalMaterial({ color: 0xf4f2ec, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.04 }), AREA_LIGHT.bleed);
+// Subsurface Scattering の素材（巡回ごとに選ぶ）。透過・厚み・減衰の色で、光が中まで入る様子を近似する
+// （巡回ごとに差し替えるので、addPot を通らない。両面を描くのは、下の PBS の素材とあわせて指定する）
+const SSS_MATERIALS = [
+  new THREE.MeshPhysicalMaterial({   // 翡翠
+    color: 0x9fd8b0, roughness: 0.3, transmission: 0.75, thickness: 1.2, ior: 1.6,
+    attenuationColor: 0x2f8a52, attenuationDistance: 0.35, clearcoat: 0.6,
+  }),
+  new THREE.MeshPhysicalMaterial({   // 蝋
+    color: 0xf3dcb4, roughness: 0.55, transmission: 0.6, thickness: 1.5, ior: 1.45,
+    attenuationColor: 0xd98a3a, attenuationDistance: 0.5,
+  }),
+  new THREE.MeshPhysicalMaterial({   // 乳白のガラス
+    color: 0xf4f6f8, roughness: 0.3, transmission: 0.85, thickness: 1, ior: 1.5,
+    attenuationColor: 0xc7d7ea, attenuationDistance: 0.6, clearcoat: 1,
+  }),
+];
+for (const m of SSS_MATERIALS) addBackGlow(m).envMapIntensity = BACKLIGHT.pot;
+// Physically Based Shading の素材（巡回ごとに選ぶ）。Disney の BRDF の項目（clearcoat・metallic・sheen・anisotropic）を 1 つずつ見せる
+const PBS_MATERIALS = [
+  new THREE.MeshPhysicalMaterial({ color: 0x0b0b0d, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03 }),   // 黒い釉薬
+  new THREE.MeshPhysicalMaterial({ color: 0xd38b5d, metalness: 1, roughness: 0.25 }),                           // 銅
+  new THREE.MeshPhysicalMaterial({   // ビロード
+    color: 0x5a0f22, roughness: 0.9, sheen: 1, sheenColor: 0xff8fb0, sheenRoughness: 0.45,
+  }),
+  new THREE.MeshPhysicalMaterial({   // へアライン仕上げの金属
+    color: 0xd6d8dc, metalness: 1, roughness: 0.32, anisotropy: 0.9,
+  }),
+];
+for (const m of [...SSS_MATERIALS, ...PBS_MATERIALS]) m.side = THREE.DoubleSide;
+
+// ---- 部屋 ----
+const { halfWidth: HW, back: BACK, front: FRONT, sideFront: SIDE_FRONT, height: ROOM_H } = ROOM;
+const ROOM_DEPTH = FRONT - BACK;
+const SIDE_LENGTH = SIDE_FRONT - BACK;
+
+// 市松の床。マスごとに頂点を分け、頂点の色で塗る（フラット・グーローでも模様がにじまない）
+const floorCheckerGeometry = (() => {
+  const colors = FLOOR_COLORS.map(linearColor);
+  const pos = [], col = [], nor = [];
+  const nx = Math.round(2 * HW / CHECKER), nz = Math.round(ROOM_DEPTH / CHECKER);
+  for (let ix = 0; ix < nx; ix++) {
+    for (let iz = 0; iz < nz; iz++) {
+      const x0 = -HW + ix * CHECKER, x1 = x0 + CHECKER, z0 = BACK + iz * CHECKER, z1 = z0 + CHECKER;
+      const c = colors[(ix + iz) % 2];
+      for (const [x, z] of [[x0, z1], [x1, z1], [x1, z0], [x0, z1], [x1, z0], [x0, z0]]) {
+        pos.push(x, 0, z); nor.push(0, 1, 0); col.push(c.r, c.g, c.b);
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return g;
+})();
+
+// 1 枚の板の床（焼き込んだテクスチャを貼る時代用）。UV は床全体で 0〜1、v は奥へ向かって増える
+const floorPlaneGeometry = new THREE.PlaneGeometry(2 * HW, ROOM_DEPTH)
+  .rotateX(-Math.PI / 2).translate(0, 0, (FRONT + BACK) / 2);
+
+// 壁。長さ grid ごとに分割する（ふだんは 1。1 枚の板にすると、Gouraud で明るさの補間が見えないため）。UV は長さの単位にそろえる（壁紙を 1 あたり 1 回くり返す）
+function wallGeometry(width, rotY, x, z, grid) {
+  const g = new THREE.PlaneGeometry(width, ROOM_H, Math.ceil(width / grid), Math.ceil(ROOM_H / grid));
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * width, uv.getY(i) * ROOM_H);
+  return g.rotateY(rotY).translate(x, ROOM_H / 2, z);
+}
+// 左の壁の u は手前→奥、右の壁の u は奥→手前、奥の壁の u は左→右へ増える
+const wallGeometries = (grid) => ({
+  left: wallGeometry(SIDE_LENGTH, Math.PI / 2, -HW, (SIDE_FRONT + BACK) / 2, grid),
+  right: wallGeometry(SIDE_LENGTH, -Math.PI / 2, HW, (SIDE_FRONT + BACK) / 2, grid),
+  back: wallGeometry(2 * HW, 0, 0, BACK, grid),
+});
+const WALL_GEOMETRIES = wallGeometries(1);
+const BRICK_WALL_GEOMETRIES = wallGeometries(BRICK.grid);   // Displacement Mapping 用に細かく分割した壁
+const WALL_SIZE = { left: [SIDE_LENGTH, ROOM_H], right: [SIDE_LENGTH, ROOM_H], back: [2 * HW, ROOM_H] };
+
+// 部屋の線（ワイヤーフレーム・隠線消去）。床は市松のマス目、壁は縁と 1 ごとの格子
+const roomLineGeometry = (() => {
+  const p = [];
+  const line = (a, b) => p.push(...a, ...b);
+  for (let x = -HW; x <= HW + 1e-6; x += CHECKER) line([x, 0, BACK], [x, 0, FRONT]);
+  for (let z = BACK; z <= FRONT + 1e-6; z += CHECKER) line([-HW, 0, z], [HW, 0, z]);
+  for (const sx of [-HW, HW]) {
+    for (let z = BACK; z <= SIDE_FRONT + 1e-6; z += 1) line([sx, 0, z], [sx, ROOM_H, z]);
+    for (let y = 1; y <= ROOM_H; y += 1) line([sx, y, BACK], [sx, y, SIDE_FRONT]);
+  }
+  for (let x = -HW; x <= HW + 1e-6; x += 1) line([x, 0, BACK], [x, ROOM_H, BACK]);
+  for (let y = 1; y <= ROOM_H; y += 1) line([-HW, y, BACK], [HW, y, BACK]);
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+})();
+
+// 壁紙（灰色の柄。壁の色を掛けて使う）
+const WALLPAPER = canvasTexture(128, 128, (ctx, w) => {
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, w);
+  ctx.fillStyle = '#d6d6d6';
+  ctx.fillRect(0, 0, 10, w);
+  ctx.fillRect(w / 2, 0, 3, w);
+  ctx.fillStyle = '#c4c4c4';
+  for (const [x, y] of [[w * 0.27, w * 0.25], [w * 0.77, w * 0.75], [w * 0.27, w * 0.75], [w * 0.77, w * 0.25]]) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 9); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 9); ctx.lineTo(x - 6, y);
+    ctx.fill();
+  }
+});
+WALLPAPER.wrapS = WALLPAPER.wrapT = THREE.RepeatWrapping;
+WALLPAPER.repeat.set(2, 2);
+
+const PLASTER_BUMP = noiseTexture(128, 500, 4);
+PLASTER_BUMP.repeat.set(1.5, 1.5);
+
+// Radiosity 以降（Non-Photorealistic Rendering を除く）の部屋に貼る、壁の色のにじみと隅の暗さを焼き込んだテクスチャ（光を追わない近似）
+const rgba = (hex) => { const c = new THREE.Color(hex); return `rgba(${c.r * 255 | 0},${c.g * 255 | 0},${c.b * 255 | 0},A)`; };
+const SHADE = 'rgba(0,0,0,A)';
+const BAKED = {
+  floor: canvasTexture(2 * HW * BAKE_PX, ROOM_DEPTH * BAKE_PX, (ctx, w, h) => {
+    const s = CHECKER * BAKE_PX;
+    for (let i = 0; i < w / s; i++) for (let j = 0; j < h / s; j++) {
+      ctx.fillStyle = css(FLOOR_COLORS[(i + j) % 2]);
+      ctx.fillRect(i * s, j * s, s, s);
+    }
+    // 左右の壁は奥から SIDE_LENGTH の所までなので、にじみもそこまでにする（canvas の上が奥）
+    const sideH = SIDE_LENGTH * BAKE_PX;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, w, sideH); ctx.clip();
+    edgeGradient(ctx, w, h, 'left', 1.6 * BAKE_PX, rgba(WALL_COLORS.left), 0.4);
+    edgeGradient(ctx, w, h, 'right', 1.6 * BAKE_PX, rgba(WALL_COLORS.right), 0.4);
+    edgeGradient(ctx, w, h, 'left', 0.5 * BAKE_PX, SHADE, 0.35);
+    edgeGradient(ctx, w, h, 'right', 0.5 * BAKE_PX, SHADE, 0.35);
+    ctx.restore();
+    edgeGradient(ctx, w, h, 'top', 0.6 * BAKE_PX, SHADE, 0.4);
+  }),
+  back: canvasTexture(2 * HW * BAKE_PX, ROOM_H * BAKE_PX, (ctx, w, h) => {
+    ctx.fillStyle = css(WALL_COLORS.back);
+    ctx.fillRect(0, 0, w, h);
+    edgeGradient(ctx, w, h, 'left', 1.6 * BAKE_PX, rgba(WALL_COLORS.left), 0.35);
+    edgeGradient(ctx, w, h, 'right', 1.6 * BAKE_PX, rgba(WALL_COLORS.right), 0.35);
+    edgeGradient(ctx, w, h, 'left', 0.6 * BAKE_PX, SHADE, 0.35);
+    edgeGradient(ctx, w, h, 'right', 0.6 * BAKE_PX, SHADE, 0.35);
+    edgeGradient(ctx, w, h, 'bottom', 0.6 * BAKE_PX, SHADE, 0.35);
+  }),
+  left: canvasTexture(SIDE_LENGTH * BAKE_PX, ROOM_H * BAKE_PX, (ctx, w, h) => {
+    ctx.fillStyle = css(WALL_COLORS.left);
+    ctx.fillRect(0, 0, w, h);
+    edgeGradient(ctx, w, h, 'right', 0.6 * BAKE_PX, SHADE, 0.35);   // 奥の隅
+    edgeGradient(ctx, w, h, 'bottom', 0.6 * BAKE_PX, SHADE, 0.35);
+  }),
+  right: canvasTexture(SIDE_LENGTH * BAKE_PX, ROOM_H * BAKE_PX, (ctx, w, h) => {
+    ctx.fillStyle = css(WALL_COLORS.right);
+    ctx.fillRect(0, 0, w, h);
+    edgeGradient(ctx, w, h, 'left', 0.6 * BAKE_PX, SHADE, 0.35);    // 奥の隅
+    edgeGradient(ctx, w, h, 'bottom', 0.6 * BAKE_PX, SHADE, 0.35);
+  }),
+};
+// 壁の UV は長さの単位なので、テクスチャ 1 枚が壁 1 枚に収まるよう縮める
+for (const side of ['left', 'right', 'back']) BAKED[side].repeat.set(1 / WALL_SIZE[side][0], 1 / WALL_SIZE[side][1]);
+
+// Path Tracing 以降の、ポットの真下の柔らかい影（中心ほど暗い板）
+const CONTACT_SHADOW = canvasTexture(128, 128, (ctx, w) => {
+  const g = ctx.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+  g.addColorStop(0, 'rgba(0,0,0,0.75)');
+  g.addColorStop(0.5, 'rgba(0,0,0,0.35)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, w);
+});
+
+// Fur の敷物。UV は長さの単位にする（毛の密度を、長さ 1 あたりの本数で決めるため）
+const rugGeometry = (() => {
+  const g = new THREE.PlaneGeometry(RUG.width, RUG.depth);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * RUG.width, uv.getY(i) * RUG.depth);
+  return g.rotateX(-Math.PI / 2).translate(0, 0, RUG.z);
+})();
+
+// Physically Based Shading の床の素材（1 マスを 1 画素にした市松。緑の成分が粗さ、青の成分が金属らしさ）。並びは BAKED.floor と同じ
+const FLOOR_SURFACE = canvasTexture(2 * HW / CHECKER, ROOM_DEPTH / CHECKER, (ctx, w, h) => {
+  for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) {
+    const k = (i + j) % 2;
+    ctx.fillStyle = `rgb(0,${Math.round(PBS_FLOOR.roughness[k] * 255)},${Math.round(PBS_FLOOR.metalness[k] * 255)})`;
+    ctx.fillRect(i, j, 1, 1);
+  }
+}, false);
+FLOOR_SURFACE.minFilter = FLOOR_SURFACE.magFilter = THREE.NearestFilter;
+FLOOR_SURFACE.generateMipmaps = false;
+
+// トゥーンの陰影の段（MeshToonMaterial の gradientMap）
+const TOON_GRADIENT = new THREE.DataTexture(new Uint8Array(TOON_STEPS.map((v) => Math.round(v * 255))), TOON_STEPS.length, 1, THREE.RedFormat);
+TOON_GRADIENT.minFilter = TOON_GRADIENT.magFilter = THREE.NearestFilter;
+TOON_GRADIENT.needsUpdate = true;
+
+// 部屋の角の線（Non-Photorealistic Rendering の時代の輪郭線）
+const roomEdgeGeometry = (() => {
+  const p = [];
+  const line = (a, b) => p.push(...a, ...b);
+  line([-HW, 0, BACK], [HW, 0, BACK]);
+  line([-HW, 0, BACK], [-HW, 0, SIDE_FRONT]);
+  line([HW, 0, BACK], [HW, 0, SIDE_FRONT]);
+  line([-HW, 0, BACK], [-HW, ROOM_H, BACK]);
+  line([HW, 0, BACK], [HW, ROOM_H, BACK]);
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+})();
+
+// ---- 時代 ----
+// 時代の場面の入れ物を作る。部屋・ポット・照明は呼ぶ側で置く。tone: [トーンマッピングの種類（0: 切り詰めるだけ、1: ACES）, 露出]
+function createEra({ background, tone = [0, 1] }) {
+  const scene = new THREE.Scene();
+  scene.background = linearColor(background);
+  // spin: 毎フレーム回すもの。lights: 巡回ごとに位置を変える主な照明。potColorMaterials: 巡回ごとのポットの色を当てる材質。
+  // prepare: 描き始める前の準備（キューブマップを撮るなど）。setVariation: 巡回ごとの変化を当てる処理。
+  // variants: 巡回ごとに差し替える材質を当てる関数の並び（裏で全部のシェーダーを作っておく）。environment: 周りの光（RoomEnvironment）を使うか
+  return {
+    scene, tone, spin: [], lights: [], potColorMaterials: [],
+    prepare: null, setVariation: null, variants: null, environment: false,
+  };
+}
+
+// 回して傾けるもの（ポット）を、ポットの中心の高さに置く。回転は renderEra で、垂直な軸のまわり（y）→ 傾き（x）の順に掛ける
+function addSpin(era, object, parent = era.scene) {
+  object.position.y = potCenterY;
+  object.rotation.order = 'YXZ';
+  parent.add(object);
+  era.spin.push(object);
+  return object;
+}
+
+// 注ぎ口の穴や蓋のすき間から見える内側は裏面なので、両面を描く（表だけだと、向こうが透けて見える）
+function addPot(era, segments, material, { cast = false } = {}) {
+  material.side = THREE.DoubleSide;
+  const mesh = addSpin(era, new THREE.Mesh(potGeometry(segments), material));
+  mesh.castShadow = cast;
+  return mesh;
+}
+
+// materials: { floor, left, right, back }。floorGeometry を省くと市松の頂点色の床
+function addRoom(era, materials, { floorGeometry = floorCheckerGeometry, walls = WALL_GEOMETRIES, receive = false } = {}) {
+  const meshes = [new THREE.Mesh(floorGeometry, materials.floor)];
+  for (const side of ['left', 'right', 'back']) meshes.push(new THREE.Mesh(walls[side], materials[side]));
+  for (const m of meshes) { m.receiveShadow = receive; era.scene.add(m); }
+  return meshes;
+}
+
+// 壁ごとの材質を、壁の色を変えて作る
+const wallMaterials = (make) => ({
+  left: make(WALL_COLORS.left), right: make(WALL_COLORS.right), back: make(WALL_COLORS.back),
+});
+
+function addSpot(era, intensity, shadow = null, ambient = true) {
+  const light = new THREE.SpotLight(0xffffff, intensity, 0, SPOT_ANGLE, SPOT_PENUMBRA, 0);
+  light.target.position.set(...SPOT_TARGET);
+  if (shadow) {
+    light.castShadow = true;
+    light.shadow.mapSize.setScalar(shadow.size);
+    light.shadow.radius = shadow.radius;
+    light.shadow.bias = -0.0004;
+    light.shadow.normalBias = 0.02;
+    light.shadow.camera.near = 1;
+    light.shadow.camera.far = 20;
+  }
+  era.scene.add(light, light.target);
+  if (ambient) era.scene.add(new THREE.AmbientLight(0xffffff, AMBIENT));
+  era.lights.push(light);
+  return light;
+}
+
+// 太い線の材質。WebGL の線は 1 画素の太さにしかならないので、太さを持てる LineSegments2 で描く。
+// width は太さ（CSS ピクセル）。resizeTargets で解像度の倍率を掛ける
+const lineMaterials = [];
+function lineMaterial(params, width) {
+  const m = new LineMaterial(params);
+  m.userData.width = width;
+  lineMaterials.push(m);
+  return m;
+}
+// 線画（Wireframe・Hidden Line）の線
+const wireMaterial = ({ gain, width }, depthTest) => lineMaterial({
+  color: new THREE.Color(...WIRE_COLOR).multiplyScalar(gain),
+  depthTest, depthWrite: false,
+}, width);
+const fatLineGeometries = new Map();
+function fatLines(geometry) {
+  if (!fatLineGeometries.has(geometry)) {
+    const flat = geometry.index ? geometry.toNonIndexed() : geometry;
+    fatLineGeometries.set(geometry, new LineSegmentsGeometry().setPositions(flat.attributes.position.array));
+  }
+  return fatLineGeometries.get(geometry);
+}
+
+// ポットの位置にキューブカメラを置いて、ポットを隠した部屋を撮る
+function captureCube(era, cube, hide) {
+  for (const o of hide) o.visible = false;
+  cube.position.set(0, potCenterY, 0);
+  cube.update(renderer, era.scene);
+  for (const o of hide) o.visible = true;
+}
+
+// Path Tracing 以降の部屋の材質（全部の時代で共有する）
+const PBR_ROOM = {
+  floor: new THREE.MeshStandardMaterial({ map: BAKED.floor, roughness: 0.3 }),
+  left: new THREE.MeshStandardMaterial({ map: BAKED.left, roughness: 0.9 }),
+  right: new THREE.MeshStandardMaterial({ map: BAKED.right, roughness: 0.9 }),
+  back: new THREE.MeshStandardMaterial({ map: BAKED.back, roughness: 0.9 }),
+};
+
+// ポットの真下の柔らかい影の板。ポットは浮いているので、広く薄くする
+function addContactShadow(era, y = 0.003) {
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(POT_WIDTH * 1.1, POT_WIDTH * 1.1).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ map: CONTACT_SHADOW, transparent: true, opacity: 0.6, depthWrite: false }));
+  plate.position.y = y;
+  era.scene.add(plate);
+}
+
+// Path Tracing 以降の時代を作る。周りの光（RoomEnvironment）・柔らかい影のスポットライト・PBR の部屋・真下の影の板を置く。
+// 周りの光は prepareEra で、使う前に作る。light を false にすると照明を置かない（時代の側で置く）。contactY は真下の影の板の高さ
+function createPbrEra({ room = PBR_ROOM, walls = WALL_GEOMETRIES, light = true, contactY = 0.003 } = {}) {
+  const era = createEra({ background: 0x101010, tone: [1, PATH_EXPOSURE] });
+  era.environment = true;
+  if (light) addSpot(era, 2, { size: 1024, radius: 5 });
+  addRoom(era, room, { floorGeometry: floorPlaneGeometry, walls, receive: true });
+  addContactShadow(era, contactY);
+  return era;
+}
+
+// 毛皮の材質（Fur のポットと敷物）。fur: { length, shells, density }
+const furMaterial = (fur, color) => new THREE.ShaderMaterial({
+  uniforms: {
+    baseColor: { value: color }, lightPos: { value: lightPos },
+    furLength: { value: fur.length }, shells: { value: fur.shells }, density: { value: fur.density },
+  },
+  vertexShader: FUR_VERTEX, fragmentShader: FUR_FRAGMENT, side: THREE.DoubleSide,
+});
+
+// Gooch の陰影・ハッチングの材質（Non-Photorealistic Rendering の時代の画風）
+const nprMaterial = (fragmentShader, color, vertexColors) => new THREE.ShaderMaterial({
+  uniforms: {
+    baseColor: { value: color }, lightPos: { value: lightPos },
+    pitch: { value: HATCH_PITCH * renderer.getPixelRatio() },
+  },
+  vertexShader: NPR_VERTEX, fragmentShader, vertexColors, side: THREE.DoubleSide,
+});
+
+// 透けるガラス（Ray Tracing）
+const glassMaterial = (extra = {}) => new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, roughness: 0.02, transmission: 1, thickness: 0.6, ior: 1.5,
+  attenuationColor: 0xd8f0ec, attenuationDistance: 2, ...extra,
+});
+
+// ガラスの影は影の描画先に透け具合が入らず真っ黒になるので、床の少し上の板で薄く落とす
+function addGlassShadow(era) {
+  const shadow = new THREE.Mesh(floorPlaneGeometry, new THREE.ShadowMaterial({ opacity: 0.35 }));
+  shadow.position.y = 0.002;
+  shadow.receiveShadow = true;
+  era.scene.add(shadow);
+}
+
+// ポットのインスタンスを重ねて殻にする（Fur）。インスタンスの番号を殻の番号として使い、位置はシェーダーで決める
+function addShells(era, segments, count, material) {
+  const mesh = new THREE.InstancedMesh(potGeometry(segments), material, count);
+  mesh.frustumCulled = false;
+  return addSpin(era, mesh);
+}
+
+const phongRoom = (wall = {}) => ({
+  floor: new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 40, specular: 0x262626 }),
+  ...wallMaterials((c) => new THREE.MeshPhongMaterial({ color: c, shininess: 8, specular: 0x111111, ...wall })),
+});
+
+const SCENES = [
+  {
+    name: 'Wireframe (1963)', label: 'green', segments: 4,
+    build(s) {
+      // 裏側の線も透けて見えるよう、深度を見ずに描く。Hidden Line との違いはこれだけにする。
+      // 重なった線を足し込むと明るく光って見えるので、上書きする。ポットの線を部屋の線より後に描き、上に出す
+      const era = createEra({ background: 0x000000 });
+      const pot = new LineSegments2(fatLines(potLineGeometry(s.segments)), wireMaterial(WIRE_POT, false));
+      pot.renderOrder = 1;
+      addSpin(era, pot);
+      era.scene.add(new LineSegments2(fatLines(roomLineGeometry), wireMaterial(WIRE_ROOM, false)));
+      return era;
+    },
+  },
+  {
+    name: 'Hidden Line (1963)', label: 'green', segments: 4,
+    build(s) {
+      const era = createEra({ background: 0x000000 });
+      // 面を背景と同じ黒で少し奥へずらして描き、その上に線を描く。面に隠れた線は深度で消える
+      const face = new THREE.MeshBasicMaterial({
+        color: 0x000000, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+      });
+      addRoom(era, { floor: face, left: face, right: face, back: face });
+      const pot = new THREE.Group();
+      pot.add(new THREE.Mesh(potGeometry(s.segments), face),
+        new LineSegments2(fatLines(potLineGeometry(s.segments)), wireMaterial(WIRE_POT, true)));
+      addSpin(era, pot);
+      era.scene.add(new LineSegments2(fatLines(roomLineGeometry), wireMaterial(WIRE_ROOM, true)));
+      return era;
+    },
+  },
+  {
+    name: 'Flat Shading (1967)', segments: 4,
+    build(s) {
+      const era = createEra({ background: 0x202020 });
+      // 平行光なので、平らな壁は 1 枚ずつ単色になる
+      const light = new THREE.DirectionalLight(0xffffff, 2.4);
+      era.scene.add(light, new THREE.AmbientLight(0xffffff, AMBIENT));
+      era.lights.push(light);
+      const pot = new THREE.MeshLambertMaterial({ flatShading: true });
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, pot);
+      addRoom(era, {
+        floor: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+        ...wallMaterials((c) => new THREE.MeshLambertMaterial({ color: c, flatShading: true })),
+      });
+      return era;
+    },
+  },
+  {
+    name: 'Gouraud Shading (1971)', segments: 6,
+    build(s) {
+      const era = createEra({ background: 0x202020 });
+      const gouraud = (color, extra = {}) => new THREE.ShaderMaterial({
+        uniforms: {
+          lightPos: { value: lightPos }, baseColor: { value: color },
+          lightGain: { value: 2.6 }, falloff: { value: 0.035 }, ambient: { value: 0.22 },
+          specular: { value: 0 }, shininess: { value: 30 },
+          ...extra,
+        },
+        vertexShader: GOURAUD_VERTEX, fragmentShader: GOURAUD_FRAGMENT,
+      });
+      const pot = gouraud(new THREE.Color(), { specular: { value: 0.7 } });
+      era.setVariation = (v) => pot.uniforms.baseColor.value.copy(v.potColor);
+      addPot(era, s.segments, pot);
+      const floor = gouraud(new THREE.Color(1, 1, 1));
+      floor.vertexColors = true;
+      addRoom(era, { floor, ...wallMaterials((c) => gouraud(linearColor(c))) });
+      return era;
+    },
+  },
+  {
+    name: 'Phong Shading (1973)', segments: 10,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      addSpot(era, 3);
+      const pot = new THREE.MeshPhongMaterial({ specular: 0xffffff, shininess: 90 });
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, pot);
+      addRoom(era, phongRoom());
+      return era;
+    },
+  },
+  {
+    name: 'Texture Mapping (1974)', segments: 10,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      addSpot(era, 3);
+      const pot = new THREE.MeshPhongMaterial({ specular: 0xffffff, shininess: 90 });
+      era.setVariation = (v) => { pot.map = PATTERN_TEXTURES[v.pattern]; };
+      addPot(era, s.segments, pot);
+      addRoom(era, phongRoom({ map: WALLPAPER }));
+      return era;
+    },
+  },
+  {
+    name: 'Environment Mapping (1976)', segments: 12,
+    build(s) {
+      const era = createEra({ background: SKY_COLOR });
+      addSpot(era, 3);
+      // 部屋を無限に遠い景色として映すだけ。取っ手は本体に映らず、床の映り込みも実際の床とつながらない
+      const cube = new THREE.CubeCamera(0.05, 50, new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }));
+      const pot = addPot(era, s.segments, new THREE.MeshBasicMaterial({ color: 0xd4d4d8, envMap: cube.renderTarget.texture }));
+      addRoom(era, phongRoom({ map: WALLPAPER }));
+      // 照明の向きが巡回ごとに変わるので、この時代を描き始めるときに撮る
+      era.prepare = () => captureCube(era, cube, [pot]);
+      return era;
+    },
+  },
+  {
+    name: 'Bump Mapping (1978)', segments: 12,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      addSpot(era, 3);
+      const pot = new THREE.MeshPhongMaterial({ specular: 0x999999, shininess: 60, bumpMap: POT_BUMP, bumpScale: 1.2 });
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, pot);
+      addRoom(era, phongRoom({ map: WALLPAPER, bumpMap: PLASTER_BUMP, bumpScale: 2 }));
+      return era;
+    },
+  },
+  {
+    name: 'Shadows (1978)', segments: 12,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      // 影の描画先をわざと粗くし、ぼかさない（輪郭のぎざぎざを見せる）
+      addSpot(era, 3, { size: 256, radius: 0 });
+      const pot = new THREE.MeshPhongMaterial({ specular: 0x999999, shininess: 60, bumpMap: POT_BUMP, bumpScale: 1.2 });
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, pot, { cast: true });
+      addRoom(era, phongRoom({ map: WALLPAPER, bumpMap: PLASTER_BUMP, bumpScale: 2 }), { receive: true });
+      return era;
+    },
+  },
+  {
+    name: 'Ray Tracing (1980)', segments: 16,
+    build(s) {
+      const era = createEra({ background: SKY_COLOR });
+      addSpot(era, 3, { size: 2048, radius: 1 });
+      const cube = new THREE.CubeCamera(0.05, 50, new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }));
+      const pot = addPot(era, s.segments, glassMaterial({ envMap: cube.renderTarget.texture }), { cast: true });
+      // 床の映り込み: 床で上下反転したポットを、床の上に薄く重ねる（Reflector より軽い）
+      const mirror = new THREE.Mesh(potGeometry(s.segments), new THREE.MeshPhongMaterial({
+        color: 0x9fb4bc, emissive: 0x1c2428, opacity: 0.28,
+        blending: THREE.CustomBlending, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+        depthTest: false, depthWrite: false,
+      }));
+      // 反転は外側の組に掛ける（傾けたポットを、そのまま床で映した形にするため）
+      const flip = new THREE.Group();
+      flip.scale.y = -1;
+      era.scene.add(flip);
+      mirror.renderOrder = 1;
+      addSpin(era, mirror, flip);
+      addRoom(era, {
+        floor: new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 120, specular: 0x777777 }),
+        ...wallMaterials((c) => new THREE.MeshPhongMaterial({ color: c, shininess: 8, specular: 0x111111 })),
+      });
+      addGlassShadow(era);
+      era.prepare = () => captureCube(era, cube, [pot, mirror]);
+      return era;
+    },
+  },
+  {
+    name: 'Radiosity (1984)', segments: 16,
+    build(s) {
+      const era = createEra({ background: 0x101010, tone: [1, 1.1] });
+      addSpot(era, 2.6, { size: 1024, radius: 8 });
+      addPot(era, s.segments, addBleed(new THREE.MeshLambertMaterial({ color: 0xf4f4f4 })), { cast: true });
+      addRoom(era, {
+        floor: new THREE.MeshLambertMaterial({ map: BAKED.floor }),
+        left: new THREE.MeshLambertMaterial({ map: BAKED.left }),
+        right: new THREE.MeshLambertMaterial({ map: BAKED.right }),
+        back: new THREE.MeshLambertMaterial({ map: BAKED.back }),
+      }, { floorGeometry: floorPlaneGeometry, receive: true });
+      return era;
+    },
+  },
+  {
+    name: 'Solid Texture (1985)', segments: 16,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      addSpot(era, 3, { size: 1024, radius: 4 });
+      // ポットは大理石（巡回ごとの色）か木目。柄は物体の座標で決まるので、ポットと一緒に回る
+      const marble = addSolid(new THREE.MeshPhongMaterial({ specular: 0x999999, shininess: 80 }), SOLID_MARBLE);
+      era.potColorMaterials.push(marble);
+      const styles = [marble, addSolid(new THREE.MeshPhongMaterial({ specular: 0x555555, shininess: 40 }), SOLID_WOOD)];
+      const pot = addPot(era, s.segments, marble, { cast: true });
+      for (const m of styles) m.side = THREE.DoubleSide;
+      era.variants = styles.map((m) => () => { pot.material = m; });
+      era.setVariation = (v) => { pot.material = styles[v.solid]; };
+      // 部屋は、床も壁も大理石にする（Radiosity の焼き込みに柄を掛ける）
+      const stone = (side, shininess) => addSolid(new THREE.MeshPhongMaterial({ map: BAKED[side], specular: 0x444444, shininess }), SOLID_MARBLE);
+      addRoom(era, { floor: stone('floor', 100), left: stone('left', 30), right: stone('right', 30), back: stone('back', 30) },
+        { floorGeometry: floorPlaneGeometry, receive: true });
+      return era;
+    },
+  },
+  {
+    name: 'Path Tracing (1986)', segments: 24,
+    build(s) {
+      const era = createPbrEra({ light: false });
+      // 面光源: 四隅に置いた 4 つのスポットライトの影を重ねて、広くぼかす
+      const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+      const spots = corners.map(() => addSpot(era, AREA_LIGHT.intensity / corners.length, { size: AREA_LIGHT.size, radius: AREA_LIGHT.radius }, false));
+      era.setVariation = () => spots.forEach((l, i) => {
+        l.position.set(lightPos.x + corners[i][0] * AREA_LIGHT.half, lightPos.y, lightPos.z + corners[i][1] * AREA_LIGHT.half);
+      });
+      addPot(era, s.segments, PORCELAIN, { cast: true });
+      return era;
+    },
+  },
+  {
+    name: 'Displacement Mapping (1987)', segments: 64,
+    build(s) {
+      // 壁もレンガの形に押し出す（床との境と部屋の角が、目地でへこむ）
+      const brick = (side) => displace(new THREE.MeshStandardMaterial({ map: BAKED[side], roughness: 0.9 }), DISPLACE_BRICK);
+      const era = createPbrEra({
+        room: { floor: PBR_ROOM.floor, left: brick('left'), right: brick('right'), back: brick('back') },
+        walls: BRICK_WALL_GEOMETRIES,
+      });
+      const pot = new THREE.MeshPhysicalMaterial({ roughness: 0.4, clearcoat: 0.6, clearcoatRoughness: 0.1 });
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, displace(pot, DISPLACE_POT), { cast: true });
+      return era;
+    },
+  },
+  {
+    name: 'Fur (1989)', segments: FUR.segments,
+    build(s) {
+      const top = RUG.length * 0.7;   // 敷物の毛先の高さ（影の板を、この上に置く）
+      const era = createPbrEra({ contactY: top + 0.004 });
+      const fur = furMaterial(FUR, new THREE.Color());
+      era.setVariation = (v) => fur.uniforms.baseColor.value.copy(v.potColor);
+      addShells(era, s.segments, FUR.shells, fur).castShadow = true;
+      // 床の敷物も同じ殻の重ね方で描く。毛皮の材質は影を受けないので、毛先の上に影だけの板を重ねる
+      const rug = new THREE.InstancedMesh(rugGeometry, furMaterial(RUG, linearColor(RUG.color)), RUG.shells);
+      rug.position.y = 0.002;
+      const shadow = new THREE.Mesh(rugGeometry, new THREE.ShadowMaterial({ opacity: 0.45 }));
+      shadow.position.y = top;
+      shadow.receiveShadow = true;
+      era.scene.add(rug, shadow);
+      return era;
+    },
+  },
+  {
+    name: 'Non-Photorealistic Rendering (1990)', segments: 24,
+    build(s) {
+      const era = createEra({ background: 0x101010 });
+      addSpot(era, 3, { size: 1024, radius: 0 });
+      // 画風ごとに、ポットと部屋（床・左・右・奥）の材質を作る。make(色, 頂点の色を使うか)
+      const white = new THREE.Color(1, 1, 1);
+      const potColor = new THREE.Color();   // Gooch・ハッチングのポットの色（巡回ごとに変える）
+      const toon = (color, vertexColors = false) => new THREE.MeshToonMaterial({ gradientMap: TOON_GRADIENT, color, vertexColors });
+      const styles = [
+        toon,
+        (color, vertexColors = false) => nprMaterial(GOOCH_FRAGMENT, color, vertexColors),
+        (color, vertexColors = false) => nprMaterial(HATCH_FRAGMENT, color, vertexColors),
+      ].map((make) => ({
+        pot: make(potColor),
+        room: [make(white, true), ...['left', 'right', 'back'].map((side) => make(linearColor(WALL_COLORS[side])))],
+      }));
+      era.potColorMaterials.push(styles[0].pot);   // トゥーンの材質は色を自分で持つ
+      const pot = addPot(era, s.segments, styles[0].pot, { cast: true });
+      for (const st of styles) st.pot.side = THREE.DoubleSide;
+      // 輪郭線: 裏面だけを、法線の向きに少し膨らませて黒く描く
+      const outline = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+      outline.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+          `vec3 transformed = position + normal * ${OUTLINE_WIDTH.toFixed(4)};`);
+      };
+      addSpin(era, new THREE.Mesh(potGeometry(s.segments), outline));
+      const [floor, left, right, back] = styles[0].room;
+      const room = addRoom(era, { floor, left, right, back }, { receive: true });
+      era.scene.add(new LineSegments2(fatLines(roomEdgeGeometry), lineMaterial({ color: 0x000000 }, INK_WIDTH)));
+      const apply = (st) => {
+        pot.material = st.pot;
+        room.forEach((m, i) => { m.material = st.room[i]; });
+      };
+      era.variants = styles.map((st) => () => apply(st));
+      era.setVariation = (v) => {
+        potColor.copy(v.potColor);
+        apply(styles[v.npr]);
+      };
+      return era;
+    },
+  },
+  {
+    name: 'Subsurface Scattering (2001)', segments: 24,
+    build(s) {
+      // 逆光: 照明をポットの奥へ回し、ポットに向ける（薄い所が透けて光り、影は手前に落ちる）
+      const dim = (m) => Object.assign(m.clone(), { envMapIntensity: BACKLIGHT.room });
+      const era = createPbrEra({
+        room: { floor: dim(PBR_ROOM.floor), left: dim(PBR_ROOM.left), right: dim(PBR_ROOM.right), back: dim(PBR_ROOM.back) },
+        light: false,
+      });
+      const light = addSpot(era, BACKLIGHT.intensity, { size: 1024, radius: 5 }, false);
+      era.scene.add(new THREE.AmbientLight(0xffffff, BACKLIGHT.ambient));
+      light.target.position.set(0, potCenterY, 0);
+      const pot = addPot(era, s.segments, SSS_MATERIALS[0], { cast: true });
+      era.variants = SSS_MATERIALS.map((m) => () => { pot.material = m; });
+      era.setVariation = (v) => {
+        backLightPos.set(lightPos.x, lightPos.y * BACKLIGHT.height, BACKLIGHT.z);
+        light.position.copy(backLightPos);
+        pot.material = v.sss;
+      };
+      return era;
+    },
+  },
+  {
+    name: 'Physically Based Shading (2012)', segments: 24,
+    build(s) {
+      // 床も、素材の項目（粗さ・金属らしさ）をマスごとに変える（暗いマスだけ金属の艶が出る）
+      const era = createPbrEra({
+        room: { ...PBR_ROOM, floor: new THREE.MeshStandardMaterial({
+          map: BAKED.floor, roughness: 1, metalness: 1, roughnessMap: FLOOR_SURFACE, metalnessMap: FLOOR_SURFACE,
+        }) },
+      });
+      const pot = addPot(era, s.segments, PBS_MATERIALS[0], { cast: true });
+      era.variants = PBS_MATERIALS.map((m) => () => { pot.material = m; });
+      era.setVariation = (v) => { pot.material = v.pbs; };
+      return era;
+    },
+  },
+];
+
+// Path Tracing 以降の周りの光（外部の HDR 画像を読まない）。最初の絵を出す前には作らず、裏でシェーダーを作るとき（warmupEra）か、使う前に作る
+let roomTexture = null;
+function roomEnvironment() {
+  if (!roomTexture) {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    roomTexture = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+    pmrem.dispose();
+  }
+  return roomTexture;
+}
+
+// 時代を描き始める前の準備。周りの光を使う時代なら作ってから、時代ごとの準備（キューブマップを撮るなど）をする
+function prepareEra(era) {
+  if (era.environment) era.scene.environment ??= roomEnvironment();
+  era.prepare?.();
+}
+
+// 時代のシェーダーを裏で作る。巡回ごとに差し替える材質も、選び直したときに引っかからないよう全部作る
+async function warmupEra(era) {
+  if (era.environment) era.scene.environment ??= roomEnvironment();
+  if (!era.variants) return renderer.compileAsync(era.scene, camera);
+  for (const apply of era.variants) { apply(); await renderer.compileAsync(era.scene, camera); }
+  era.setVariation(variation);   // いまの巡回で選んだものに戻す
+}
+
+const eras = SCENES.map((s) => s.build(s));
+
+// ---- 巡回ごとの変化 ----
+// ポットの色（前の巡回と違うもの）・柄・主な照明の向き・素材を選び直し、全部の時代に当てる
+function pickVariations() {
+  let i;
+  do i = randInt(POT_COLORS.length); while (i === potColorIndex);
+  potColorIndex = i;
+  const side = Math.random() < 0.5 ? -1 : 1;
+  lightPos.set(side * rand(...LIGHT_X), rand(...LIGHT_Y), rand(...LIGHT_Z));
+  const v = variation = {
+    potColor: linearColor(POT_COLORS[potColorIndex]), pattern: pick(PATTERNS),
+    sss: pick(SSS_MATERIALS), pbs: pick(PBS_MATERIALS), npr: randInt(NPR_STYLES), solid: randInt(SOLID_STYLES),
+  };
+  for (const era of eras) {
+    for (const m of era.potColorMaterials) m.color.copy(v.potColor);
+    for (const l of era.lights) l.position.copy(lightPos);
+    era.setVariation?.(v);
+  }
+}
+
+// ---- ラベル ----
+const eraEl = document.getElementById('era');
+const typedEl = eraEl.querySelector('.typed');
+const restEl = eraEl.querySelector('.rest');
+const label = { text: '', start: 0 };   // 打ち出す文字と、打ち始める時刻（time）
+let shownTyped = -1;       // いま出している文字の数
+
+function startLabel(delay) {
+  label.text = SCENES[eraIndex].name.replace(' (', '\n(');   // 名称と年号を 2 行に分ける
+  label.start = time + delay;
+  shownTyped = -1;
+  eraEl.className = SCENES[eraIndex].label ?? '';
+}
+
+function updateLabel() {
+  const typed = clamp(Math.floor((time - label.start) * TYPE_RATE), 0, label.text.length);
+  if (typed !== shownTyped) {
+    typedEl.textContent = label.text.slice(0, typed);
+    restEl.textContent = label.text.slice(typed);
+    shownTyped = typed;
+  }
+  const done = label.start + label.text.length / TYPE_RATE;
+  eraEl.style.opacity = clamp(1 - (time - done) / LABEL_FADE, 0, 1);
+}
+
+// ---- カメラ ----
+// ポットの幅が画面の高さの POT_SCREEN_HEIGHT になる距離。縦長の画面では、幅が画面の幅の POT_SCREEN_WIDTH に収まるまで離す
+function layout() {
+  const aspect = innerWidth / innerHeight;
+  camera.aspect = aspect;
+  const viewHeight = Math.max(POT_WIDTH / POT_SCREEN_HEIGHT, POT_WIDTH / POT_SCREEN_WIDTH / aspect);
+  const dist = viewHeight / 2 / Math.tan(CAM_FOV / 2 * DEG);
+  const target = new THREE.Vector3(0, potCenterY, 0);
+  camera.position.set(0, Math.sin(CAM_PITCH * DEG), Math.cos(CAM_PITCH * DEG)).multiplyScalar(dist).add(target);
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+  // ラベルは、画面の上端とポットの上端の中間より少し下に置く
+  camera.updateMatrixWorld();
+  const p = new THREE.Vector3(0, POT_LIFT + potHeight, 0).project(camera);
+  const potTop = (1 - p.y) / 2;   // ポットの上端の画面上の位置（0 が上端、1 が下端）
+  eraEl.style.top = `${potTop * (0.5 + LABEL_BELOW / 2) * 100}%`;
+}
+
+// ---- シーン切替 ----
+const nextIndex = (i) => (i + 1) % SCENES.length;
+
+// 次の時代の準備（キューブマップを撮るなど）を、クロスフェードを始める前に 1 回だけ済ませる
+function prepareNext() {
+  if (nextPrepared) return;
+  prepareEra(eras[nextIndex(eraIndex)]);
+  nextPrepared = true;
+}
+
+// 時代 index に入り、回転の数とクロスフェードを始めからにする
+function enterEra(index) {
+  eraIndex = index;
+  eraTurns = 0;
+  nextPrepared = false;
+  skipFade = -1;
+  startLabel(0);
+}
+
+// クロスフェードを終えて、次の時代に入る
+function enterNextEra() {
+  enterEra(nextIndex(eraIndex));
+  // Wireframe と Hidden Line は巡回ごとの変化を使わないので、ここで選び直しても見た目は変わらない
+  if (eraIndex === 0) pickVariations();
+}
+
+// 時代 index へすぐに飛ぶ（tools の撮影用）。前へ戻るときは、ひと巡りしたものとして巡回ごとの変化を選び直す
+function setScene(index) {
+  index = ((index % SCENES.length) + SCENES.length) % SCENES.length;
+  if (index <= eraIndex) pickVariations();
+  enterEra(index);
+  prepareEra(eras[eraIndex]);
+}
+
+// シーン切替: 暗転せず、SKIP_FADE_SECONDS で次の時代へクロスフェードする。
+// 回転でのクロスフェードの途中なら、その進み具合から続けて速める
+function nextScene() {
+  if (skipFade >= 0) return;
+  prepareNext();
+  skipFade = Math.max(0, (eraTurns - STEADY_TURNS) / FADE_TURNS);
+}
+
+// ---- 強度 ----
+function setSpeed(value) {
+  speed = clamp(value, MIN_SPEED, MAX_SPEED);
+}
+
+// ---- メインループ ----
+function step(dt) {
+  time += dt;
+  const turns = dt * speed / TURN_SECONDS;
+  angle = (angle + turns * TAU) % TAU;
+  tiltPhase = (tiltPhase + dt * speed / TILT_SECONDS * TAU) % TAU;
+  if (skipFade >= 0) {
+    skipFade += dt / SKIP_FADE_SECONDS;
+    if (skipFade >= 1) enterNextEra();
+    return;
+  }
+  eraTurns += turns;
+  if (eraTurns > STEADY_TURNS) prepareNext();
+  if (eraTurns >= STEADY_TURNS + FADE_TURNS) enterNextEra();
+}
+
+// クロスフェードの進み具合（0..1。始まりと終わりをゆるめる）
+function fadeAmount() {
+  if (skipFade >= 0) return ease(Math.min(skipFade, 1));
+  return eraTurns > STEADY_TURNS ? ease(Math.min((eraTurns - STEADY_TURNS) / FADE_TURNS, 1)) : 0;
+}
+
+function renderEra(index, target) {
+  const era = eras[index];
+  const tilt = TILT_MAX * DEG * Math.sin(tiltPhase);
+  for (const o of era.spin) o.rotation.set(tilt, angle, 0);
+  renderer.setRenderTarget(target);
+  renderer.render(era.scene, camera);
+}
+
+function draw() {
+  const fade = fadeAmount();
+  const u = composite.material.uniforms;
+  renderEra(eraIndex, targets[0]);
+  u.tA.value = targets[0].texture;
+  u.toneA.value.fromArray(eras[eraIndex].tone);
+  u.mixT.value = fade;
+  if (fade > 0) {
+    const next = nextIndex(eraIndex);
+    renderEra(next, targets[1]);
+    u.tB.value = targets[1].texture;
+    u.toneB.value.fromArray(eras[next].tone);
+  }
+  renderer.setRenderTarget(null);
+  composite.render(renderer);
+}
+
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  step(dt);
+  updateLabel();
+  draw();
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。暗転せず、すばやく次の時代へクロスフェードする
+  changeScene: nextScene,
+  // 強度（↑↓・上下スワイプ）。回る速さ（時代が移る速さも同じ倍率で変わる）
+  intensity: {
+    up: () => setSpeed(speed * SPEED_STEP),
+    down: () => setSpeed(speed / SPEED_STEP),
+    level: () => logPosition(speed, MIN_SPEED, MAX_SPEED),   // ゲージの位置（0..1）
+  },
+  onResize() {
+    renderer.setSize(innerWidth, innerHeight);
+    resizeTargets();
+    layout();
+  },
+});
+
+// ---- 開始 ----
+resizeTargets();
+layout();
+pickVariations();
+prepareEra(eras[0]);
+startLabel(0.5);
+// 最初の時代のシェーダーだけを作って描き始める。ほかの時代は、時代が移るときに引っかからないよう、描きながら裏で 1 つずつ作る
+// （KHR_parallel_shader_compile が使えれば、compileAsync は描画を止めない）
+renderer.compile(eras[0].scene, camera);
+renderer.setAnimationLoop(tick);
+(async () => {
+  for (const era of eras.slice(1)) await warmupEra(era);
+})();
+</script>
+</body>
+</html>

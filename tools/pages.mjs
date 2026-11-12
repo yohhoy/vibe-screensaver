@@ -2,7 +2,7 @@
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）
-export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle'];
+export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot'];
 
 // 作品ごとの場面の選び方。ここに無い作品は場面を選べない。
 // - option: 番号を渡す引数。シーンの定義（SCENES）がある作品は 'scenes'、配色の定義（COLOR_PRESETS）がある作品は 'presets'
@@ -13,6 +13,7 @@ export const CHOICES = {
   ripple: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
   waterfall: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
   penguins: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
+  teapot: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
   tube: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
   aurora: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
   lavalamp: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },

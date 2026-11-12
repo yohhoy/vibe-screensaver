@@ -24,7 +24,7 @@ node tools/video-export.mjs sandpicture --presets 0 --hidden off --warmup 190 --
 
 ## 場面の指定
 
-シーンの定義（`SCENES`）がある drone・ripple・waterfall・penguins は `--scenes` にシーンの番号を、配色の定義（`COLOR_PRESETS`）がある tube・aurora・lavalamp・sandpicture は `--presets` に配色の番号を並べる。番号ごとに 1 場面ずつ撮る。範囲外の番号を渡すと、エラーに名前の一覧が出る（名前の無い tube・lavalamp の配色は `#0` のような番号）。省くと、作品が起動時に選んだシーン・配色のまま 1 場面だけを撮る（どれになるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+シーンの定義（`SCENES`）がある drone・ripple・waterfall・penguins・teapot は `--scenes` にシーンの番号を、配色の定義（`COLOR_PRESETS`）がある tube・aurora・lavalamp・sandpicture は `--presets` に配色の番号を並べる。番号ごとに 1 場面ずつ撮る。範囲外の番号を渡すと、エラーに名前の一覧が出る（名前の無い tube・lavalamp の配色は `#0` のような番号）。省くと、作品が起動時に選んだシーン・配色のまま 1 場面だけを撮る（どれになるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
 
 `--presets` で選ぶとき、tube・aurora・lavalamp は配色だけを替える（コース・幕・小物などは起動時のまま）。sandpicture は配色を替えて、新しい絵から撮る。
 

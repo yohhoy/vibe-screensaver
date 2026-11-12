@@ -184,6 +184,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [ティーポット](https://yohhoy.github.io/vibe-screensaver/teapot.html)
+
+[<img src="docs/images/teapot.jpg" width="480" alt="ティーポット">](https://yohhoy.github.io/vibe-screensaver/teapot.html)
+
+ゆっくり回る Utah Teapot を眺めます。ワイヤーフレームから写実的な描画、毛皮やアニメ調、物理ベースの素材まで、CG の歴史の順に移り変わります。
+
+シーン切替: 次の時代 / 強度: 回る速さ
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
