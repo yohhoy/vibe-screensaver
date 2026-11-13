@@ -48,6 +48,7 @@ const { TAU, clamp, rand, randInt, pick, IS_TOUCH, logPosition, setupControls, c
 // ---- 設定 ----
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。クロスフェード中は 2 つの時代を描くので抑える）
 const MSAA_SAMPLES = 4;
+const TRANSMISSION_SCALE = 0.5;   // 透過（Ray Tracing・Subsurface Scattering）で透けて見える景色を描く描画先の、画面に対する解像度の倍率
 
 // カメラ
 const CAM_FOV = 35;               // 縦の画角（度）
@@ -403,6 +404,11 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;   // 影のぼけは時代ごとに shadow.radius で変える
 document.body.appendChild(renderer.domElement);
+// three.js（r160）は透過の描画先の大きさを getDrawingBufferSize で決め、ほかには使わない。透けた景色はぼけてもよいので、
+// ここで縮めて透過の描画を軽くする。時代の描画先の大きさは drawingBufferSize で求める。
+// r172 以降なら、差し替えずに renderer.transmissionResolutionScale = TRANSMISSION_SCALE で済む
+const drawingBufferSize = renderer.getDrawingBufferSize.bind(renderer);
+renderer.getDrawingBufferSize = (target) => drawingBufferSize(target).multiplyScalar(TRANSMISSION_SCALE).round();
 
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.1, 100);
 
@@ -422,7 +428,7 @@ const composite = new FullScreenQuad(new THREE.ShaderMaterial({
 }));
 
 function resizeTargets() {
-  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const size = drawingBufferSize(new THREE.Vector2());
   for (const t of targets) t.setSize(size.x, size.y);
   // 太い線は画素で太さを決めるので、描画先の大きさと解像度の倍率に合わせる
   for (const m of lineMaterials) {
