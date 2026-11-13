@@ -43,7 +43,7 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。クロスフェード中は 2 つの時代を描くので抑える）
@@ -85,8 +85,16 @@ const FLOOR_COLORS = [0xb4b4b4, 0x4a4a4a];
 const WALL_COLORS = { left: 0xa8302a, right: 0x2e8a3c, back: 0xe6e2da };
 const BAKE_PX = 64;               // 壁の色のにじみと隅の暗さを焼き込むテクスチャの、長さ 1 あたりの画素数
 
+// 配色のプリセット（巡回ごとに、前の巡回と違うものを選ぶ）。name: 読む人のための名前（コードでは使わない）, pot: ポットの色
+// 白は Radiosity・Path Tracing の白磁と同じに見え、時代が移っても絵が変わらないので外す
+const COLOR_PRESETS = [
+  { name: 'Cream', pot: 0xf0e2c0 },
+  { name: 'Pale Blue', pot: 0xa8c4dc },
+  { name: 'Pale Pink', pot: 0xe2c2b4 },
+  { name: 'Pale Green', pot: 0xc4d6b0 },
+];
+
 // 巡回ごとの変化の候補
-const POT_COLORS = [0xf0e2c0, 0xa8c4dc, 0xe2c2b4, 0xc4d6b0];   // クリーム色・淡い青・淡い桃・淡い緑（白は Radiosity・Path Tracing の白磁と同じに見え、時代が移っても絵が変わらないので外す）
 const LIGHT_X = [1.5, 3];         // 主な照明の左右の位置（左右はランダム）
 const LIGHT_Y = [4.5, 6.5];       // 主な照明の高さ
 const LIGHT_Z = [2, 3.5];         // 主な照明の手前への位置
@@ -475,8 +483,8 @@ let eraIndex = 0;          // いまの時代（SCENES の番号）
 let eraTurns = 0;          // いまの時代に入ってから回った数（STEADY_TURNS を超えるとクロスフェード）
 let nextPrepared = false;  // クロスフェードの前に、次の時代の準備（キューブマップを撮るなど）を済ませたか
 let skipFade = -1;         // シーン切替のクロスフェードの進み具合（0..1）。していないときは -1
-let potColorIndex = -1;    // ポットの色（POT_COLORS の番号）
-let variation = null;      // いまの巡回で選んだもの（pickVariations）
+let colorPresetIndex = -1; // いまの配色（COLOR_PRESETS の番号。起動前は -1）
+let variation = null;      // いまの配色で当てたもの（setColorPreset）
 const lightPos = new THREE.Vector3();   // 主な照明の位置（巡回ごとに選ぶ）
 let potHeight = 1;         // ポットの高さ（ジオメトリを作るときに求める）
 let potCenterY = 1;        // ポットの中心の高さ（同上）
@@ -1320,19 +1328,26 @@ async function warmupEra(era) {
 const eras = SCENES.map((s) => s.build(s));
 
 // ---- 巡回ごとの変化 ----
-// ポットの色（前の巡回と違うもの）・主な照明の向きを選び直し、全部の時代に当てる
-function pickVariations() {
-  let i;
-  do i = randInt(POT_COLORS.length); while (i === potColorIndex);
-  potColorIndex = i;
-  const side = Math.random() < 0.5 ? -1 : 1;
-  lightPos.set(side * rand(...LIGHT_X), rand(...LIGHT_Y), rand(...LIGHT_Z));
-  const v = variation = { potColor: linearColor(POT_COLORS[potColorIndex]) };
+// 配色を COLOR_PRESETS の index 番に替え、全部の時代に当てる
+function setColorPreset(index) {
+  colorPresetIndex = index;
+  const v = variation = { potColor: linearColor(COLOR_PRESETS[index].pot) };
   for (const era of eras) {
     for (const m of era.potColorMaterials) m.color.copy(v.potColor);
-    for (const l of era.lights) l.position.copy(lightPos);
     era.setVariation?.(v);
   }
+}
+
+// 前と違う配色の番号を選ぶ
+const pickColorPreset = () => pick(COLOR_PRESETS.map((_, i) => i).filter((i) => i !== colorPresetIndex));
+
+// 配色（前の巡回と違うもの）・主な照明の向きを選び直し、全部の時代に当てる
+function pickVariations() {
+  const preset = pickColorPreset();
+  const side = Math.random() < 0.5 ? -1 : 1;
+  lightPos.set(side * rand(...LIGHT_X), rand(...LIGHT_Y), rand(...LIGHT_Z));
+  for (const era of eras) for (const l of era.lights) l.position.copy(lightPos);
+  setColorPreset(preset);
 }
 
 // ---- ラベル ----

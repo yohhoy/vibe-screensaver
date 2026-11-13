@@ -87,7 +87,7 @@ setupControls({
 
 - **シーン切替**: 暗転して次の場面へ移る操作。何が変わるかは作品ごとの仕様（`docs/specs/<作品名>.md`）に書く。暗転は `fadeAndRun(change)` で、暗転している間に `change()` を呼ぶ。暗転中かは `isFading()` で分かる。
   - 場面の一覧を持つ作品は、一覧を `SCENES`、切り替える関数を `setScene(index)` にする。
-  - 場面の一覧を持たず、シーン切替で配色を選び直す作品（tube・aurora・lavalamp・sandpicture）は、配色の一覧を `COLOR_PRESETS`、いまの番号を `colorPresetIndex`、配色を当てる関数を `setColorPreset(index)` にする。どの番号を選ぶか（順番・確率・前と違うもの）は作品ごとに決め、`setColorPreset` を呼ぶ側に置く。
+  - 場面の一覧を持たず、シーン切替で配色を選び直す作品（tube・aurora・lavalamp・sandpicture）は、配色の一覧を `COLOR_PRESETS`、いまの番号を `colorPresetIndex`、配色を当てる関数を `setColorPreset(index)` にする。場面の一覧とは別に配色を選び直す作品（teapot のポットの色）も、同じ名前にする。どの番号を選ぶか（順番・確率・前と違うもの）は作品ごとに決め、`setColorPreset` を呼ぶ側に置く。
 - **強度**: 作品ごとの強さ（速度・雨の強さ・ペンギンの数など。何を変えるかは各作品の仕様にある）。変えたときは、右端の細いゲージ（`#intensity`）にいまの値を少しの間だけ出す。数値や文字は出さない。倍率で変える値は、`logPosition` でゲージを対数で並べる。
 - キー操作は Cmd / Ctrl / Alt を押しながらの操作には反応させず、ブラウザに任せる（Cmd+F など）。
 - スワイプは指での操作だけを受け付ける（マウスのドラッグや 2 本目の指には反応しない）。十分に動き、縦横の一方の動きがもう一方の 2 倍以上あるときだけスワイプとみなす。
