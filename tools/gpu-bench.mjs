@@ -386,7 +386,7 @@ async function measure(browser, origin, def, sceneIndex, condition, version, opt
 
 const median = (a) => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
 
-// docs/performance.md に貼る一覧。時間は条件ごとの表に、条件で変わらない値は最後の表にまとめる
+// docs/performance-data.md に貼る一覧。時間は条件ごとの表に、条件で変わらない値は最後の表にまとめる
 function toMarkdown(rows) {
   const lines = [];
   const withRange = (value, min, max, digits) => `${value.toFixed(digits)}（${min.toFixed(digits)}〜${max.toFixed(digits)}）`;

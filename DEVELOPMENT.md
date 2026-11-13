@@ -25,7 +25,8 @@
 | docs/specs/ | 作品ごとの仕様 |
 | docs/images/ | README 用のサムネイル |
 | docs/video.md | 動画の書き出しと、変更前後の比較のツールの使い方 |
-| docs/performance.md | GPU 負荷の基準値と、測り方・比べ方 |
+| docs/performance.md | GPU 負荷の測り方・比べ方と、値の読み方 |
+| docs/performance-data.md | 全作品の GPU 負荷の基準値（測った条件と、作品ごとの注意） |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
 | tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |
