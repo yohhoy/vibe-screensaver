@@ -4,20 +4,23 @@
 // 作品名（index.html の並びの順）
 export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot'];
 
-// 作品ごとの場面の選び方。ここに無い作品は場面を選べない。
-// - option: 番号を渡す引数。シーンの定義（SCENES）がある作品は 'scenes'、配色の定義（COLOR_PRESETS）がある作品は 'presets'
+// 作品ごとの場面の選び方。シーン（scenes）と配色（presets）は別々に選べ、両方を持つ作品は同時に指定できる。
+// ここに無い作品・無い種類は選べない。
+// - scenes: シーンの定義（SCENES）。presets: 配色の定義（COLOR_PRESETS）
 // - list: 一覧の変数（項目の name を名前に使う。無ければ番号）
-// - select: 番号で選ぶ式（i が番号。作品のスクリプトの中で評価する）
+// - select: 番号で選ぶ式（i が番号。作品のスクリプトの中で評価する）。両方を指定したときは、シーンを選んでから配色を選ぶ
+const SCENES = { list: 'SCENES', select: 'setScene(i)' };
+const PRESETS = { list: 'COLOR_PRESETS', select: 'setColorPreset(i)' };
 export const CHOICES = {
-  drone: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
-  ripple: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
-  waterfall: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
-  penguins: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
-  teapot: { option: 'scenes', list: 'SCENES', select: 'setScene(i)' },
-  tube: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
-  aurora: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
-  lavalamp: { option: 'presets', list: 'COLOR_PRESETS', select: 'setColorPreset(i)' },
-  sandpicture: { option: 'presets', list: 'COLOR_PRESETS', select: 'startPicture(i)' },   // 配色を替えて、新しい絵から始める
+  drone: { scenes: SCENES },
+  ripple: { scenes: SCENES },
+  waterfall: { scenes: SCENES },
+  penguins: { scenes: SCENES },
+  teapot: { scenes: SCENES, presets: PRESETS },   // 配色はポットの色。Wireframe に戻ると作品が選び直す
+  tube: { presets: PRESETS },
+  aurora: { presets: PRESETS },
+  lavalamp: { presets: PRESETS },
+  sandpicture: { presets: { ...PRESETS, select: 'startPicture(i)' } },   // 配色を替えて、新しい絵から始める
 };
 
 // 隠し要素を持つ作品の、呼び出す関数名。作品のトップレベルの function で、隠しキー（C）と、待ち時間が切れたときの自然な出現の
@@ -34,15 +37,11 @@ export const HIDDEN = {
   infcastle: 'startHiddenRoom',
 };
 
-// option で場面を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）
-export const pagesWith = (option) => PAGES.filter((page) => CHOICES[page]?.option === option).join('・');
+// kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）
+export const pagesWith = (kind) => PAGES.filter((page) => CHOICES[page]?.[kind]).join('・');
 
-// 作品のスクリプトの中で評価する式: [番号で選ぶ関数, 名前の一覧]。場面を選べない作品は null
+// 作品のスクリプトの中で評価する式: { scenes, presets } のそれぞれが { select: 番号で選ぶ関数, names: 名前の一覧 }。選べない種類は null
 export function choiceExpressions(page) {
-  const def = CHOICES[page];
-  if (!def) return { select: 'null', names: 'null' };
-  return {
-    select: `(i) => { ${def.select}; }`,
-    names: `${def.list}.map((s, i) => s.name ?? '#' + i)`,
-  };
+  const expr = (def) => (def ? `{ select: (i) => { ${def.select}; }, names: ${def.list}.map((s, i) => s.name ?? '#' + i) }` : 'null');
+  return `{ scenes: ${expr(CHOICES[page]?.scenes)}, presets: ${expr(CHOICES[page]?.presets)} }`;
 }

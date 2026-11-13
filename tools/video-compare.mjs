@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 2 つの版の作品を同じ条件で撮り、並べた比較動画と確認用の画像を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-compare.mjs <作品名> [--base HEAD] [--case "名前:式"]... [--scenes 0,1,2 | --presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
+//   node tools/video-compare.mjs <作品名> [--base HEAD] [--case "名前:式"]... [--scenes 0,1,2] [--presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
 //
 // 撮影は video-export.mjs に任せる。作品の HTML も作業ツリーも変更しない。依存は video-export.mjs と同じで、加えて git と tar。
 import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -25,7 +25,7 @@ const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプショ
   --base 版       比べる版。git のコミットか、作品の HTML のパス（既定 HEAD）
   --case "名前:式" 列を 1 つ足す。収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
   --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）
-  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）
+  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。--scenes と同時に指定すると、シーン × 配色の場面を撮る
   --seconds S     1 場面の長さ（秒。既定 4）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --seed N        乱数の種（既定 1）
@@ -61,7 +61,8 @@ function parseOptions() {
     ...values,
     page: positionals[0],
     cases: cases.length ? cases : [{ label: 'そのまま', code: null }],
-    sceneCount: (values.scenes ?? values.presets)?.split(',').length ?? 1,
+    // 場面の数は、シーンと配色の組み合わせの数（video-export と同じ）
+    sceneCount: (values.scenes?.split(',').length ?? 1) * (values.presets?.split(',').length ?? 1),
     out: path.resolve(values.out ?? `${positionals[0]}-compare.mp4`),
   };
 }

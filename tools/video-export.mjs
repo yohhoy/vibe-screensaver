@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 作品を 1 コマずつ描き出して、投稿用の動画（H.264）か静止画（PNG）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2 | --presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--out 出力先.mp4|出力先.png]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--out 出力先.mp4|出力先.png]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
@@ -25,13 +25,15 @@ const THUMBS_COLS = 4;            // 確認用の画像の列数
 const THUMBS_ROWS = 3;            // 確認用の画像の行数
 const THUMB_WIDTH = 320;          // 確認用の画像の 1 コマの幅（px）
 
-// 場面の選び方（--scenes・--presets）は pages.mjs の CHOICES。引数を省くと、作品が起動時に選んだ場面のまま 1 場面だけ撮る
+// 場面の選び方（--scenes・--presets）は pages.mjs の CHOICES。両方を持つ作品は同時に指定でき、シーンと配色の組み合わせごとに 1 場面撮る。
+// 省いた方は、作品が起動時に選んだまま
 
 const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプション]
 
 作品名: ${PAGES.join(' ')}
   --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）。番号ごとに 1 場面撮る
-  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。番号ごとに 1 場面撮る
+  --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。番号ごとに 1 場面撮る。
+                  --scenes と同時に指定すると、シーンごとに配色を順に替えて撮る（シーン × 配色の場面の数）
   --seconds S     1 場面の長さ（秒。既定 5。静止画では収録を始めてから撮るまでの秒数で、既定 0）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し。静止画では使わない）
@@ -67,7 +69,7 @@ ${SEEDED_RANDOM}
   }
 
   // 作品の「開始」節の最後で呼ばれる
-  window.__exportStart = async ({ renderer, tick, select, names, evaluate, summon }) => {
+  window.__exportStart = async ({ renderer, tick, choices, evaluate, summon }) => {
     const plan = await (await fetch('/__plan')).json();
     const source = renderer.domElement;
     if (source.width !== plan.width || source.height !== plan.height) {
@@ -93,9 +95,15 @@ ${SEEDED_RANDOM}
     const results = [];
     let frame = 0;
     for (const [sceneIndex, scene] of plan.scenes.entries()) {
-      if (scene !== null) {
-        if (scene >= names.length) throw new Error('番号は 0〜' + (names.length - 1) + ': ' + names.join(', '));
-        select(scene);
+      // シーンを選んでから配色を選ぶ（シーンを替えると配色を選び直す作品があるため）
+      const names = [];
+      for (const kind of ['scenes', 'presets']) {
+        const i = scene[kind];
+        if (i === null) continue;
+        const choice = choices[kind];
+        if (i >= choice.names.length) throw new Error('--' + kind + ' の番号は 0〜' + (choice.names.length - 1) + ': ' + choice.names.join(', '));
+        choice.select(i);
+        names.push(choice.names[i]);
       }
       for (let i = 0; i < plan.warmupFrames; i++) {
         advance();
@@ -118,7 +126,7 @@ ${SEEDED_RANDOM}
         const blob = await new Promise((resolve) => canvas.toBlob(resolve, plan.still ? 'image/png' : 'image/jpeg', plan.jpegQuality));
         await post(plan.still ? '/__still?n=' + sceneIndex : '/__frame?n=' + frame, blob);
       }
-      results.push({ name: scene !== null ? names[scene] : null, level });
+      results.push({ name: names.length ? names.join(' / ') : null, level });
     }
     await post('/__done', JSON.stringify(results));
   };
@@ -130,7 +138,6 @@ function instrument(html, page, hidden) {
   const anchor = 'renderer.setAnimationLoop(tick);';
   if (html.split('<body>').length !== 2) throw new Error(`${page}: <body> が 1 か所ではない`);
   if (html.split(anchor).length !== 2) throw new Error(`${page}: 「${anchor}」が 1 か所ではない`);
-  const { select, names } = choiceExpressions(page);
   // 隠し要素は、自然な出現（作品が待ち時間で呼ぶ関数）を空の関数に差し替えて止め、元の関数は呼び出し用に取っておく。
   // 作品の関数は function 宣言なので、モジュールの中なら代入で差し替えられる
   const fn = HIDDEN[page];
@@ -139,7 +146,7 @@ function instrument(html, page, hidden) {
   // evaluate は作品のモジュールの中で eval するので、--at の式から作品の変数が見える
   return html
     .replace('<body>', () => `<body>\n${PRELUDE}`)
-    .replace(anchor, () => `${hook}\nwindow.__exportStart({ renderer, tick, select: ${select}, names: ${names}, evaluate: (code) => eval(code), summon });`);
+    .replace(anchor, () => `${hook}\nwindow.__exportStart({ renderer, tick, choices: ${choiceExpressions(page)}, evaluate: (code) => eval(code), summon });`);
 }
 
 // ---- ffmpeg ----
@@ -208,8 +215,8 @@ function parseOptions() {
   });
   const page = positionals[0];
   if (positionals.length !== 1 || !PAGES.includes(page)) throw new Error(USAGE);
-  if (values.scenes && CHOICES[page]?.option !== 'scenes') throw new Error(`${page} にシーンの定義は無い。--scenes は ${pagesWith('scenes')} だけで使える`);
-  if (values.presets && CHOICES[page]?.option !== 'presets') throw new Error(`${page} に配色の定義は無い。--presets は ${pagesWith('presets')} だけで使える`);
+  if (values.scenes && !CHOICES[page]?.scenes) throw new Error(`${page} にシーンの定義は無い。--scenes は ${pagesWith('scenes')} だけで使える`);
+  if (values.presets && !CHOICES[page]?.presets) throw new Error(`${page} に配色の定義は無い。--presets は ${pagesWith('presets')} だけで使える`);
 
   // 出力先が .png なら静止画（各場面の最後のコマを PNG にする）
   const out = path.resolve(values.out ?? `${page}.mp4`);
@@ -225,13 +232,13 @@ function parseOptions() {
   if (!(seconds >= 0) || (!still && !(seconds > 0)) || !(warmup >= 0) || !(fade >= 0)) throw new Error(USAGE);
   if (fade * 2 > seconds) throw new Error('--fade は --seconds の半分以下にする');
 
-  // null は場面を選ばず、起動時の場面のまま撮る
-  const option = CHOICES[page]?.option;
-  const scenes = values[option]?.split(',').map((v) => {
+  // 場面ごとのシーンと配色の番号。null は選ばず、起動時のまま撮る
+  const numbers = (kind) => values[kind]?.split(',').map((v) => {
     const n = Number(v);
-    if (!Number.isInteger(n) || n < 0) throw new Error(`--${option} の番号が正しくない: ${v}`);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`--${kind} の番号が正しくない: ${v}`);
     return n;
   }) ?? [null];
+  const scenes = numbers('scenes').flatMap((sceneNo) => numbers('presets').map((preset) => ({ scenes: sceneNo, presets: preset })));
   const sceneFrames = Math.max(1, Math.round(seconds * FPS));   // 静止画は 0 秒でも 1 コマ撮る
   const totalFrames = scenes.length * sceneFrames;
   // 隠し要素: auto（作品に任せる）・off（出さない）・秒の並び（その時刻に呼び出す）

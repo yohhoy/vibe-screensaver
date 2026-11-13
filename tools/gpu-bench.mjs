@@ -41,7 +41,7 @@ const CONDITIONS = [
 
 // 作品ごとのシーン（pages.mjs の CHOICES）。scenes はシーン別に測るか。
 // シーンの定義（SCENES）が無い作品は 1 行だけ測る。配色の定義（COLOR_PRESETS）はシーンとして分けない
-const PAGES = PAGE_NAMES.map((page) => ({ page, scenes: CHOICES[page]?.option === 'scenes' }));
+const PAGES = PAGE_NAMES.map((page) => ({ page, scenes: Boolean(CHOICES[page]?.scenes) }));
 
 // ---- ページに差し込む処理 ----
 // 作品のスクリプトより先に実行し、乱数と時計を固定する
@@ -220,10 +220,10 @@ function instrument(html, def) {
   if (!html.includes('<head>')) throw new Error(`${def.page}: <head> が見つからない`);
   const anchor = 'renderer.setAnimationLoop(tick);';
   if (html.split(anchor).length !== 2) throw new Error(`${def.page}: 「${anchor}」が 1 か所ではない`);
-  const { select, names } = def.scenes ? choiceExpressions(def.page) : { select: 'null', names: 'null' };
+  // シーンだけを選ぶ（配色は作品が起動時に選んだまま）
   return html
     .replace('<head>', () => `<head>\n${PRELUDE}`)
-    .replace(anchor, () => `window.__benchStart({ renderer, tick, select: ${select}, names: ${names} });`);
+    .replace(anchor, () => `window.__benchStart({ renderer, tick, ...${choiceExpressions(def.page)}.scenes });`);
 }
 
 // ---- HTTP サーバー ----
