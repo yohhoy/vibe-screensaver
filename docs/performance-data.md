@@ -4,7 +4,7 @@
 
 ## 測った条件
 
-- 日付とコード: 2026-11-14、コミット 0dcfb76
+- 日付とコード: 2026-11-14、コミット 248a849
 - 機材: MacBook Air（M3、GPU 10 コア、メモリ 16GB）、AC 電源、低電力モードはオフ
 - ブラウザ: Chrome 156.0.8078.79（ヘッドレス、ANGLE Metal）
 
@@ -38,19 +38,19 @@
 | teapot | Flat Shading (1967) | 1.37（1.37〜1.38） | 1.8（1.8〜1.8） | 5.3 |
 | teapot | Gouraud Shading (1971) | 1.37（1.36〜1.38） | 1.8（1.8〜1.8） | 5.3 |
 | teapot | Phong Shading (1973) | 1.37（1.37〜1.38） | 1.8（1.8〜1.8） | 5.3 |
-| teapot | Texture Mapping (1974) | 1.38（1.37〜1.38） | 1.8（1.8〜1.8） | 5.3 |
+| teapot | Texture Mapping (1974) | 1.41（1.40〜1.45） | 1.9（1.9〜2.0） | 5.4 |
 | teapot | Environment Mapping (1976) | 1.42（1.42〜1.43） | 1.9（1.9〜1.9） | 5.3 |
 | teapot | Bump Mapping (1978) | 1.38（1.38〜1.38） | 1.8（1.8〜1.8） | 5.3 |
 | teapot | Shadows (1978) | 1.50（1.50〜1.50） | 2.0（2.0〜2.0） | 5.3 |
-| teapot | Ray Tracing (1980) | 3.32（3.31〜3.76） | 3.9（3.9〜4.4） | 5.3 |
+| teapot | Ray Tracing (1980) | 3.34（3.34〜3.77） | 4.0（3.9〜4.4） | 5.3 |
 | teapot | Radiosity (1984) | 1.52（1.52〜1.52） | 2.0（2.0〜2.0） | 5.3 |
 | teapot | Solid Texture (1985) | 1.56（1.56〜1.57） | 2.1（2.1〜2.1） | 5.4 |
-| teapot | Path Tracing (1986) | 3.33（3.30〜3.33） | 3.8（3.8〜3.9） | 5.3 |
+| teapot | Path Tracing (1986) | 3.38（3.35〜3.40） | 3.9（3.9〜3.9） | 5.3 |
 | teapot | Displacement Mapping (1987) | 3.34（3.32〜3.34） | 3.8（3.8〜3.8） | 5.3 |
-| teapot | Fur (1989) | 2.81（2.81〜2.85） | 3.3（3.3〜3.4） | 5.3 |
+| teapot | Fur (1989) | 3.13（3.13〜3.14） | 3.6（3.6〜3.6） | 5.3 |
 | teapot | Non-Photorealistic Rendering (1990) | 1.52（1.50〜1.55） | 2.0（2.0〜2.1） | 5.4 |
-| teapot | Subsurface Scattering (2001) | 3.69（3.68〜4.89） | 4.4（4.4〜5.7） | 5.5 |
-| teapot | Physically Based Shading (2012) | 1.88（1.87〜1.88） | 2.4（2.4〜2.4） | 5.3 |
+| teapot | Subsurface Scattering (2001) | 3.49（3.48〜4.32） | 4.1（4.1〜4.9） | 5.3 |
+| teapot | Physically Based Shading (2012) | 1.95（1.94〜1.95） | 2.4（2.4〜2.4） | 5.3 |
 
 ## Retina（1280×832、devicePixelRatio 2）
 
@@ -82,19 +82,19 @@
 | teapot | Flat Shading (1967) | 1.58（1.57〜1.59） | 2.0（2.0〜2.0） | 5.3 |
 | teapot | Gouraud Shading (1971) | 1.58（1.58〜1.59） | 2.0（2.0〜2.0） | 5.3 |
 | teapot | Phong Shading (1973) | 1.58（1.58〜1.60） | 2.0（2.0〜2.0） | 5.3 |
-| teapot | Texture Mapping (1974) | 1.59（1.59〜1.60） | 2.0（2.0〜2.0） | 5.3 |
+| teapot | Texture Mapping (1974) | 1.61（1.61〜1.62） | 2.1（2.1〜2.1） | 5.4 |
 | teapot | Environment Mapping (1976) | 1.64（1.63〜1.64） | 2.1（2.1〜2.1） | 5.3 |
 | teapot | Bump Mapping (1978) | 1.59（1.59〜1.59） | 2.0（2.0〜2.0） | 5.3 |
 | teapot | Shadows (1978) | 1.71（1.70〜1.71） | 2.2（2.2〜2.2） | 5.3 |
-| teapot | Ray Tracing (1980) | 3.78（3.77〜3.80） | 4.4（4.4〜4.4） | 5.3 |
+| teapot | Ray Tracing (1980) | 3.80（3.79〜3.82） | 4.4（4.4〜4.5） | 5.3 |
 | teapot | Radiosity (1984) | 1.74（1.74〜1.74） | 2.2（2.2〜2.2） | 5.3 |
 | teapot | Solid Texture (1985) | 1.80（1.78〜1.83） | 2.3（2.3〜2.4） | 5.4 |
-| teapot | Path Tracing (1986) | 3.81（3.78〜3.81） | 4.3（4.3〜4.3） | 5.3 |
+| teapot | Path Tracing (1986) | 3.86（3.84〜3.87） | 4.4（4.4〜4.4） | 5.3 |
 | teapot | Displacement Mapping (1987) | 3.60（3.60〜3.62） | 4.1（4.1〜4.1） | 5.3 |
-| teapot | Fur (1989) | 3.22（3.20〜3.27） | 3.7（3.7〜3.8） | 5.3 |
+| teapot | Fur (1989) | 3.62（3.61〜3.62） | 4.1（4.1〜4.1） | 5.4 |
 | teapot | Non-Photorealistic Rendering (1990) | 1.75（1.74〜1.75） | 2.3（2.3〜2.3） | 5.4 |
-| teapot | Subsurface Scattering (2001) | 4.14（4.13〜4.22） | 4.8（4.7〜5.0） | 5.4 |
-| teapot | Physically Based Shading (2012) | 2.15（2.14〜2.16） | 2.6（2.6〜2.7） | 5.3 |
+| teapot | Subsurface Scattering (2001) | 3.96（3.96〜3.98） | 4.6（4.6〜4.6） | 5.3 |
+| teapot | Physically Based Shading (2012) | 2.23（2.23〜2.25） | 2.7（2.7〜2.7） | 5.3 |
 
 ## 描画の内容
 
