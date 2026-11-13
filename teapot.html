@@ -43,7 +43,7 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。クロスフェード中は 2 つの時代を描くので抑える）
@@ -83,7 +83,6 @@ const BAKE_PX = 64;               // 壁の色のにじみと隅の暗さを焼�
 
 // 巡回ごとの変化の候補
 const POT_COLORS = [0xf3f1ec, 0xf0e2c0, 0xa8c4dc, 0xe2c2b4, 0xc4d6b0];   // 白・クリーム色・淡い青・淡い桃・淡い緑
-const PATTERNS = ['checker', 'indigo', 'stripe'];
 const LIGHT_X = [1.5, 3];         // 主な照明の左右の位置（左右はランダム）
 const LIGHT_Y = [4.5, 6.5];       // 主な照明の高さ
 const LIGHT_Z = [2, 3.5];         // 主な照明の手前への位置
@@ -101,6 +100,10 @@ const WIRE_COLOR = [0.25, 1.0, 0.45];   // 線の色（線形）
 const WIRE_POT = { gain: 1, width: 1.8 };     // ポットの線の明るさと太さ（CSS ピクセル）。部屋の線より太く保つ
 const WIRE_ROOM = { gain: 0.45, width: 1.5 }; // 部屋の線の明るさと太さ（CSS ピクセル）
 
+// Ray Tracing のガラス。thickness・ior: 厚みと屈折率（大きいほど、向こうの床がレンズのように大きく歪んで見える）、
+// tint: 色が付き始める距離（長いほど無色に近い）
+const GLASS = { thickness: 2.5, ior: 1.75, tint: 6 };
+
 // ラジオシティのにじみ
 const BLEED = 0.45;               // ポットへの壁の色のにじみの強さ
 
@@ -108,15 +111,18 @@ const BLEED = 0.45;               // ポットへの壁の色のにじみの強�
 const SOLID = { size: 32, scale: 0.04 };
 const SOLID_STYLES = 2;           // ポットの柄の数（大理石・木目。巡回ごとに選ぶ）
 
-// Path Tracing の面光源。half: 四隅に置くスポットライトの、中心からのずれ（長さ）。size・radius: 影の描画先の解像度とぼかし。
-// intensity: 4 つを合わせた強さ（影が周りの光に埋もれないよう、ほかの時代より強くし、環境光は置かない）。bleed: 壁の色の照り返しの倍率
-const AREA_LIGHT = { half: 0.2, size: 512, radius: 6, intensity: 5, bleed: 2 };
+// Path Tracing の面光源。half: 四隅に置くスポットライトの、中心からのずれ（長さ。広いほど影の半影が広がる）。size・radius: 影の描画先の解像度とぼかし。
+// intensity: 4 つを合わせた強さ、room: 部屋が周りの光を受ける割合（影が周りの光に埋もれないよう、周りの光を減らし、環境光は置かず、その分照明を強くする）。
+// bleed: 壁の色の照り返しの倍率、contact: ポットの真下の柔らかい影の濃さ（ほかの PBR の時代は 0.6）
+const AREA_LIGHT = { half: 0.5, size: 512, radius: 6, intensity: 8, bleed: 2, room: 0.25, contact: 0.85 };
 const PATH_EXPOSURE = 0.6;        // Path Tracing 以降の露出（トーンマッピングの前に掛ける）
 
 // Path Tracing より後の時代
 const DISP_AMP = 0.028;           // Displacement Mapping の凹凸の高さ（長さ）
 // Displacement Mapping の壁のレンガ。gap: 目地の幅の半分、depth: 目地の深さ、grid: 壁を分割する細かさ（どれも長さ。レンガの大きさと gap は grid の倍数にする）
 const BRICK = { width: 0.8, height: 0.4, gap: 0.04, depth: 0.05, grid: 0.04 };
+// 毛並みの見た目（ポットと敷物で共通）。droop: 毛先の垂れ（毛の長さに対する割合）、root: 根元の明るさ（毛先を 1 とする）
+const FUR_LOOK = { droop: 0.7, root: 0.2 };
 const FUR = { shells: 28, length: 0.16, density: 46, segments: 12 };   // 殻の数・毛の長さ・毛の密度（パッチ 1 辺あたりの本数）・殻の分割数
 // Fur の敷物。density は長さ 1 あたりの毛の本数。床の広い範囲を殻の数だけ重ねて描くので、殻は少なくする
 const RUG = { width: 3.8, depth: 3, z: -0.8, shells: 12, length: 0.07, density: 40, color: 0x6f8fb8 };   // z: 中心の前後の位置（影が乗るよう、ポットの真下より奥へ寄せる）
@@ -125,9 +131,18 @@ const TOON_STEPS = [0.3, 0.62, 1];   // トゥーンの陰影の段の明るさ
 const OUTLINE_WIDTH = 0.025;      // ポットの輪郭線の太さ（長さ。裏面を法線の向きに膨らませる量）
 const INK_WIDTH = 2.5;            // 部屋の角の線の太さ（CSS ピクセル）
 const HATCH_PITCH = 7;            // ハッチングの線の間隔（CSS ピクセル）
-// Subsurface Scattering の逆光。z: 照明の前後の位置（ポットより奥）、height: 高さに掛ける倍率、glow: 透けて光る強さ。
+// Subsurface Scattering の逆光。z: 照明の前後の位置（ポットより奥）、rise: ポットの中心からの高さ、side: 巡回ごとの照明の左右の位置に掛ける倍率
+// （注ぎ口と取っ手が回ってくるたびに光源の前を通るよう、低く、中央寄りに置く）、glow: 透けて光る強さ。
+// thinGlow・thinThickness: 薄い所（取っ手・注ぎ口・蓋のつまみ）の、透けて光る強さに足す倍率と、厚みに掛ける倍率。
 // intensity: 照明の強さ、ambient: 環境光の強さ、room・pot: 部屋とポットが周りの光を受ける割合（逆光が目立つよう、手前からの光を減らす）
-const BACKLIGHT = { z: -2.4, height: 0.6, glow: 3, intensity: 6, ambient: 0.15, room: 0.3, pot: 0.45 };
+const BACKLIGHT = {
+  z: -2.4, rise: 0.8, side: 0.5, glow: 3, thinGlow: 1.2, thinThickness: 0.5,
+  intensity: 6, ambient: 0.15, room: 0.3, pot: 0.45,
+};
+// 薄い所の印。patches: TeapotGeometry の薄い所のパッチの番号 [始め, 終わり)（取っ手 12〜15・注ぎ口 16〜19・蓋のつまみ 20〜23）。
+// 付け根で急に変わらないよう、取っ手と注ぎ口は軸からの距離、蓋のつまみは高さで、印を 0 から 1 へなめらかに上げる
+// （どれも TeapotGeometry の大きさ 1 の座標。胴の半径は最大 1.27、つまみの付け根の高さは 0.71）
+const THIN = { patches: [12, 24], knob: 20, reach: [1.25, 1.6], height: [0.72, 0.85] };
 // Physically Based Shading の床の、マスごとの粗さと金属らしさ（明るいマス・暗いマスの順）
 const PBS_FLOOR = { roughness: [0.8, 0.15], metalness: [0, 1] };
 
@@ -302,7 +317,9 @@ vec3 objectTangent = vec3(tangent.xyz);
 #endif`;
 
 // 毛皮（shell 法）。インスタンスの番号を殻の番号にし、外側の殻ほど法線の向きに膨らませる。
-// 殻ごとに、毛の根元の点の模様（UV の格子）で抜く。外側ほど細く、短い毛から順に抜けていく
+// 殻ごとに、毛の根元の点の模様（UV の格子）で抜く。外側ほど細く、短い毛から順に抜けていく。
+// 抜く・残すを画素の中心だけで決めると、画素より細い毛が回るたびに点滅するので、毛の覆う割合をアルファにして
+// alpha-to-coverage で MSAA の標本ごとに抜く。毛は 1 画素より細くしない（細い毛先が薄れて、毛並みがかすんで見えるため）
 const FUR_VERTEX = /* glsl */`
 uniform float furLength;
 uniform float shells;
@@ -313,7 +330,7 @@ varying vec3 vWorld;
 void main() {
   float sh = float(gl_InstanceID) / (shells - 1.0);
   vec4 w = modelMatrix * vec4(position + normal * furLength * sh, 1.0);
-  w.y -= furLength * 0.4 * sh * sh;   // 毛先が少し垂れる
+  w.y -= furLength * ${FUR_LOOK.droop.toFixed(3)} * sh * sh;   // 毛先が垂れる（なびいて、針のように見えない）
   vUv = uv;
   vShell = sh;
   vNormal = normalize(mat3(modelMatrix) * normal);
@@ -333,12 +350,17 @@ void main() {
   vec2 g = vUv * density;
   float len = 0.45 + 0.55 * hash(floor(g));   // この毛の長さ（0..1）
   float r = length(fract(g) - 0.5);
-  if (vShell > 0.0 && (vShell > len || r > 0.5 * (1.0 - vShell / len))) discard;
+  float px = length(fwidth(g));               // 1 画素あたりの格子の数
+  float radius = clamp(0.5 * (1.0 - vShell / len), 0.5 * px, 0.5);   // 毛の太さの半分（外側ほど細い。1 画素より細くしない）
+  // 毛の覆う割合。縁を画素の幅でぼかす（ぼかしを広げると、細い毛の中心まで薄れて、もやのように見える）
+  float cover = vShell > len ? 0.0 : smoothstep(-0.5 * px, 0.5 * px, radius - r);
+  if (vShell == 0.0) cover = 1.0;             // いちばん内側の殻は地肌なので抜かない
+  if (cover < 0.02) discard;
   vec3 l = normalize(lightPos - vWorld);
   vec3 n = gl_FrontFacing ? vNormal : -vNormal;
   float diff = 0.35 + 0.65 * max(dot(n, l), 0.0);
-  float ao = mix(0.2, 1.0, vShell);            // 根元ほど暗い
-  gl_FragColor = vec4(baseColor * diff * ao * 1.6, 1.0);
+  float ao = mix(${FUR_LOOK.root.toFixed(3)}, 1.0, vShell);   // 根元ほど暗い
+  gl_FragColor = vec4(baseColor * diff * ao * 1.6, cover);
 }`;
 
 // Gooch の陰影・ハッチング（Non-Photorealistic Rendering の時代の画風）。ポットにも部屋にも使う
@@ -459,6 +481,16 @@ let potTransform = null;   // { scale, lift }。十分に細かい分割（24）
 function potGeometry(segments) {
   if (!potGeometries.has(segments)) {
     const g = new TeapotGeometry(1, segments, true, true, true, true, true);
+    // 薄い所の印（Subsurface Scattering で強く透かす）。頂点はパッチごとに (分割数+1)² 個並ぶ
+    const row = (segments + 1) ** 2;
+    const position = g.attributes.position;
+    const thin = new Float32Array(position.count);
+    for (let i = THIN.patches[0] * row; i < THIN.patches[1] * row; i++) {
+      thin[i] = i < THIN.knob * row
+        ? THREE.MathUtils.smoothstep(Math.hypot(position.getX(i), position.getZ(i)), ...THIN.reach)
+        : THREE.MathUtils.smoothstep(position.getY(i), ...THIN.height);
+    }
+    g.setAttribute('thin', new THREE.BufferAttribute(thin, 1));
     if (!potTransform) {
       const fine = new TeapotGeometry(1, 24, true, true, true, true, true);
       fine.computeBoundingBox();
@@ -506,40 +538,15 @@ function potLineGeometry(segments) {
   return potLineGeometries.get(segments);
 }
 
-// ポットの柄（巡回ごとに選ぶ）。UV はパッチごとに 0〜1 なので、柄はパッチごとにくり返す
-const PATTERN_TEXTURES = {
-  checker: canvasTexture(256, 256, (ctx, w) => {
-    const n = 8, s = w / n;
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-      ctx.fillStyle = (i + j) % 2 ? '#b8452e' : '#f2ead8';
-      ctx.fillRect(i * s, j * s, s, s);
-    }
-  }),
-  indigo: canvasTexture(256, 256, (ctx, w) => {
-    ctx.fillStyle = '#f4f1ea';
-    ctx.fillRect(0, 0, w, w);
-    ctx.strokeStyle = ctx.fillStyle = '#26407a';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(0, 0, w, w);
-    ctx.lineWidth = 3;
-    // 真ん中の花と、四隅の唐草風の渦
-    for (let k = 0; k < 6; k++) {
-      const a = k / 6 * TAU;
-      ctx.beginPath();
-      ctx.ellipse(w / 2 + Math.cos(a) * 34, w / 2 + Math.sin(a) * 34, 26, 12, a, 0, TAU);
-      ctx.stroke();
-    }
-    ctx.beginPath(); ctx.arc(w / 2, w / 2, 12, 0, TAU); ctx.fill();
-    for (const [x, y] of [[0, 0], [w, 0], [0, w], [w, w]]) {
-      for (let r = 14; r <= 50; r += 12) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); }
-    }
-  }),
-  stripe: canvasTexture(256, 256, (ctx, w) => {
-    const bands = ['#f3efe4', '#2f5d8a', '#f3efe4', '#d9a441', '#f3efe4', '#2f5d8a'];
-    const s = w / bands.length;
-    bands.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(0, i * s, w, s); });
-  }),
-};
+// Texture Mapping のポットの柄。初期のテクスチャマッピングの図版にならい、試験用の模様の市松にする
+// （UV はパッチごとに 0〜1 なので、柄はパッチごとにくり返す。継ぎ目のずれと曲面での伸び縮みが、いちばんよく見える）
+const POT_CHECKER = canvasTexture(256, 256, (ctx, w) => {
+  const n = 8, s = w / n;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    ctx.fillStyle = (i + j) % 2 ? '#b8452e' : '#f2ead8';
+    ctx.fillRect(i * s, j * s, s, s);
+  }
+});
 
 const POT_BUMP = noiseTexture(256, 900, 6);
 
@@ -598,51 +605,40 @@ function displace(material, height) {
 
 // Subsurface Scattering の逆光の位置（巡回ごとの照明の向きから決める）
 const backLightPos = new THREE.Vector3();
-// 逆光が透けて光る分を足す。視線が光の来る向きに近いほど明るく、面が横を向く縁ほど強い（厚みを測らない近似）
+// 逆光が透けて光る分を足す。視線が光の来る向きに近いほど明るく、面が横を向く縁ほど強い。
+// 厚みは測らず、薄い所（頂点の thin）だけ厚みを減らし、透けて光る分を増やす
 function addBackGlow(material) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.glowLight = { value: backLightPos };
-    shader.fragmentShader = 'uniform vec3 glowLight;\n' + shader.fragmentShader.replace(
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float thin;\nvarying float vThin;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvThin = thin;');
+    shader.fragmentShader = 'uniform vec3 glowLight;\nvarying float vThin;\n' + shader.fragmentShader.replace(
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
       vec3 glowL = normalize((viewMatrix * vec4(glowLight, 1.0)).xyz + vViewPosition);
       float glow = pow(saturate(dot(normalize(vViewPosition), -normalize(glowL + normal * 0.4))), 3.0);
-      totalEmissiveRadiance += attenuationColor * (${BACKLIGHT.glow.toFixed(3)} * glow);`);
+      totalEmissiveRadiance += attenuationColor * (${BACKLIGHT.glow.toFixed(3)} * (1.0 + ${BACKLIGHT.thinGlow.toFixed(3)} * vThin) * glow);`,
+    ).replace('#include <transmission_fragment>', THREE.ShaderChunk.transmission_fragment.replace(
+      'material.thickness = thickness;',
+      `material.thickness = thickness * mix(1.0, ${BACKLIGHT.thinThickness.toFixed(3)}, vThin);`,
+    ));
   };
   return material;
 }
 
 // Path Tracing の白磁。素材は変えず、光の回り方（壁の色の照り返し・広くぼけた影）を見せる
 const PORCELAIN = addBleed(new THREE.MeshPhysicalMaterial({ color: 0xf4f2ec, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.04 }), AREA_LIGHT.bleed);
-// Subsurface Scattering の素材（巡回ごとに選ぶ）。透過・厚み・減衰の色で、光が中まで入る様子を近似する
-// （巡回ごとに差し替えるので、addPot を通らない。両面を描くのは、下の PBS の素材とあわせて指定する）
-const SSS_MATERIALS = [
-  new THREE.MeshPhysicalMaterial({   // 翡翠
-    color: 0x9fd8b0, roughness: 0.3, transmission: 0.75, thickness: 1.2, ior: 1.6,
-    attenuationColor: 0x2f8a52, attenuationDistance: 0.35, clearcoat: 0.6,
-  }),
-  new THREE.MeshPhysicalMaterial({   // 蝋
-    color: 0xf3dcb4, roughness: 0.55, transmission: 0.6, thickness: 1.5, ior: 1.45,
-    attenuationColor: 0xd98a3a, attenuationDistance: 0.5,
-  }),
-  new THREE.MeshPhysicalMaterial({   // 乳白のガラス
-    color: 0xf4f6f8, roughness: 0.3, transmission: 0.85, thickness: 1, ior: 1.5,
-    attenuationColor: 0xc7d7ea, attenuationDistance: 0.6, clearcoat: 1,
-  }),
-];
-for (const m of SSS_MATERIALS) addBackGlow(m).envMapIntensity = BACKLIGHT.pot;
-// Physically Based Shading の素材（巡回ごとに選ぶ）。Disney の BRDF の項目（clearcoat・metallic・sheen・anisotropic）を 1 つずつ見せる
-const PBS_MATERIALS = [
-  new THREE.MeshPhysicalMaterial({ color: 0x0b0b0d, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03 }),   // 黒い釉薬
-  new THREE.MeshPhysicalMaterial({ color: 0xd38b5d, metalness: 1, roughness: 0.25 }),                           // 銅
-  new THREE.MeshPhysicalMaterial({   // ビロード
-    color: 0x5a0f22, roughness: 0.9, sheen: 1, sheenColor: 0xff8fb0, sheenRoughness: 0.45,
-  }),
-  new THREE.MeshPhysicalMaterial({   // へアライン仕上げの金属
-    color: 0xd6d8dc, metalness: 1, roughness: 0.32, anisotropy: 0.9,
-  }),
-];
-for (const m of [...SSS_MATERIALS, ...PBS_MATERIALS]) m.side = THREE.DoubleSide;
+// Subsurface Scattering の蝋。透過・厚み・減衰の色で、光が中まで入る様子を近似する（逆光で、薄い所が橙に透けて光る）
+const SSS_MATERIAL = addBackGlow(new THREE.MeshPhysicalMaterial({
+  color: 0xf3dcb4, roughness: 0.55, transmission: 0.6, thickness: 1.5, ior: 1.45,
+  attenuationColor: 0xd98a3a, attenuationDistance: 0.5, envMapIntensity: BACKLIGHT.pot,
+}));
+// Physically Based Shading の、薄膜の掛かった黒っぽい金属（焼けたチタン・玉虫のような色）。金属が部屋を映し、粗さで映り込みがぼけ、
+// 薄膜の干渉で見る角度ごとに色が移る（照明と無関係な鏡の Environment Mapping、白いハイライトの Phong との対比。干渉はほかの時代に無い）
+const PBS_MATERIAL = new THREE.MeshPhysicalMaterial({
+  color: 0x2c2c34, metalness: 1, roughness: 0.15, iridescence: 1, iridescenceIOR: 2.0, iridescenceThicknessRange: [100, 600],
+});
 
 // ---- 部屋 ----
 const { halfWidth: HW, back: BACK, front: FRONT, sideFront: SIDE_FRONT, height: ROOM_H } = ROOM;
@@ -920,21 +916,21 @@ const PBR_ROOM = {
 };
 
 // ポットの真下の柔らかい影の板。ポットは浮いているので、広く薄くする
-function addContactShadow(era, y = 0.003) {
+function addContactShadow(era, y = 0.003, opacity = 0.6) {
   const plate = new THREE.Mesh(new THREE.PlaneGeometry(POT_WIDTH * 1.1, POT_WIDTH * 1.1).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ map: CONTACT_SHADOW, transparent: true, opacity: 0.6, depthWrite: false }));
+    new THREE.MeshBasicMaterial({ map: CONTACT_SHADOW, transparent: true, opacity, depthWrite: false }));
   plate.position.y = y;
   era.scene.add(plate);
 }
 
 // Path Tracing 以降の時代を作る。周りの光（RoomEnvironment）・柔らかい影のスポットライト・PBR の部屋・真下の影の板を置く。
-// 周りの光は prepareEra で、使う前に作る。light を false にすると照明を置かない（時代の側で置く）。contactY は真下の影の板の高さ
-function createPbrEra({ room = PBR_ROOM, walls = WALL_GEOMETRIES, light = true, contactY = 0.003 } = {}) {
+// 周りの光は prepareEra で、使う前に作る。light を false にすると照明を置かない（時代の側で置く）。contactY・contact は真下の影の板の高さと濃さ
+function createPbrEra({ room = PBR_ROOM, walls = WALL_GEOMETRIES, light = true, contactY = 0.003, contact = 0.6 } = {}) {
   const era = createEra({ background: 0x101010, tone: [1, PATH_EXPOSURE] });
   era.environment = true;
   if (light) addSpot(era, 2, { size: 1024, radius: 5 });
   addRoom(era, room, { floorGeometry: floorPlaneGeometry, walls, receive: true });
-  addContactShadow(era, contactY);
+  addContactShadow(era, contactY, contact);
   return era;
 }
 
@@ -944,7 +940,7 @@ const furMaterial = (fur, color) => new THREE.ShaderMaterial({
     baseColor: { value: color }, lightPos: { value: lightPos },
     furLength: { value: fur.length }, shells: { value: fur.shells }, density: { value: fur.density },
   },
-  vertexShader: FUR_VERTEX, fragmentShader: FUR_FRAGMENT, side: THREE.DoubleSide,
+  vertexShader: FUR_VERTEX, fragmentShader: FUR_FRAGMENT, side: THREE.DoubleSide, alphaToCoverage: true,
 });
 
 // Gooch の陰影・ハッチングの材質（Non-Photorealistic Rendering の時代の画風）
@@ -958,8 +954,8 @@ const nprMaterial = (fragmentShader, color, vertexColors) => new THREE.ShaderMat
 
 // 透けるガラス（Ray Tracing）
 const glassMaterial = (extra = {}) => new THREE.MeshPhysicalMaterial({
-  color: 0xffffff, roughness: 0.02, transmission: 1, thickness: 0.6, ior: 1.5,
-  attenuationColor: 0xd8f0ec, attenuationDistance: 2, ...extra,
+  color: 0xffffff, roughness: 0.02, transmission: 1, thickness: GLASS.thickness, ior: GLASS.ior,
+  attenuationColor: 0xd8f0ec, attenuationDistance: GLASS.tint, ...extra,
 });
 
 // ガラスの影は影の描画先に透け具合が入らず真っ黒になるので、床の少し上の板で薄く落とす
@@ -1070,9 +1066,7 @@ const SCENES = [
     build(s) {
       const era = createEra({ background: 0x101010 });
       addSpot(era, 3);
-      const pot = new THREE.MeshPhongMaterial({ specular: 0xffffff, shininess: 90 });
-      era.setVariation = (v) => { pot.map = PATTERN_TEXTURES[v.pattern]; };
-      addPot(era, s.segments, pot);
+      addPot(era, s.segments, new THREE.MeshPhongMaterial({ map: POT_CHECKER, specular: 0xffffff, shininess: 90 }));
       addRoom(era, phongRoom({ map: WALLPAPER }));
       return era;
     },
@@ -1123,24 +1117,12 @@ const SCENES = [
       addSpot(era, 3, { size: 2048, radius: 1 });
       const cube = new THREE.CubeCamera(0.05, 50, new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }));
       const pot = addPot(era, s.segments, glassMaterial({ envMap: cube.renderTarget.texture }), { cast: true });
-      // 床の映り込み: 床で上下反転したポットを、床の上に薄く重ねる（Reflector より軽い）
-      const mirror = new THREE.Mesh(potGeometry(s.segments), new THREE.MeshPhongMaterial({
-        color: 0x9fb4bc, emissive: 0x1c2428, opacity: 0.28,
-        blending: THREE.CustomBlending, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
-        depthTest: false, depthWrite: false,
-      }));
-      // 反転は外側の組に掛ける（傾けたポットを、そのまま床で映した形にするため）
-      const flip = new THREE.Group();
-      flip.scale.y = -1;
-      era.scene.add(flip);
-      mirror.renderOrder = 1;
-      addSpin(era, mirror, flip);
       addRoom(era, {
         floor: new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 120, specular: 0x777777 }),
         ...wallMaterials((c) => new THREE.MeshPhongMaterial({ color: c, shininess: 8, specular: 0x111111 })),
       });
       addGlassShadow(era);
-      era.prepare = () => captureCube(era, cube, [pot, mirror]);
+      era.prepare = () => captureCube(era, cube, [pot]);
       return era;
     },
   },
@@ -1182,14 +1164,26 @@ const SCENES = [
   {
     name: 'Path Tracing (1986)', segments: 24,
     build(s) {
-      const era = createPbrEra({ light: false });
+      // 部屋が周りの光を受ける割合を下げる（面光源の影が、周りの光に埋もれないように）
+      const dim = (m) => Object.assign(m.clone(), { envMapIntensity: AREA_LIGHT.room });
+      const era = createPbrEra({
+        room: { floor: dim(PBR_ROOM.floor), left: dim(PBR_ROOM.left), right: dim(PBR_ROOM.right), back: dim(PBR_ROOM.back) },
+        light: false, contact: AREA_LIGHT.contact,
+      });
       // 面光源: 四隅に置いた 4 つのスポットライトの影を重ねて、広くぼかす
       const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
       const spots = corners.map(() => addSpot(era, AREA_LIGHT.intensity / corners.length, { size: AREA_LIGHT.size, radius: AREA_LIGHT.radius }, false));
       era.setVariation = () => spots.forEach((l, i) => {
         l.position.set(lightPos.x + corners[i][0] * AREA_LIGHT.half, lightPos.y, lightPos.z + corners[i][1] * AREA_LIGHT.half);
       });
-      addPot(era, s.segments, PORCELAIN, { cast: true });
+      // 艶に映るのは、汎用の部屋（RoomEnvironment）ではなく、この部屋。時代の始まりに撮り、粗さに応じてぼかす（PMREM）
+      const cube = new THREE.CubeCamera(0.05, 50, new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }));
+      PORCELAIN.envMap = cube.renderTarget.texture;
+      const pot = addPot(era, s.segments, PORCELAIN, { cast: true });
+      era.prepare = () => {
+        captureCube(era, cube, [pot]);
+        cube.renderTarget.texture.needsPMREMUpdate = true;
+      };
       return era;
     },
   },
@@ -1280,12 +1274,10 @@ const SCENES = [
       const light = addSpot(era, BACKLIGHT.intensity, { size: 1024, radius: 5 }, false);
       era.scene.add(new THREE.AmbientLight(0xffffff, BACKLIGHT.ambient));
       light.target.position.set(0, potCenterY, 0);
-      const pot = addPot(era, s.segments, SSS_MATERIALS[0], { cast: true });
-      era.variants = SSS_MATERIALS.map((m) => () => { pot.material = m; });
-      era.setVariation = (v) => {
-        backLightPos.set(lightPos.x, lightPos.y * BACKLIGHT.height, BACKLIGHT.z);
+      addPot(era, s.segments, SSS_MATERIAL, { cast: true });
+      era.setVariation = () => {
+        backLightPos.set(lightPos.x * BACKLIGHT.side, potCenterY + BACKLIGHT.rise, BACKLIGHT.z);
         light.position.copy(backLightPos);
-        pot.material = v.sss;
       };
       return era;
     },
@@ -1299,9 +1291,7 @@ const SCENES = [
           map: BAKED.floor, roughness: 1, metalness: 1, roughnessMap: FLOOR_SURFACE, metalnessMap: FLOOR_SURFACE,
         }) },
       });
-      const pot = addPot(era, s.segments, PBS_MATERIALS[0], { cast: true });
-      era.variants = PBS_MATERIALS.map((m) => () => { pot.material = m; });
-      era.setVariation = (v) => { pot.material = v.pbs; };
+      addPot(era, s.segments, PBS_MATERIAL, { cast: true });
       return era;
     },
   },
@@ -1335,17 +1325,14 @@ async function warmupEra(era) {
 const eras = SCENES.map((s) => s.build(s));
 
 // ---- 巡回ごとの変化 ----
-// ポットの色（前の巡回と違うもの）・柄・主な照明の向き・素材を選び直し、全部の時代に当てる
+// ポットの色（前の巡回と違うもの）・Solid Texture の柄・画風・主な照明の向きを選び直し、全部の時代に当てる
 function pickVariations() {
   let i;
   do i = randInt(POT_COLORS.length); while (i === potColorIndex);
   potColorIndex = i;
   const side = Math.random() < 0.5 ? -1 : 1;
   lightPos.set(side * rand(...LIGHT_X), rand(...LIGHT_Y), rand(...LIGHT_Z));
-  const v = variation = {
-    potColor: linearColor(POT_COLORS[potColorIndex]), pattern: pick(PATTERNS),
-    sss: pick(SSS_MATERIALS), pbs: pick(PBS_MATERIALS), npr: randInt(NPR_STYLES), solid: randInt(SOLID_STYLES),
-  };
+  const v = variation = { potColor: linearColor(POT_COLORS[potColorIndex]), npr: randInt(NPR_STYLES), solid: randInt(SOLID_STYLES) };
   for (const era of eras) {
     for (const m of era.potColorMaterials) m.color.copy(v.potColor);
     for (const l of era.lights) l.position.copy(lightPos);
