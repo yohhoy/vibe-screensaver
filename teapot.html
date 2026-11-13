@@ -75,7 +75,7 @@ const MAX_SPEED = 4;
 const SPEED_STEP = 1.25;          // ↑↓ 1 回あたりの倍率
 
 // 部屋（手前は開いている。床の手前の端と左右の壁の手前の端は、画面に入らない所まで伸ばす）
-const ROOM = { halfWidth: 3.5, back: -3.5, front: 4.5, sideFront: 2, height: 4 };
+const ROOM = { halfWidth: 3.5, back: -3.5, front: 4.5, sideFront: 2, height: 5.5 };   // height は、縦長の画面（縦横比 9:21 まで）でも画面の上端が壁の上端を越えない高さ
 const CHECKER = 1;                // 市松のマス目の大きさ
 const FLOOR_COLORS = [0xb4b4b4, 0x4a4a4a];
 const WALL_COLORS = { left: 0xa8302a, right: 0x2e8a3c, back: 0xe6e2da };
