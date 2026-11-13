@@ -68,6 +68,10 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 | diamond | — | 3.67（3.64〜3.67） | 2.9（2.9〜2.9） | 5.8 |
 | sandpicture | — | 1.70（1.68〜1.70） | 2.2（2.2〜2.2） | 5.3 |
 | infcastle | — | 3.54（3.53〜3.57） | 3.0（2.9〜3.0） | 5.6 |
+| teapot | Ray Tracing (1980) | 3.31（3.31〜3.77） | 3.9（3.9〜4.4） | 5.3 |
+| teapot | Path Tracing (1986) | 3.32（3.30〜3.33） | 3.8（3.8〜3.8） | 5.3 |
+| teapot | Displacement Mapping (1987) | 3.32（3.32〜3.34） | 3.8（3.8〜3.8） | 5.3 |
+| teapot | Subsurface Scattering (2001) | 3.59（3.59〜4.75） | 4.2（4.2〜5.4） | 5.3 |
 
 ### Retina（1280×832、devicePixelRatio 2）
 
@@ -94,6 +98,10 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 | diamond | — | 2.56（2.55〜2.59） | 3.2（3.2〜3.3） | 5.3 |
 | sandpicture | — | 2.23（2.22〜2.23） | 2.7（2.7〜2.7） | 5.3 |
 | infcastle | — | 2.17（2.16〜2.18） | 2.9（2.9〜3.0） | 5.5 |
+| teapot | Ray Tracing (1980) | 3.77（3.77〜3.78） | 4.4（4.4〜4.4） | 5.3 |
+| teapot | Path Tracing (1986) | 3.80（3.78〜3.81） | 4.3（4.3〜4.4） | 5.3 |
+| teapot | Displacement Mapping (1987) | 3.60（3.59〜3.62） | 4.1（4.1〜4.1） | 5.3 |
+| teapot | Subsurface Scattering (2001) | 4.10（4.09〜4.12） | 4.7（4.7〜4.8） | 5.4 |
 
 ### 描画の内容
 
@@ -120,6 +128,10 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 | diamond | — | 1920×1080 / 2560×1664 | 21 | 6393 |
 | sandpicture | — | 1920×1080 / 2560×1664 | 8 / 7 | 16 / 14 |
 | infcastle | — | 1920×1080 / 2560×1664 | 42 | 11999 |
+| teapot | Ray Tracing (1980) | 1920×1080 / 1920×1248 | 13 | 49299 |
+| teapot | Path Tracing (1986) | 1920×1080 / 1920×1248 | 11 | 183517 |
+| teapot | Displacement Mapping (1987) | 1920×1080 / 1920×1248 | 8 | 613469 |
+| teapot | Subsurface Scattering (2001) | 1920×1080 / 1920×1248 | 13 | 110327 |
 
 ### 列の意味
 
@@ -130,7 +142,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 
 ### 測った条件
 
-- 日付とコード: 2026-11-09、コミット 2729140
+- 日付とコード: 2026-11-14、コミット 2cf09a4
 - 機材: MacBook Air（M3、GPU 10 コア、メモリ 16GB）、AC 電源、低電力モードはオフ
 - ブラウザ: Chrome 156.0.8078.79（ヘッドレス、ANGLE Metal）
 - 作品ごとに、GPU が 50℃ 以下に冷めるのを待ってから（`--cool 50`）、その作品の全シーンを順に 3 周する。1 回は起動から 450 コマ（作品の中の時間で 15 秒）で、その中央値をとる。表の値は 3 周の中央値。
@@ -147,6 +159,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 - penguins・sandpicture は同じ場面でも FHD と Retina で描画命令や三角形の数が違うことがあるので、その行は FHD / Retina の順に両方を書く。
 - sandpicture は、砂が少ない状態の値になる（砂が積もったあとは `--warmup` で測る）。
 - infcastle は、固定の乱数の 15 秒の間（最初の数部屋）の値になる。部屋の中身は乱数で変わるので、ほかの部屋では値が変わりうる。廊下・隠し部屋・重力の回転は測っていない。
+- teapot は 18 シーンのうち、重い 4 つ（Ray Tracing・Path Tracing・Displacement Mapping・Subsurface Scattering）だけを載せる。ほかの 14 シーンは FHD の GPU タイマーが 1.2〜2.8ms と軽いので、基準値には載せない（負荷を比べるときは重い 4 シーンを見れば足りる）。重い 4 つはどれも近い値なので、続けて測ると後のものほどクロックが下がって重く出る。1 シーンずつ `--scene` と `--cool 50` で測る。teapot は `MAX_PIXEL_RATIO` が 1.5 なので、Retina の描画の解像度は 1920×1248 になる（ほかの作品は 2560×1664）。
 
 ## この値で分からないこと
 
