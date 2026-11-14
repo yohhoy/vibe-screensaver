@@ -4,7 +4,7 @@
 
 ## 測った条件
 
-- 日付とコード: 2026-11-14、コミット 248a849
+- 日付とコード: 2026-11-15、コミット a5b1198
 - 機材: MacBook Air（M3、GPU 10 コア、メモリ 16GB）、AC 電源、低電力モードはオフ
 - ブラウザ: Chrome 156.0.8078.79（ヘッドレス、ANGLE Metal）
 
@@ -51,6 +51,9 @@
 | teapot | Non-Photorealistic Rendering (1990) | 1.52（1.50〜1.55） | 2.0（2.0〜2.1） | 5.4 |
 | teapot | Subsurface Scattering (2001) | 3.49（3.48〜4.32） | 4.1（4.1〜4.9） | 5.3 |
 | teapot | Physically Based Shading (2012) | 1.95（1.94〜1.95） | 2.4（2.4〜2.4） | 5.3 |
+| bubbles | Meadow | 1.04（0.95〜1.07） | 2.3（2.3〜2.4） | 6.6 |
+| bubbles | Beach | 0.87（0.87〜0.88） | 1.8（1.8〜1.8） | 5.3 |
+| bubbles | Waterfront | 0.76（0.76〜0.76） | 1.7（1.7〜1.7） | 5.3 |
 
 ## Retina（1280×832、devicePixelRatio 2）
 
@@ -95,6 +98,9 @@
 | teapot | Non-Photorealistic Rendering (1990) | 1.75（1.74〜1.75） | 2.3（2.3〜2.3） | 5.4 |
 | teapot | Subsurface Scattering (2001) | 3.96（3.96〜3.98） | 4.6（4.6〜4.6） | 5.3 |
 | teapot | Physically Based Shading (2012) | 2.23（2.23〜2.25） | 2.7（2.7〜2.7） | 5.3 |
+| bubbles | Meadow | 1.64（1.63〜1.68） | 3.4（3.4〜3.4） | 5.6 |
+| bubbles | Beach | 1.57（1.57〜1.59） | 3.0（3.0〜3.0） | 5.3 |
+| bubbles | Waterfront | 1.41（1.41〜1.43） | 2.8（2.8〜2.9） | 5.3 |
 
 ## 描画の内容
 
@@ -139,6 +145,9 @@
 | teapot | Non-Photorealistic Rendering (1990) | 1920×1080 / 1920×1248 | 9 | 110311 |
 | teapot | Subsurface Scattering (2001) | 1920×1080 / 1920×1248 | 13 | 110327 |
 | teapot | Physically Based Shading (2012) | 1920×1080 / 1920×1248 | 8 | 73501 |
+| bubbles | Meadow | 1920×1080 / 2560×1664 | 6 | 175380 / 109658 |
+| bubbles | Beach | 1920×1080 / 2560×1664 | 7 | 137220 / 77700 |
+| bubbles | Waterfront | 1920×1080 / 2560×1664 | 6 | 125212 / 107356 |
 
 ## 作品ごとの注意
 
@@ -148,3 +157,4 @@
 - sandpicture は、砂が少ない状態の値になる。
 - infcastle は、固定の乱数の 15 秒の間（最初の数部屋）の値になる。部屋の中身は乱数で変わるので、ほかの部屋では値が変わりうる。廊下・隠し部屋・重力の回転は測っていない。
 - teapot で重いのは Ray Tracing・Path Tracing・Displacement Mapping・Subsurface Scattering の 4 つで、負荷を比べるときはこの 4 つを見れば足りる。teapot は `MAX_PIXEL_RATIO` が 1.5 なので、Retina の描画の解像度は 1920×1248 になる（ほかの作品は 2560×1664）。
+- bubbles は FHD と Retina で三角形の数が違う（描画の解像度が違うため。Retina の方が少ないシーンもあり、理由は未確認）。Meadow（FHD）は基準負荷が 6.6ms（クロックは約 1000MHz）で、最速まで上がっていない。ほかの行は 5.3〜5.6ms。
