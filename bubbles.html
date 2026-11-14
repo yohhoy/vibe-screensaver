@@ -161,30 +161,40 @@ const CLOUD_MORPH_PERIOD = [25, 60]; // 形が 1 回変わる周期の範囲（�
 const CLOUD_SPAN = 1.7;              // 雲が流れて回り込む範囲（中央から左右, 背景の座標）
 
 // 吹く頻度（回/分）
-const BASE_PUFFS = 8;
-const MIN_PUFFS = 2;
-const MAX_PUFFS = 30;
+const BASE_PUFFS = 6;
+const MIN_PUFFS = 3;
+const MAX_PUFFS = 12;
 const PUFF_STEP = 1.25;              // ↑↓ 1回あたりの倍率
-const PUFF_COUNT = [4, 14];          // ひと吹きで出す数
-const PUFF_JITTER = 0.5;             // ひと吹きの中での位置のばらつき（ワールド単位）
+const BREATH = [0.01, 0.024];        // 最初の強度での、ひと吹きの息の量（玉の半径の 3 乗の和）。使い切るまで玉を出すので、大きい玉が多いと数が減る。
+                                     // 吹く頻度に反比例させ、1 分に吐く息の量を一定にする（頻度が低いほど、ひと吹きが大きい）
+const PUFF_INTERVAL = [0.08, 0.25];  // ひと吹きの中で、1 個ずつ吹き出す間隔（秒）。ひと吹きは 0.5〜2 秒ほど続き、玉が列になって出る
+const PUFF_JITTER = 0.1;             // 吹き出す位置のばらつき（ワールド単位）
+const PUFF_SWEEP = 0.35;             // 吹き出し口が、流れる向きと直角に振れる幅（ワールド単位）。玉の列をうねらせる
+const PUFF_SWEEP_RATE = 2.5;         // 吹き出し口が振れる角振動数（rad/秒）
 
 // シャボン玉
 const MAX_BUBBLES = 80;
-const DEPTH_RANGE = [2.5, 7];        // ひと吹きの、カメラからの距離
+// 吹き出す位置 from（画面の端を ±1 とする）・そのばらつき spread・流れる向き dir・速さ speed（ワールド単位/秒）。
+// 左から吹く形で書き、景色に切り替えるたびに、雲の流れる向きに合わせて左右を決める
+const WIND = { from: [-1.2, -0.4], spread: [0, 0.4], dir: [1, 0.25], speed: 0.22 };
+const DEPTH_RANGE = [2, 5.5];        // ひと吹きの、カメラからの距離
 const DEPTH_SPREAD = 0.8;            // ひと吹きの中での距離のばらつき
-const RADIUS_RANGE = [0.04, 0.34];   // 半径（ワールド単位）
-const RADIUS_BIAS = 2.4;             // 大きさの偏り。大きいほど小さい玉が多くなる
-const LIFE_RANGE = [5, 20];          // 寿命（秒）
-const BLOW_BOOST = 1.8;              // 吹き出した直後の速さ（風の速さの倍率）
-const BLOW_SPREAD = 0.25;            // 吹き出す速さのばらつき（ワールド単位/秒）
-const RELAX_TIME = 1.6;              // 風の流れに馴染むまでの時間（秒）
+const RADIUS_RANGE = [0.07, 0.25];   // 半径（ワールド単位）
+const RADIUS_BIAS = 2.4;             // 最初の強度での大きさの偏り。大きいほど小さい玉が多くなる。吹く頻度の 2 乗に比例させ、頻度が低いほど大きい玉が多く出る
+const LIFE_RANGE = [12, 35];         // 寿命（秒）。3 割ほどが、はじける前に反対側の端まで届く長さ
+const BLOW_BOOST = [1.45, 2.15];     // 吹き出した直後の速さ（風の速さの倍率）
+const BLOW_SPREAD = 0.12;            // 吹き出す速さのばらつき（ワールド単位/秒）
+const RELAX_TIME = 1.6;              // 半径 RELAX_RADIUS の玉が、風の流れに馴染むまでの時間（秒）
+const RELAX_RADIUS = 0.1;            // RELAX_TIME の基準の半径。大きい玉ほど重く、馴染むのに時間がかかる（半径の平方根に比例）
+const DRIFT_AMP = 0.04;              // 玉ごとの、風からのずれの速さ（ワールド単位/秒）。まとまりがゆっくりばらけていく
+const DRIFT_TIME = 4;                // 玉ごとのずれの向きが変わるまでの時間（秒）
 const SINK_SPEED = 0.05;             // 静かな空気の中で沈む速さ（ワールド単位/秒）
-const TURB_AMP = 0.07;               // 風の揺らぎの強さ（ワールド単位/秒）
+const TURB_AMP = 0.05;               // 風の揺らぎの強さ（ワールド単位/秒）
 const GUST_PERIODS = [23, 9.7];      // 風の強さが変わる周期（秒）
 const WOBBLE_AMP = 0.14;             // 生まれた直後の形の揺れ（半径に対する割合）
 const WOBBLE_DECAY = 2.5;            // 揺れが収まる速さ（1/秒）
 const WOBBLE_FREQ = 17;              // 揺れの角振動数（rad/秒）
-const EXIT_AGE = 2;                  // これより若い玉は、画面の外にいても消さない（吹き出したばかりで、まだ画面に入っていない）
+const ENTER_TIMEOUT = 12;            // 画面に入らないまま、これより長く経った玉は消す（秒）。入ってから外へ出た玉はすぐ消す
 const PREFILL_TIME = 30;             // 起動時・景色の切替時に、流れていた分として先に進める時間（秒）
 const SPHERE_SEGMENTS = [48, 32];
 
@@ -229,7 +239,6 @@ const MAX_DROPS = 600;
 // - motion: 動く部分の種類（MOTIONS のキー）
 // - lights: 膜に映る光源 { dir, color, power, size } の並び（MAX_LIGHTS まで）。dir はカメラから見た向き（x 右, y 上, z 手前。z が負なら奥＝逆光）、
 //   size は映る光の広がり
-// - wind: シャボン玉の吹き出す位置 from（画面の端を ±1 とする）・そのばらつき spread・流れる向き dir・速さ speed（ワールド単位/秒）
 const SCENES = [
   {
     name: 'Meadow',
@@ -257,7 +266,6 @@ const SCENES = [
     ],
     motion: 'leaves',
     lights: [{ dir: [0.45, 0.55, 0.7], color: [1, 0.97, 0.88], power: 6, size: 0.08 }],
-    wind: { from: [-1.2, -0.55], spread: [0, 0.4], dir: [1, 0.35], speed: 0.35 },
     envGain: 0.55,
     exposure: 1.0,
   },
@@ -285,7 +293,6 @@ const SCENES = [
       { dir: [0.3, 0.04, -1], color: [1, 0.75, 0.45], power: 5, size: 0.15 },
       { dir: [-0.4, 0.6, 0.6], color: [0.5, 0.4, 0.7], power: 1.5, size: 0.4 },
     ],
-    wind: { from: [1.2, -0.1], spread: [0, 0.5], dir: [-1, 0.08], speed: 0.22 },
     envGain: 0.6,
     exposure: 0.95,
   },
@@ -317,7 +324,6 @@ const SCENES = [
       { dir: [0.6, 0.4, -0.4], color: [1, 0.5, 0.8], power: 5, size: 0.1 },
       { dir: [0.2, 0.7, 0.6], color: [0.6, 0.75, 1], power: 3, size: 0.12 },
     ],
-    wind: { from: [0, -1.2], spread: [0.7, 0], dir: [0.05, 1], speed: 0.2 },
     envGain: 1.6,
     exposure: 1.0,
   },
@@ -933,6 +939,7 @@ let sceneIndex = 0;
 let puffRate = BASE_PUFFS;   // 吹く頻度（回/分）
 let puffWait = 0;            // 次に吹くまでの秒数
 let bubbles = [];
+let emitters = [];          // 吹いている途中のひと吹き（まだ出していない玉の数など）
 let drops = [];
 let staticSprites = [];      // 背景の静止した部分の形（景色の切替時に作る）
 let motion = null;           // 背景の動く部分（MOTIONS の 1 つと、その状態）
@@ -1478,40 +1485,65 @@ function renderBackground() {
 const _v = new THREE.Vector3();
 const windDir = new THREE.Vector3();
 
+// ひと吹きを始める。玉はまとめて出さず、吹き出し口から 1 個ずつ列になって出す（updateEmitters）
 function puff() {
-  const s = SCENES[sceneIndex];
-  const w = s.wind;
   const depth = randIn(DEPTH_RANGE);
   const hh = halfHeightAt(depth);
   const hw = hh * camera.aspect;
-  const ox = (w.from[0] + rand(-1, 1) * w.spread[0]) * hw;
-  const oy = (w.from[1] + rand(-1, 1) * w.spread[1]) * hh;
-  const n = PUFF_COUNT[0] + randInt(PUFF_COUNT[1] - PUFF_COUNT[0] + 1);
-  for (let i = 0; i < n && bubbles.length < MAX_BUBBLES; i++) {
-    const pos = new THREE.Vector3(ox, oy, -depth).add(randUnit(_v).multiplyScalar(PUFF_JITTER * Math.random()));
-    pos.z += rand(-0.5, 0.5) * DEPTH_SPREAD;
-    pos.addScaledVector(windDir, -rand(0, 0.6));   // 先に吹き出した分を先へ
-    const vel = windDir.clone().multiplyScalar(w.speed * BLOW_BOOST).add(randUnit(_v).multiplyScalar(BLOW_SPREAD * Math.random()));
-    bubbles.push({
-      pos, vel,
-      r: RADIUS_RANGE[0] * (RADIUS_RANGE[1] / RADIUS_RANGE[0]) ** (Math.random() ** RADIUS_BIAS),
-      axis: vel.clone().normalize(),
-      age: 0,
-      life: randIn(LIFE_RANGE),
-      seed: rand(0, 100),
-      thick: randIn(FILM_THICK_RANGE),
-      pop: -1,                       // はじけ始めてからの進み（0..1）。はじけていなければ負
-      hole: new THREE.Vector3(),
-    });
-  }
+  emitters.push({
+    origin: new THREE.Vector3((WIND.from[0] * clouds.dir + rand(-1, 1) * WIND.spread[0]) * hw, (WIND.from[1] + rand(-1, 1) * WIND.spread[1]) * hh, -depth),
+    // 息の量と大きさの偏りは、吹いた時の強度で決め、吹いている途中では変えない
+    breath: randIn(BREATH) * BASE_PUFFS / puffRate,     // 残りの息の量
+    bias: RADIUS_BIAS * (puffRate / BASE_PUFFS) ** 2,   // 大きさの偏り
+    wait: 0,
+    t: 0,
+    phase: rand(0, TAU),
+  });
+}
+
+function blow(e, r) {
+  // 吹き出し口は、流れる向きと直角にゆっくり振れる
+  const sweep = PUFF_SWEEP * Math.sin(e.t * PUFF_SWEEP_RATE + e.phase);
+  const pos = e.origin.clone().add(randUnit(_v).multiplyScalar(PUFF_JITTER * Math.random()));
+  pos.x -= windDir.y * sweep;
+  pos.y += windDir.x * sweep;
+  pos.z += rand(-0.5, 0.5) * DEPTH_SPREAD;
+  const vel = windDir.clone().multiplyScalar(WIND.speed * randIn(BLOW_BOOST)).add(randUnit(_v).multiplyScalar(BLOW_SPREAD * Math.random()));
+  bubbles.push({
+    pos, vel, r,
+    relax: RELAX_TIME * Math.sqrt(r / RELAX_RADIUS),
+    drift: new THREE.Vector3(),    // 風からのずれ（玉ごと）
+    axis: vel.clone().normalize(),
+    age: 0,
+    life: randIn(LIFE_RANGE),
+    entered: false,                // 一度でも画面に入ったか
+    seed: rand(0, 100),
+    thick: randIn(FILM_THICK_RANGE),
+    pop: -1,                       // はじけ始めてからの進み（0..1）。はじけていなければ負
+    hole: new THREE.Vector3(),
+  });
+}
+
+function updateEmitters(dt) {
+  emitters = emitters.filter((e) => {
+    e.t += dt;
+    e.wait -= dt;
+    // 息を使い切るまで出す（最後の 1 個は、残りより大きくてもよい）
+    while (e.wait <= 0 && e.breath > 0) {
+      const r = RADIUS_RANGE[0] * (RADIUS_RANGE[1] / RADIUS_RANGE[0]) ** (Math.random() ** e.bias);
+      e.breath -= r ** 3;
+      e.wait += randIn(PUFF_INTERVAL);
+      if (bubbles.length < MAX_BUBBLES) blow(e, r);
+    }
+    return e.breath > 0;
+  });
 }
 
 // 風の流れ。近くの玉は似た流れに乗る
 function windAt(p, out) {
-  const s = SCENES[sceneIndex];
   const t = time;
   const gust = 1 + 0.3 * Math.sin(t * TAU / GUST_PERIODS[0]) + 0.15 * Math.sin(t * TAU / GUST_PERIODS[1]);
-  out.copy(windDir).multiplyScalar(s.wind.speed * gust);
+  out.copy(windDir).multiplyScalar(WIND.speed * gust);
   out.x += TURB_AMP * (Math.sin(0.9 * p.y + 0.37 * t) + 0.6 * Math.sin(1.7 * p.z + 0.23 * t + 1.3));
   out.y += TURB_AMP * (Math.sin(0.8 * p.x - 0.29 * t + 2.1) + 0.6 * Math.sin(1.3 * p.z + 0.41 * t)) - SINK_SPEED;
   out.z += TURB_AMP * 0.5 * (Math.sin(0.7 * p.x + 0.31 * t) + Math.sin(1.1 * p.y - 0.19 * t + 0.7));
@@ -1537,11 +1569,15 @@ function updateBubbles(dt) {
     puff();
     puffWait = 60 / puffRate * rand(0.5, 1.5);
   }
-  const k = 1 - Math.exp(-dt / RELAX_TIME);
+  updateEmitters(dt);
+  // 玉ごとのずれは、向きがゆっくり変わる不規則な速さ（時間 DRIFT_TIME で前の向きを忘れる）
+  const fade = Math.exp(-dt / DRIFT_TIME);
+  const kick = DRIFT_AMP * Math.sqrt(3 * (1 - fade * fade));
   const keep = [];
   for (const b of bubbles) {
     b.age += dt;
-    b.vel.lerp(windAt(b.pos, _v), k);
+    b.drift.multiplyScalar(fade).add(_v.set(rand(-1, 1), rand(-1, 1), rand(-0.5, 0.5)).multiplyScalar(kick));
+    b.vel.lerp(windAt(b.pos, _v).add(b.drift), 1 - Math.exp(-dt / b.relax));
     b.pos.addScaledVector(b.vel, dt);
     if (b.pop < 0 && b.age >= b.life) {
       b.pop = 0;
@@ -1551,10 +1587,12 @@ function updateBubbles(dt) {
       b.pop += dt / POP_TIME;
       if (b.pop >= 1) { spawnDrops(b); continue; }
     }
-    // 吹き出したばかりの玉を除き、画面の外へ出たら消す
+    // 画面に入ってから外へ出たら消す（吹き出したばかりで、まだ入っていない玉は残す）
     const d = -b.pos.z;
     const hh = halfHeightAt(d) + b.r + 0.2;
-    if (b.age > EXIT_AGE && (d < 0.3 || Math.abs(b.pos.y) > hh || Math.abs(b.pos.x) > hh * camera.aspect)) continue;
+    const outside = d < 0.3 || Math.abs(b.pos.y) > hh || Math.abs(b.pos.x) > hh * camera.aspect;
+    if (!outside) b.entered = true;
+    else if (b.entered || b.age > ENTER_TIMEOUT) continue;
     keep.push(b);
   }
   bubbles = keep;
@@ -1630,7 +1668,6 @@ function setScene(index) {
   sceneIndex = (index + SCENES.length) % SCENES.length;
   const s = SCENES[sceneIndex];
   sceneNameEl.textContent = s.name;
-  windDir.set(s.wind.dir[0], s.wind.dir[1], 0).normalize();
   for (let i = 0; i < MAX_LIGHTS; i++) {
     const l = s.lights[i];
     bubbleUniforms.uLightDir.value[i].fromArray(l ? l.dir : [0, 0, 1]).normalize();
@@ -1645,9 +1682,12 @@ function setScene(index) {
   renderStatic();
   const cloudList = makeShapes(s.clouds ?? [], 1);
   clouds = { list: cloudList, dir: randSign(), morph: cloudList.map(() => [TAU / randIn(CLOUD_MORPH_PERIOD), rand(0, TAU)]) };
+  // シャボン玉は雲と同じ向きに流れる（同じ風）
+  windDir.set(WIND.dir[0] * clouds.dir, WIND.dir[1], 0).normalize();
   motion = { def: MOTIONS[s.motion], state: MOTIONS[s.motion].init() };
   // 流れていた分のシャボン玉を先に置く
   bubbles = [];
+  emitters = [];
   drops = [];
   puffWait = 0;
   const step = 1 / 20;
