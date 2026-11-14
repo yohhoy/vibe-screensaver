@@ -36,6 +36,7 @@ export const HIDDEN = {
   campfire: 'startSquirrel',
   waterfall: 'startCarp',
   infcastle: 'startHiddenRoom',
+  bubbles: 'startHeart',
 };
 
 // kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）

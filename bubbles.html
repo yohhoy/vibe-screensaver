@@ -216,7 +216,7 @@ const FILM_DARKEN = 0.25;            // 反射が強い所で背景を暗くす�
 const BACK_FACE_GAIN = 0.7;          // 奥側の膜の反射の強さ
 
 // はじける
-const POP_TIME = 0.15;               // 穴が広がって膜が消えるまで（秒）
+const POP_TIME = 0.10;               // 穴が広がって膜が消えるまで（秒）
 const POP_RIM = 0.15;                // 穴のふちの、丸まって光る幅（cos の差）
 const DROP_COUNT = [8, 16];          // はじけたあとに散るしずくの数
 const DROP_LIFE = [0.4, 0.9];        // しずくの寿命（秒）
@@ -224,6 +224,27 @@ const DROP_SPEED = 0.5;              // しずくの散る速さ（ワールド�
 const DROP_SIZE = [0.004, 0.01];     // しずくの大きさ（ワールド単位）
 const GRAVITY = 3;
 const MAX_DROPS = 600;
+
+// 隠し要素: ハートのシャボン玉
+const HEART_INTERVAL = [300, 120, 900];   // 現れる間隔（秒）[平均, 最短, 最長]
+const HEART_SIZE = 0.4;              // ハートの幅（画面の幅と高さの小さい方に対する割合）。高さは幅とほぼ同じ
+const HEART_DEPTH = [3.6, 4.4];      // カメラからの距離。玉の流れる範囲（DEPTH_RANGE）の中ほどより少し奥
+const HEART_FROM_Y = [-0.15, 0.05];   // 入ってくる高さ（画面の中央が 0、上端が 1）
+const HEART_BOOST = 1.15;            // 吹き出した直後の速さ（風の速さの倍率）。重いので、ふつうの玉より弱い
+const HEART_POP_AT = [0.2, 0.6];     // はじける位置（画面の中央を 0、流れていく先の端を 1 とする）
+const HEART_LIFE = 45;               // 寿命（秒）。ふつうは、その前に HEART_POP_AT ではじける
+const HEART_POP_TIME = 0.3;          // 穴が広がって膜が消えるまで（秒）
+const HEART_DROPS = 4;               // しずくの数（ふつうの玉の何倍か）
+const HEART_YAW = 0.12;              // 左右への首振りの大きさ（rad）。大きいと横を向いてハートの形が分からなくなる
+const HEART_ROLL = 0.06;             // 傾きの大きさ（rad）
+const HEART_SWAY_PERIODS = [11, 7];  // 首振り・傾きの周期（秒）
+const HEART_WOBBLE = 0.035;          // 表面のぷるぷるした揺れ（大きさに対する割合）
+const HEART_WOBBLE_FREQ = 2.4;       // 揺れの角振動数（rad/秒）
+const HEART_WOBBLE_TURN = 0.3;       // 揺れの向きが回る速さ（rad/秒）
+const HEART_PINK_NM = 590;           // ハートの膜の厚さ（nm）。干渉色が 3 次のピンクになる厚さ（光路差 1500〜1650nm）
+const HEART_PINK_SWIRL = 0.12;       // ハートの膜の厚さのむら（厚さに対する割合）。ピンクの範囲から少しはみ出させ、桃色・赤紫・青紫の混ざる虹色にする
+const HEART_ENV_GRAY = 0.6;          // ハートの映り込みの色を抜く割合（0..1）。景色の色（草原の緑など）にピンクが打ち消されないようにする
+const HEART_R0 = 0.2;                // ハートの、正面から見た反射の強さ。ふつうの玉（FILM_R0）より強くし、明るい景色の前でも正面にピンクが乗るようにする
 
 // 景色。位置は背景の座標で、x は画面の中央が 0（画面の高さが 1）、y は下端が 0・上端が 1。色はすべて画面に出る値（0〜1）
 // - sky: 背景のグラデーション [y, 色]（上から順に）
@@ -373,6 +394,43 @@ function buildFilmLut() {
   tex.minFilter = tex.magFilter = THREE.LinearFilter;
   tex.needsUpdate = true;
   return tex;
+}
+
+// ハートのシャボン玉の形。球（半径 1）の各頂点の向きに、中心からハートの表面まで伸ばした位置と、その面の向きを
+// 頂点の属性 aHeartPos・aHeartNormal に足す。形はハート曲面 (x² + 9/4 z² + y² − 1)³ − x² y³ − 9/80 z² y³ = 0（y が上、z が奥行き）。
+// 中心から見てどの向きにも表面が 1 回しかないので、向きごとに内（負）から外（正）へ変わる所を探せばよい。
+// 最後に、上下の中央を中心へ移し、横幅の半分が 1 になるよう縮める
+function addHeartShape(geometry) {
+  const f = (x, y, z) => { const a = x * x + 2.25 * z * z + y * y - 1; return a * a * a - x * x * y * y * y - 0.1125 * z * z * y * y * y; };
+  const sphere = geometry.attributes.position;
+  const count = sphere.count;
+  const pos = new Float32Array(count * 3), nrm = new Float32Array(count * 3);
+  const n = new THREE.Vector3(), g = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    n.fromBufferAttribute(sphere, i).normalize();
+    let lo = 0, hi = 0.02;
+    while (f(n.x * hi, n.y * hi, n.z * hi) < 0) { lo = hi; hi += 0.02; }
+    for (let k = 0; k < 30; k++) {
+      const mid = (lo + hi) / 2;
+      if (f(n.x * mid, n.y * mid, n.z * mid) < 0) lo = mid; else hi = mid;
+    }
+    const [x, y, z] = [n.x * lo, n.y * lo, n.z * lo];
+    const a = x * x + 2.25 * z * z + y * y - 1;
+    // 面の向きは陰関数の勾配。上のくぼみの先では勾配が 0 になるので、球の向きを使う
+    g.set(6 * x * a * a - 2 * x * y * y * y, 6 * y * a * a - 3 * x * x * y * y - 0.3375 * z * z * y * y, 13.5 * z * a * a - 0.225 * z * y * y * y);
+    if (g.length() < 1e-4) g.copy(n);
+    pos.set([x, y, z], i * 3);
+    nrm.set(g.normalize().toArray(), i * 3);
+  }
+  let xMax = 0, yMin = 0, yMax = 0;
+  for (let i = 0; i < count; i++) {
+    xMax = Math.max(xMax, pos[i * 3]);
+    yMin = Math.min(yMin, pos[i * 3 + 1]);
+    yMax = Math.max(yMax, pos[i * 3 + 1]);
+  }
+  for (let i = 0; i < count * 3; i++) pos[i] = (pos[i] - (i % 3 === 1 ? (yMin + yMax) / 2 : 0)) / xMax;
+  geometry.setAttribute('aHeartPos', new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute('aHeartNormal', new THREE.BufferAttribute(nrm, 3));
 }
 
 // ---- シェーダー ----
@@ -728,18 +786,26 @@ const BubbleShader = {
     attribute vec4 aPop;     // 穴の向き xyz, 穴の広がり（cos。1 で穴なし、-1 で消える）
     attribute vec4 aShape;   // 揺れの軸 xyz, 揺れの大きさ
     attribute vec4 aFilm;    // 模様をずらす種, 寿命の進み（0..1）, 厚さの倍率
-    varying vec3 vN;
+    attribute vec4 aHeart;   // ハートへの変形の割合（0: 球, 1: ハート）, 首振り（y 軸まわり, rad）, 傾き（z 軸まわり, rad）
+    attribute vec3 aHeartPos;     // 同じ向きのハートの表面の位置（addHeartShape）
+    attribute vec3 aHeartNormal;  // その面の向き
+    varying vec3 vN;         // 元の球の向き。膜の模様とはじける穴はこれで決める
+    varying vec3 vShade;     // 面の向き（陰影・映り込み）
     varying vec3 vWorld;
     varying vec4 vPop;
     varying vec4 vFilm;
     void main() {
       vec3 n = position;
+      vec3 q = mix(n, aHeartPos, aHeart.x);
       vec3 axis = aShape.xyz;
-      float along = dot(n, axis);
+      float along = dot(q, axis);
       // 軸の向きに伸び、横に縮む（体積がおよそ変わらない）
-      vec3 p = n + axis * along * aShape.w - (n - axis * along) * aShape.w * 0.5;
+      vec3 p = q + axis * along * aShape.w - (q - axis * along) * aShape.w * 0.5;
+      float cy = cos(aHeart.y), sy = sin(aHeart.y), cz = cos(aHeart.z), sz = sin(aHeart.z);
+      mat3 turn = mat3(cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy) * mat3(cz, sz, 0.0, -sz, cz, 0.0, 0.0, 0.0, 1.0);
       vN = n;
-      vWorld = aSphere.xyz + p * aSphere.w;
+      vShade = turn * mix(n, aHeartNormal, aHeart.x);
+      vWorld = aSphere.xyz + turn * p * aSphere.w;
       vPop = aPop;
       vFilm = aFilm;
       gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
@@ -755,6 +821,7 @@ const BubbleShader = {
     uniform float uEnvGain;
     uniform float uGain;
     varying vec3 vN;
+    varying vec3 vShade;
     varying vec3 vWorld;
     varying vec4 vPop;
     varying vec4 vFilm;
@@ -773,11 +840,15 @@ const BubbleShader = {
       float w = noise3(uFlow1 * n * 1.6 + seed);
       float sw = noise3(uFlow2 * n * 2.4 + seed.zxy + w * 1.8);
       d *= 1.0 + ${FILM_SWIRL.toFixed(3)} * (sw - 0.5) * 2.0;
-      d *= (1.0 - ${DRAIN_TOP.toFixed(3)} * vFilm.y * pow(1.0 - g, 1.5)) * (1.0 - ${DRAIN_ALL.toFixed(3)} * vFilm.y);
+      // ハートは、厚さをピンクになる厚さのまわりにそろえる（vFilm.w はハートなら 1、ふつうの玉は 0）。
+      // ふつうの玉の上下の厚さの差を残すと、中間の厚さが黄色と緑になり、ピンクに見えない
+      d = mix(d, ${HEART_PINK_NM.toFixed(1)} * (1.0 + ${HEART_PINK_SWIRL.toFixed(3)} * (sw - 0.5) * 2.0), vFilm.w);
+      d *= (1.0 -${DRAIN_TOP.toFixed(3)} * vFilm.y * pow(1.0 - g, 1.5)) * (1.0 - ${DRAIN_ALL.toFixed(3)} * vFilm.y);
       d *= vFilm.z * (1.0 + 2.0 * rim);   // 穴のふちは膜が丸まって厚い
 
       vec3 v = normalize(cameraPosition - vWorld);
-      vec3 nf = gl_FrontFacing ? n : -n;
+      vec3 s = normalize(vShade);
+      vec3 nf = gl_FrontFacing ? s : -s;
       float c = clamp(dot(nf, v), 0.0, 1.0);
       // 膜の中を斜めに進むほど、光路差は小さくなる
       float cosT = sqrt(1.0 - (1.0 - c * c) / ${(FILM_N * FILM_N).toFixed(4)});
@@ -789,7 +860,10 @@ const BubbleShader = {
       for (int i = 0; i < ${MAX_LIGHTS}; i++) {
         env += uLightColor[i] * pow(max(dot(r, uLightDir[i]), 0.0), uLightSharp[i]);
       }
-      float f = ${FILM_R0.toFixed(3)} + ${(1 - FILM_R0).toFixed(3)} * pow(1.0 - c, ${FILM_FRESNEL_POW.toFixed(1)});
+      // ハートは映り込みの色を抜き、膜のピンクが景色の色（草原の緑など）に打ち消されないようにする
+      env = mix(env, vec3(dot(env, vec3(0.2126, 0.7152, 0.0722))), vFilm.w * ${HEART_ENV_GRAY.toFixed(3)});
+      float r0 = mix(${FILM_R0.toFixed(3)}, ${HEART_R0.toFixed(3)}, vFilm.w);   // 正面から見た反射の強さ
+      float f = r0 + (1.0 - r0) * pow(1.0 - c, ${FILM_FRESNEL_POW.toFixed(1)});
       vec3 col = film * env * f * uGain + rim * 0.5 * env;
       gl_FragColor = vec4(col, f * ${FILM_DARKEN.toFixed(3)} * uGain);
     }`,
@@ -886,12 +960,10 @@ screenQuad.frustumCulled = false;
 scene.add(screenQuad);
 
 const bubbleGeometry = new THREE.InstancedBufferGeometry().copy(new THREE.SphereGeometry(1, ...SPHERE_SEGMENTS));
-const bubbleAttrs = {
-  aSphere: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
-  aPop: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
-  aShape: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
-  aFilm: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
-};
+addHeartShape(bubbleGeometry);
+// ハートの玉は MAX_BUBBLES の外に 1 個足す
+const bubbleAttrs = Object.fromEntries(['aSphere', 'aPop', 'aShape', 'aFilm', 'aHeart'].map((name) =>
+  [name, new THREE.InstancedBufferAttribute(new Float32Array((MAX_BUBBLES + 1) * 4), 4)]));
 for (const [name, attr] of Object.entries(bubbleAttrs)) bubbleGeometry.setAttribute(name, attr.setUsage(THREE.DynamicDrawUsage));
 bubbleGeometry.instanceCount = 0;
 
@@ -1521,6 +1593,9 @@ function blow(e, r) {
     thick: randIn(FILM_THICK_RANGE),
     pop: -1,                       // はじけ始めてからの進み（0..1）。はじけていなければ負
     hole: new THREE.Vector3(),
+    popTime: POP_TIME,             // 穴が広がって膜が消えるまで（秒）
+    popAt: Infinity,               // 寿命の前でも、ここまで流れたらはじける（画面の中央が 0、流れていく先の端が 1）
+    heart: null,                   // ハートの玉なら、首振り・傾きの位相 [rad, rad]
   });
 }
 
@@ -1551,7 +1626,7 @@ function windAt(p, out) {
 }
 
 function spawnDrops(b) {
-  const n = DROP_COUNT[0] + randInt(DROP_COUNT[1] - DROP_COUNT[0] + 1);
+  const n = (DROP_COUNT[0] + randInt(DROP_COUNT[1] - DROP_COUNT[0] + 1)) * (b.heart ? HEART_DROPS : 1);
   for (let i = 0; i < n && drops.length < MAX_DROPS; i++) {
     // 膜が最後に残る、穴の反対側から散る
     const dir = randUnit(new THREE.Vector3()).multiplyScalar(0.6).sub(b.hole).normalize();
@@ -1579,16 +1654,16 @@ function updateBubbles(dt) {
     b.drift.multiplyScalar(fade).add(_v.set(rand(-1, 1), rand(-1, 1), rand(-0.5, 0.5)).multiplyScalar(kick));
     b.vel.lerp(windAt(b.pos, _v).add(b.drift), 1 - Math.exp(-dt / b.relax));
     b.pos.addScaledVector(b.vel, dt);
-    if (b.pop < 0 && b.age >= b.life) {
+    const d = -b.pos.z;
+    if (b.pop < 0 && (b.age >= b.life || b.pos.x * clouds.dir > b.popAt * halfHeightAt(d) * camera.aspect)) {
       b.pop = 0;
       randUnit(b.hole);
     }
     if (b.pop >= 0) {
-      b.pop += dt / POP_TIME;
+      b.pop += dt / b.popTime;
       if (b.pop >= 1) { spawnDrops(b); continue; }
     }
     // 画面に入ってから外へ出たら消す（吹き出したばかりで、まだ入っていない玉は残す）
-    const d = -b.pos.z;
     const hh = halfHeightAt(d) + b.r + 0.2;
     const outside = d < 0.3 || Math.abs(b.pos.y) > hh || Math.abs(b.pos.x) > hh * camera.aspect;
     if (!outside) b.entered = true;
@@ -1611,13 +1686,25 @@ function updateBubbles(dt) {
 // 遠い順に並べて、インスタンスの属性に書く
 function writeBubbles() {
   bubbles.sort((a, b) => a.pos.z - b.pos.z);
-  const { aSphere, aPop, aShape, aFilm } = bubbleAttrs;
+  const { aSphere, aPop, aShape, aFilm, aHeart } = bubbleAttrs;
   bubbles.forEach((b, i) => {
-    const wob = WOBBLE_AMP * Math.exp(-b.age * WOBBLE_DECAY) * Math.sin(b.age * WOBBLE_FREQ);
+    let wob = WOBBLE_AMP * Math.exp(-b.age * WOBBLE_DECAY) * Math.sin(b.age * WOBBLE_FREQ);
+    if (b.heart) {
+      // ハートは大きな膜なので、向きの回る軸でぷるぷると揺れ続け、ゆっくり首を振って傾く
+      const th = b.age * HEART_WOBBLE_TURN % TAU;
+      b.axis.set(Math.cos(th), Math.sin(th), 0);
+      wob = HEART_WOBBLE * Math.sin(b.age * HEART_WOBBLE_FREQ % TAU);
+      const sway = (k) => Math.sin((b.age / HEART_SWAY_PERIODS[k] % 1) * TAU + b.heart[k]);
+      aHeart.array.set([1, HEART_YAW * sway(0), HEART_ROLL * sway(1), 0], i * 4);
+    } else {
+      aHeart.array.set([0, 0, 0, 0], i * 4);
+    }
     aSphere.array.set([b.pos.x, b.pos.y, b.pos.z, b.r], i * 4);
     aPop.array.set([b.hole.x, b.hole.y, b.hole.z, b.pop < 0 ? 2 : 1 - 2 * b.pop], i * 4);
     aShape.array.set([b.axis.x, b.axis.y, b.axis.z, wob], i * 4);
-    aFilm.array.set([b.seed, Math.min(1, b.age / b.life) ** 2, b.thick, 0], i * 4);
+    // ハートの膜は時間で薄くしない（薄くなると、ピンクから金色へずれるため）
+    const drain = b.heart ? 0 : Math.min(1, b.age / b.life) ** 2;
+    aFilm.array.set([b.seed, drain, b.thick, b.heart ? 1 : 0], i * 4);
   });
   for (const attr of Object.values(bubbleAttrs)) attr.needsUpdate = true;
   bubbleGeometry.instanceCount = bubbles.length;
@@ -1632,6 +1719,68 @@ function writeBubbles() {
   });
   for (const attr of Object.values(dropGeometry.attributes)) attr.needsUpdate = true;
   dropGeometry.setDrawRange(0, drops.length);
+}
+
+// 隠し要素: ハートのシャボン玉。ふつうの玉と同じ並び（bubbles）に 1 個だけ入れ、同じ風に乗せて同じ描き方で描く。
+// 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。現れるまでは Math.random を引かないので、
+// ハートの出ない場面は追加の前と同じ絵になる。現れたときは、種を Math.random から取り直す。動画のツールで乱数を固定すると、
+// 現れたあとの動きも毎回同じになる
+const heartRandom = (() => {
+  let s = Date.now() >>> 0;   // mulberry32
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
+  return next;
+})();
+const heartRand = (a, b) => a + heartRandom() * (b - a);
+const heartInterval = ([mean, min, max]) => clamp(-Math.log(1 - heartRandom()) * mean, min, max);
+
+let heart = null;   // 流れているハートの玉（bubbles の 1 つ）。いなければ null
+let heartWait = heartInterval(HEART_INTERVAL);   // 次に現れるまでの秒数
+
+// ハートは、ひと吹きの代わりに出す。吹いている途中の玉は止め、ハートと同時には出さない。
+// 流れている玉はそのまま残し、次の吹く番からは、ふだんどおり吹く
+function startHeart() {
+  if (heart) return;
+  heartRandom.reseed();
+  heartWait = heartInterval(HEART_INTERVAL);
+  emitters = [];
+  puffWait = 60 / puffRate * heartRand(0.5, 1.5);
+  const depth = heartRand(...HEART_DEPTH);
+  const hh = halfHeightAt(depth);
+  const r = HEART_SIZE * hh * Math.min(1, camera.aspect);   // 横幅の半分
+  // 流れてくる側の画面の外から、全体が隠れた所から入ってくる
+  const pos = new THREE.Vector3(-clouds.dir * (hh * camera.aspect + r * 1.1), heartRand(...HEART_FROM_Y) * hh, -depth);
+  const vel = windDir.clone().multiplyScalar(WIND.speed * HEART_BOOST);
+  heart = {
+    pos, vel, r,
+    relax: RELAX_TIME * Math.sqrt(r / RELAX_RADIUS),
+    drift: new THREE.Vector3(),
+    axis: new THREE.Vector3(1, 0, 0),
+    age: 0,
+    life: HEART_LIFE,
+    entered: false,
+    seed: heartRand(0, 100),
+    thick: 1,                      // 厚さはピンクになる厚さにそろえる（HEART_PINK_NM）
+    pop: -1,
+    hole: new THREE.Vector3(),
+    popTime: HEART_POP_TIME,
+    popAt: heartRand(...HEART_POP_AT),
+    heart: [heartRand(0, TAU), heartRand(0, TAU)],
+  };
+  bubbles.push(heart);
+}
+
+function updateHeart(dt) {
+  // はじけたり、景色の切替で消えたりしたら、次を待つ
+  if (heart && !bubbles.includes(heart)) heart = null;
+  if (heart) return;
+  heartWait -= dt;
+  if (heartWait <= 0) startHeart();
 }
 
 // ---- 時間で動く位相 ----
@@ -1715,6 +1864,7 @@ function tick(now) {
   time += dt;
   updatePhases();
   updateBubbles(dt);
+  updateHeart(dt);
   motion.def.update(motion.state, dt);
   writeBubbles();
   renderBackground();
@@ -1732,6 +1882,7 @@ setupControls({
     down: () => setPuffRate(puffRate / PUFF_STEP),
     level: () => logPosition(puffRate, MIN_PUFFS, MAX_PUFFS),   // ゲージの位置（0..1）
   },
+  keys: { KeyC: startHeart },   // 隠し要素のハートのシャボン玉を呼び出す（操作ガイドには表示しない）
   onResize() {
     resize();
     renderStatic();
