@@ -1,0 +1,1708 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Soap Bubbles</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  Scene: <span id="scene-name"></span><br>
+  <span class="pc-only">Space: 次の景色 / F・ダブルクリック: 全画面 / ↑↓: 吹く頻度</span>
+  <span class="touch-only">左右スワイプ: 次の景色 / 上下スワイプ: 吹く頻度</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+
+// ---- 設定 ----
+// カメラ
+const CAM_FOV = 45;
+const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };
+
+// 背景（低い解像度で描いて引き伸ばす）
+const BG_SCALE = 0.5;                // 画面の解像度に対する倍率
+const BG_MAX_HEIGHT = 720;           // 背景の描画先の高さの上限（画素）
+const BG_SOFT = 0.0055;              // Meadow の木の枝と葉を、ぼけた見た目で描くときのぼけの幅（ガウスぼかしの標準偏差, 画面の高さに対する割合）
+// Meadow は、手前の草・木・奥の草原の順にぼけを強くして、遠近を出す（草に近い所へピントが合っている見た目）
+const GRASS_SOFT = 0.5;              // 手前の草の葉のぼけの幅（BG_SOFT に対する割合）
+const FIELD_SOFT = 1.8;              // 草原の地面の模様のぼけの幅（BG_SOFT に対する割合）
+const RIDGE_SOFT = 0.6;              // 丘の稜線（空や奥の丘との境目）のぼけの幅（BG_SOFT に対する割合）。模様より弱くし、丘と空の境目が分かるようにする
+const MAX_SPRITES = 10000;            // 背景に 1 回で描く形（玉ぼけ・ぼかした塊など）の数の上限
+const BOKEH_HEX = 0.7;               // 玉ぼけの形（0: 円, 1: 角のとがった六角形。間は角を丸めた六角形）
+// 手前の木（Meadow）。幹から枝分かれを繰り返して枝を伸ばし、枝の先と途中に葉の房を付ける。
+// 左の端に立てる形で書き、景色に切り替えるたびに、左右をランダムに入れ替える。
+// edge: 根もとを画面の左右どちらの端から測るか（-1: 左, 1: 右）, x: 端からの距離, y: 根もとの高さ, angle: 伸びる向き（rad。0 が上、正で左へ）,
+// len: 最初の枝（幹）の長さ, limb: 幹から分かれる枝の長さ, w: 幹の太さ（半分）, depth: 枝分かれの段数, scale: 枝・葉の房・葉の大きさの倍率（上端は画面の外へ見切れてよい）。位置は背景の座標
+const FOREGROUND_TREES = [
+  { edge: -1, x: 0.0, y: -0.25, angle: -0.1, len: 0.55, limb: 0.36, w: 0.085, depth: 4, scale: 1 },   // 左の木。幹は画面の端で見切れる
+];
+const TREE_MAX_WIDTH = 0.42;         // 木（幹・枝・葉・木漏れ日）が画面の端から占める幅の上限（画面の幅に対する割合）。はみ出す分は横に詰める
+const BRANCH_SEGMENTS = 7;           // 枝 1 本を分ける節の数（節ごとに向きを少し変えて曲げる）
+const BRANCH_BEND = 0.45;            // 枝 1 本の曲がりの大きさ（根もとと先の向きの差の最大, rad）
+const BRANCH_KINK = 0.02;            // 節ごとの向きの不規則なずれ（rad）
+const BRANCH_SPREAD = 1.1;           // 枝分かれで、両端の枝が開く角度（rad）
+const BRANCH_INWARD = 0.35;          // 枝分かれのたびに、画面の内側へ寄せる角度（rad）
+const BRANCH_THIN = 0.5;             // 枝分かれで、先の枝の太さを元の枝の何倍にするか
+const BRANCH_MAX_TILT = 1.15;        // 枝が真上から傾く角度の上限（rad）。低く横へ張り出す枝を作らない
+const CLUMP_SIZE = [0.1, 0.14];      // 枝先の葉の房の大きさ（半径）。枝の中ほどの房は、これより小さくする
+const SPRIGS_PER_CLUMP = [3, 4];     // 葉の房 1 つの小枝の数
+const SPRIG_SPREAD = 2.4;            // 小枝が枝先の向きから開く角度の最大（rad）
+const LEAVES_PER_SPRIG = [6, 9];     // 小枝 1 本に付く葉の数
+const FILL_LEAVES = 4;               // 葉の房の内側を埋める葉の数
+const TWIG_WIDTH = 0.003;            // 小枝の根もとの太さ（半分）
+const LEAF_SIZE = [0.012, 0.023];    // 葉 1 枚の長さ（半分）
+const LEAF_DROOP = 0.7;              // 葉が重みで下を向く強さ（0 で小枝から出た向きのまま、大きいほど下を向く）
+const TREE_SWAY = 0.006;             // 枝先の揺れの大きさ（背景の座標）
+const TREE_SWAY_RATE = [0.6, 1.7];   // 枝の揺れと、葉の細かな揺れの角振動数（rad/秒）。木漏れ日も同じ速さで明滅する
+const BARK_COLOR = [0.25, 0.21, 0.17];
+const BARK_LIT = 1.3;                // 日の当たる側（右）の樹皮を明るくする割合（1 で 2 倍の明るさ）
+// 葉の色 [r, g, b, 不透明度]: 茂みの奥の濃い緑・中くらいの緑・日の当たる緑・逆光で透ける黄緑（房の外側と上側ほど明るい色を選ぶ）
+const LEAF_COLORS = [[0.06, 0.15, 0.05, 0.92], [0.14, 0.29, 0.08, 0.9], [0.3, 0.47, 0.13, 0.88], [0.56, 0.7, 0.24, 0.85]];
+// 樹冠の上の方に広く広がる、薄い葉の層。枝とは結び付けずに散らし、ところどころに空の見える穴を開ける（穴から木漏れ日が漏れる）。
+// y: 層の下端の高さ [根もとの側の端, 画面の内側の端], leaves: 葉の数, fade: 下端で葉がまばらになっていく幅,
+// holes: 穴の数, holeSize: 穴の半径。位置は背景の座標
+const CANOPY_VEIL = { y: [0.3, 0.6], leaves: 850, fade: 0.2, holes: 22, holeSize: [0.025, 0.055] };
+const CANOPY_SHADE_COLOR = [0.06, 0.15, 0.05, 0.3];    // 葉の房の地（葉の重なりの奥の暗がり）
+const TREE_SHADE = { x: 0.08, y: 0.1, size: [0.36, 0.075], color: [0.08, 0.2, 0.06, 0.32] };   // 木陰（草原に落ちる影）。x は幹から画面の内側への距離
+// 木漏れ日（葉の間から漏れる光の玉ぼけ）。葉の層の穴ごとに、同じくらいの大きさの玉ぼけがいくつか重なって集まる。
+// 風で葉が揺れてすき間が開いたときに日が漏れるので、まわりの葉の揺れに合わせて明滅させる
+const DAPPLES_PER_GROUP = [4, 8];    // 穴 1 つの玉ぼけの数
+const DAPPLE_SIZE = [0.011, 0.024];  // 玉ぼけの半径。大きいものほど淡くする。シャボン玉より小さくし、紛れないようにする
+const DAPPLE_BRIGHTNESS = 0.5;       // いちばん小さい玉ぼけの明るさ
+const DAPPLE_GLOW = [2.2, 0.2];      // 玉ぼけのまわりの淡い光のにじみ: [大きさ（玉ぼけの半径に対する倍率）, 明るさ（玉ぼけに対する割合）]
+const DAPPLE_COLORS = [[1, 0.95, 0.78], [1, 0.95, 0.78], [0.86, 1, 0.6], [0.9, 0.96, 1]];   // 日の光・葉を透けた光・空の光
+const TRUNK_DAPPLES = 10;            // 幹と太い枝に落ちる木漏れ日の数
+
+// 手前の草（Meadow）。細長い葉を株（根もとから扇状に広がる数枚）にまとめ、奥から手前へ 3 層に並べる
+// { tufts: 株の数, blades: 1 株の葉の数, len: 長さ, w: 根もとの幅（半分）, y: 根もとの高さ, flex: 風での曲がりやすさ,
+//   colors: 色の候補 [r, g, b, 不透明度]（最後は逆光で透ける黄緑。ほかより少なく選ぶ） }。位置は背景の座標
+const GRASS_LAYERS = [
+  { tufts: 160, blades: [3, 7], len: [0.03, 0.065], w: [0.0035, 0.006], y: 0.015, flex: 0.6,
+    colors: [[0.42, 0.58, 0.25, 0.5], [0.52, 0.66, 0.3, 0.45], [0.75, 0.84, 0.42, 0.45]] },   // 奥: 短く淡い
+  { tufts: 95, blades: [4, 8], len: [0.055, 0.115], w: [0.005, 0.008], y: -0.01, flex: 0.8,
+    colors: [[0.24, 0.40, 0.12, 0.65], [0.34, 0.50, 0.17, 0.6], [0.72, 0.82, 0.38, 0.55]] },
+  { tufts: 48, blades: [4, 9], len: [0.095, 0.19], w: [0.007, 0.012], y: -0.04, flex: 1,
+    colors: [[0.10, 0.22, 0.06, 0.8], [0.2, 0.34, 0.1, 0.75], [0.66, 0.78, 0.32, 0.6]] },      // 手前: 長く濃い
+];
+const GRASS_SPAN = 1.6;              // 並べる範囲（中央から左右）
+const GRASS_FAN = 0.45;              // 1 株の葉が開く角度（中心から外側の葉まで, rad）
+const GRASS_CURL = [0.15, 0.6];      // 風が無いときの葉先の垂れ（葉の長さに対する横のずれ）。開いた向きへ垂れる
+const GRASS_LEAN = 0.35;             // 強い風で根もとから傾く角度（rad）
+const GRASS_BEND = 0.45;             // 強い風で葉先がなびく大きさ（葉の長さに対する横のずれ）
+const GRASS_FLUTTER = [0.04, 2, 4];  // 葉ごとの細かな揺れ: 角度（rad）と、角振動数の範囲（rad/秒）
+// 風の強さの模様: 左から右へ草原を渡る 2 つの波 [角振動数（rad/秒）, 横方向の波数（rad/背景の座標）]。重ねて、強い所がまだらに流れる
+const GRASS_GUSTS = [[0.9, 2.2], [0.37, 0.8]];
+
+// 臨海エリア（Waterfront）。位置と大きさは背景の座標
+const WATER_Y = 0.27;                // 水面の高さ（陸と水面の境目）
+// ビル
+const WINDOW_CELL = [0.032, 0.023];  // 手前の列の窓 1 つ分の大きさの上限。奥の列ほど小さくする（列ごとの win を掛ける）。ビルに収まる整数個にするとき、これより大きくはしない
+const SETBACK_CHANCE = 0.35;         // 上が細く段になったビルの割合
+// 観覧車
+const WHEEL_CENTER = [0.62, WATER_Y + 0.23];    // 縦長の画面では、画面の右端に収まるよう左へ寄せる
+const WHEEL_RADIUS = 0.17;
+const WHEEL_LIGHTS = 40;             // 外周の電飾の数
+const WHEEL_PERIOD = 150;            // 1 回転の周期（秒）
+const WHEEL_WAVES = 3;               // 外周を回る明るさの波の数
+const BEACON_HEIGHT = WATER_Y + 0.48;   // 航空障害灯を付けるビルの高さ（屋上の高さ, 背景の座標）
+const BEACON_MIN_BUILDINGS = 2;      // 航空障害灯を付けるビルの、画面の中での最少の本数（高い順に選ぶ）
+const BEACON_INSET = 0.012;          // 航空障害灯の、屋上の角からの内側への距離（ビルのふちのぼけの内側に置く）
+const BEACON_SIZE = 0.009;           // 航空障害灯の玉ぼけの大きさ（半径）
+const BEACON_PERIOD = 3;             // 航空障害灯の明るさが 1 回上下する周期（秒）
+const BEACON_MAX = 0.3;              // 航空障害灯の最も明るいときの明るさ（加算の強さ）
+const BEACON_MIN = 0.35;             // 航空障害灯の最も暗いときの明るさ（最も明るいときに対する割合）
+const WHEEL_WAVE_SPEED = 1.5;        // 明るさの波の速さ（rad/秒）
+
+// 海辺（Beach）。位置は背景の座標
+const SEA_HORIZON_Y = 0.405;         // 水平線の高さ
+const SHORE_Y = 0.16;                // 波打ち際の高さ
+const SUN_X = 0.3;                   // 夕日の位置
+const WAVE_PERIOD = 7;               // 波が寄せて返す周期（秒）
+const WAVE_RUN = 0.06;               // 波が砂浜を駆け上がる距離（いちばん大きい波, 背景の座標）
+const WAVE_ADVANCE = 0.3;            // 1 周期のうち、波が駆け上がる時間の割合（残りでゆっくり引く）
+const WAVE_CREST = 0.07;             // 次の波の白い波頭が見え始める、波打ち際からの距離（背景の座標）
+const SHORE_BAND = [0.04, 0.36];     // 波打ち際を描く帯の高さ（背景の座標）。濡れた砂の下端と、沖の波頭の泡より外側にする
+const FOAM_COLOR = [1, 0.84, 0.72];  // 泡の色（夕日の色を受けて、白より少し暖かい）
+const SHEEN_COLOR = [1, 0.6, 0.38];  // 薄い水の膜と濡れた砂に映る夕日の色
+const GLITTER_COUNT = 110;           // 夕日の照り返しのきらめきの数
+const GLITTER_X = 0.3;               // きらめきの帯の中心（夕日の真下）
+const GLITTER_WIDTH = [0.015, 0.14]; // きらめきの帯の幅（半分）。水平線の近くと、帯の手前の端
+const GLITTER_SIZE = 0.006;          // きらめきの玉ぼけの大きさ（半径）
+const GLITTER_BRIGHTNESS = 0.32;     // きらめきの最も明るいときの明るさ（加算の強さ）
+const GLITTER_RATE = [2, 5];         // きらめきが光る速さ（rad/秒。1 周で 1 回光り、場所を変える）
+const YACHT_COUNT = 3;
+// ヨットの大きさと速さは、水平線から喫水線までの下がり幅に応じて変える（遠近法。強さは YACHT_PERSPECTIVE で控えめにする）
+const YACHT_DEPTH = [0.025, 0.07];   // 水平線から喫水線までの下がり幅の範囲（背景の座標）
+const YACHT_REF_DEPTH = 0.045;       // 大きさと速さの基準にする下がり幅
+const YACHT_SPEED = [0.008, 0.02];   // ヨットの進む速さ（基準の下がり幅での見かけの速さ, 背景の座標/秒）
+const YACHT_HEIGHT = 0.07;           // 帆の高さ（基準の下がり幅での見かけの大きさ）
+const YACHT_PERSPECTIVE = 0.4;       // 遠近の強さ（1 で大きさと速さを下がり幅に比例させる。0 ならどれも同じ大きさ）
+const YACHT_GAP = 0.25;              // ヨットどうしの見かけの間隔（中心どうし, 背景の座標）。これより近づく向きに進んでいたら向きを変え、重なりと並走を避ける
+const YACHT_HAZE = 0.5;              // いちばん遠いヨットの濃さ（近いものを 1 とする割合）。遠いほど霞んで淡くする
+const YACHT_AREA = 0.6;              // ヨットが行き来する範囲（画面の中央から、画面の幅の半分に対する割合）
+const YACHT_TURN_RATE = 1 / 60;      // 範囲の端以外で向きを変える頻度（回/秒）
+const YACHT_TURN_TIME = 4;           // 向きを変えるのにかかる時間（秒）
+const YACHT_SPEED_CHANGE = [5, 15];  // 速さを選び直す間隔（秒）
+
+// 流れる雲（Meadow・Beach）
+const CLOUD_SPEED = 0.012;           // 雲の流れる速さ（背景の座標/秒）
+const CLOUD_MORPH = [0.012, 0.2];    // 雲の形の変わり方: かたまりの位置の揺れ（背景の座標）と、大きさ・濃さの揺れ（割合）
+const CLOUD_MORPH_PERIOD = [25, 60]; // 形が 1 回変わる周期の範囲（秒）。かたまりごとに選ぶ
+const CLOUD_SPAN = 1.7;              // 雲が流れて回り込む範囲（中央から左右, 背景の座標）
+
+// 吹く頻度（回/分）
+const BASE_PUFFS = 8;
+const MIN_PUFFS = 2;
+const MAX_PUFFS = 30;
+const PUFF_STEP = 1.25;              // ↑↓ 1回あたりの倍率
+const PUFF_COUNT = [4, 14];          // ひと吹きで出す数
+const PUFF_JITTER = 0.5;             // ひと吹きの中での位置のばらつき（ワールド単位）
+
+// シャボン玉
+const MAX_BUBBLES = 80;
+const DEPTH_RANGE = [2.5, 7];        // ひと吹きの、カメラからの距離
+const DEPTH_SPREAD = 0.8;            // ひと吹きの中での距離のばらつき
+const RADIUS_RANGE = [0.04, 0.34];   // 半径（ワールド単位）
+const RADIUS_BIAS = 2.4;             // 大きさの偏り。大きいほど小さい玉が多くなる
+const LIFE_RANGE = [5, 20];          // 寿命（秒）
+const BLOW_BOOST = 1.8;              // 吹き出した直後の速さ（風の速さの倍率）
+const BLOW_SPREAD = 0.25;            // 吹き出す速さのばらつき（ワールド単位/秒）
+const RELAX_TIME = 1.6;              // 風の流れに馴染むまでの時間（秒）
+const SINK_SPEED = 0.05;             // 静かな空気の中で沈む速さ（ワールド単位/秒）
+const TURB_AMP = 0.07;               // 風の揺らぎの強さ（ワールド単位/秒）
+const GUST_PERIODS = [23, 9.7];      // 風の強さが変わる周期（秒）
+const WOBBLE_AMP = 0.14;             // 生まれた直後の形の揺れ（半径に対する割合）
+const WOBBLE_DECAY = 2.5;            // 揺れが収まる速さ（1/秒）
+const WOBBLE_FREQ = 17;              // 揺れの角振動数（rad/秒）
+const EXIT_AGE = 2;                  // これより若い玉は、画面の外にいても消さない（吹き出したばかりで、まだ画面に入っていない）
+const PREFILL_TIME = 30;             // 起動時・景色の切替時に、流れていた分として先に進める時間（秒）
+const SPHERE_SEGMENTS = [48, 32];
+
+// 膜
+const FILM_N = 1.33;                 // 石けん水の屈折率
+const FILM_TOP_NM = 260;             // 上端の膜の厚さ（nm）
+const FILM_BOTTOM_NM = 820;          // 下端の膜の厚さ（nm）
+const FILM_SWIRL = 0.5;              // 渦を巻くむらの強さ（厚さに対する割合）
+const FILM_THICK_RANGE = [0.8, 1.2]; // 玉ごとの厚さの倍率
+const DRAIN_TOP = 0.85;              // 寿命の終わりに上端が薄くなる割合
+const DRAIN_ALL = 0.3;               // 寿命の終わりに全体が薄くなる割合
+const FLOW_PERIODS = [47, -31];      // 膜の模様が 1 周する周期（秒）。符号は回る向き
+const OPD_MAX = 3200;                // 干渉色の表の範囲（光路差, nm）
+const LUT_SIZE = 512;
+const FILM_SATURATION = 1.3;         // 干渉色の彩度の倍率
+const FILM_R0 = 0.06;                // 正面から見た反射の強さ
+const FILM_FRESNEL_POW = 3;          // ふちへ向かって反射が強くなる度合い
+const FILM_DARKEN = 0.25;            // 反射が強い所で背景を暗くする度合い
+const BACK_FACE_GAIN = 0.7;          // 奥側の膜の反射の強さ
+
+// はじける
+const POP_TIME = 0.15;               // 穴が広がって膜が消えるまで（秒）
+const POP_RIM = 0.15;                // 穴のふちの、丸まって光る幅（cos の差）
+const DROP_COUNT = [8, 16];          // はじけたあとに散るしずくの数
+const DROP_LIFE = [0.4, 0.9];        // しずくの寿命（秒）
+const DROP_SPEED = 0.5;              // しずくの散る速さ（ワールド単位/秒）
+const DROP_SIZE = [0.004, 0.01];     // しずくの大きさ（ワールド単位）
+const GRAVITY = 3;
+const MAX_DROPS = 600;
+
+// 景色。位置は背景の座標で、x は画面の中央が 0（画面の高さが 1）、y は下端が 0・上端が 1。色はすべて画面に出る値（0〜1）
+// - sky: 背景のグラデーション [y, 色]（上から順に）
+// - buildings: ビルの列の並び（奥の列から）。1 列は { x: 並べる範囲, base: 足もとの高さ, h: 高さ, w: 幅, gap: すき間（負なら隣と重なる）,
+//   tower: [高層ビルの割合, 高さの倍率], color, a: 不透明度, lit: 窓の明るさ, win: 窓の大きさの倍率 }。範囲に左から並べ、水面に映る明かりも足す
+// - blobs・clouds: 静止したぼかした塊 / 流れる雲のまとまりの並び。1 つのまとまりは { n: 数, x, y: 置く範囲, r: 大きさ,
+//   color: 色（色の並びなら 1 つずつ選ぶ）, a: 不透明度, add: 加算するか, squash: 縦/横の比, clusters: [かたまりの数, 横の広がり, 縦の広がり] }。
+//   clusters があれば、いくつかのかたまりに寄せて置く（積雲など）
+// - field: 草原の地面と丘 { horizon: 地面の遠近の消失線の高さ（尾根より上）, near・far: 手前・遠くの芝の色, dry: 背の低い草の色むら,
+//   hills: 草原の奥の丘の並び（奥から。MAX_HILLS まで）{ y: 稜線の高さ, amp: 起伏の大きさ, freq: 起伏の細かさ, color },
+//   crest: 草原の上の縁（手前の丘の尾根）の稜線 { y, amp, freq } }
+// - lamps: 岸に沿って並べる街灯 { y, spacing: 間隔, r: 大きさ, color, a: 明るさ }。水面に映る筋も足す
+// - motion: 動く部分の種類（MOTIONS のキー）
+// - lights: 膜に映る光源 { dir, color, power, size } の並び（MAX_LIGHTS まで）。dir はカメラから見た向き（x 右, y 上, z 手前。z が負なら奥＝逆光）、
+//   size は映る光の広がり
+// - wind: シャボン玉の吹き出す位置 from（画面の端を ±1 とする）・そのばらつき spread・流れる向き dir・速さ speed（ワールド単位/秒）
+const SCENES = [
+  {
+    name: 'Meadow',
+    // 空は地平線の近くでも白く霞ませず、明るい青のまま丘の緑に接する。青から緑へ移る高さは、稜線のいちばん低い所より下にする
+    // （稜線より上で緑が混ざり始めると、丘と空の境目が霞んでぼやける）
+    sky: [[1.0, [0.30, 0.52, 0.90]], [0.72, [0.44, 0.65, 0.94]], [0.5, [0.56, 0.74, 0.95]], [0.4, [0.56, 0.74, 0.95]], [0.36, [0.55, 0.68, 0.40]],
+      [0.25, [0.48, 0.64, 0.27]], [0.0, [0.30, 0.47, 0.16]]],
+    blobs: [
+      { n: 1, x: [0.95, 0.95], y: [1.05, 1.05], r: [0.7, 0.7], color: [1, 0.95, 0.8], a: [0.4, 0.4], add: true },   // 日の光
+      // 草原の日なたと、雲の影
+      { n: 12, x: [-1.6, 1.6], y: [0.05, 0.42], r: [0.15, 0.3], color: [0.66, 0.8, 0.36], a: [0.25, 0.4], squash: 0.3 },
+      { n: 8, x: [-1.6, 1.6], y: [0.05, 0.35], r: [0.15, 0.3], color: [0.2, 0.36, 0.12], a: [0.22, 0.35], squash: 0.3 },
+    ],
+    // 草原の地面と丘。空に接するのは緑の丘にし、霞んだ丘は置かない（空との境目がぼやけるため）
+    field: {
+      horizon: 0.53, near: [0.30, 0.48, 0.15], far: [0.58, 0.70, 0.45], dry: [0.55, 0.62, 0.24],
+      hills: [
+        { y: 0.49, amp: 0.06, freq: 3.6, color: [0.42, 0.58, 0.38] },   // 奥の丘（画面の横幅に、こぶが 1〜2 つ）
+      ],
+      crest: { y: 0.45, amp: 0.045, freq: 2.4 },   // 草原の上の縁（手前の丘の尾根）
+    },
+    // 流れる積雲。いくつかのかたまりに丸い雲を寄せ集める
+    clouds: [
+      { n: 80, clusters: [6, 0.22, 0.05], x: [-CLOUD_SPAN, CLOUD_SPAN], y: [0.66, 0.9], r: [0.06, 0.14], color: [1, 1, 1], a: [0.35, 0.6], squash: 0.65 },
+    ],
+    motion: 'leaves',
+    lights: [{ dir: [0.45, 0.55, 0.7], color: [1, 0.97, 0.88], power: 6, size: 0.08 }],
+    wind: { from: [-1.2, -0.55], spread: [0, 0.4], dir: [1, 0.35], speed: 0.35 },
+    envGain: 0.55,
+    exposure: 1.0,
+  },
+  {
+    name: 'Beach',
+    sky: [[1.0, [0.14, 0.12, 0.30]], [0.72, [0.42, 0.24, 0.42]], [0.5, [0.92, 0.48, 0.32]], [0.415, [1.0, 0.74, 0.45]],
+      [0.395, [0.62, 0.36, 0.32]], [0.25, [0.36, 0.20, 0.24]], [SHORE_Y + 0.01, [0.42, 0.26, 0.27]],
+      [SHORE_Y - 0.01, [0.60, 0.40, 0.33]], [0.08, [0.44, 0.28, 0.24]], [0.0, [0.24, 0.14, 0.14]]],
+    blobs: [
+      { n: 1, x: [SUN_X, SUN_X], y: [0.43, 0.43], r: [0.5, 0.5], color: [1, 0.62, 0.32], a: [0.3, 0.3], add: true },   // 夕日の光
+      { n: 1, x: [SUN_X, SUN_X], y: [0.425, 0.425], r: [0.08, 0.08], color: [1, 0.92, 0.75], a: [0.5, 0.5], add: true },   // 夕日
+      { n: 4, x: [0.27, 0.33], y: [0.2, 0.37], r: [0.06, 0.1], color: [1, 0.6, 0.3], a: [0.15, 0.22], add: true, squash: 2.5 },   // 水面に映る夕日
+      { n: 2, x: [0.2, 0.4], y: [SHORE_Y - 0.03, SHORE_Y - 0.02], r: [0.15, 0.2], color: [1, 0.6, 0.35], a: [0.1, 0.14], add: true, squash: 0.25 },   // 濡れた砂に映る夕日
+      { n: 14, x: [-1.5, 1.5], y: [0.0, 0.12], r: [0.1, 0.2], color: [0.22, 0.12, 0.13], a: [0.1, 0.2], squash: 0.4 },   // 砂浜のむら
+    ],
+    // 雲。静止した部分より後に描くので、夕日にうっすらかかる（シャボン玉より目立たないよう、まぶしさを和らげる）
+    clouds: [
+      { n: 8, x: [-CLOUD_SPAN, CLOUD_SPAN], y: [0.6, 0.85], r: [0.12, 0.25], color: [0.55, 0.30, 0.42], a: [0.25, 0.4], squash: 0.3 },
+      { n: 18, x: [-CLOUD_SPAN, CLOUD_SPAN], y: [0.44, 0.56], r: [0.1, 0.22], color: [0.62, 0.36, 0.38], a: [0.35, 0.55], squash: 0.18 },   // 低い雲
+      { n: 8, x: [-CLOUD_SPAN, CLOUD_SPAN], y: [0.425, 0.45], r: [0.12, 0.2], color: [0.72, 0.44, 0.38], a: [0.3, 0.45], squash: 0.12 },   // 水平線の上の薄い雲
+    ],
+    motion: 'seaside',
+    shore: true,   // 波打ち際の波（ShoreShader）
+    lights: [
+      { dir: [0.3, 0.04, -1], color: [1, 0.75, 0.45], power: 5, size: 0.15 },
+      { dir: [-0.4, 0.6, 0.6], color: [0.5, 0.4, 0.7], power: 1.5, size: 0.4 },
+    ],
+    wind: { from: [1.2, -0.1], spread: [0, 0.5], dir: [-1, 0.08], speed: 0.22 },
+    envGain: 0.6,
+    exposure: 0.95,
+  },
+  {
+    name: 'Waterfront',
+    sky: [[1.0, [0.015, 0.02, 0.06]], [0.6, [0.04, 0.045, 0.11]], [WATER_Y + 0.04, [0.13, 0.10, 0.18]], [WATER_Y, [0.05, 0.05, 0.10]],
+      [0.0, [0.015, 0.02, 0.04]]],
+    // ビル: 奥の列から順に、x の範囲に左から並べる
+    buildings: [
+      { x: [-1.7, 1.7], base: WATER_Y, h: [0.05, 0.13], w: [0.04, 0.1], gap: [-0.03, 0.005], tower: [0.15, 1.8],
+        color: [0.10, 0.09, 0.17], a: 0.7, lit: [0.12, 0.22], win: 0.6 },   // 奥: 霞んだ低いビル
+      { x: [-1.7, 0.4], base: WATER_Y, h: [0.1, 0.28], w: [0.06, 0.12], gap: [-0.04, 0.03], tower: [0.2, 1.7],
+        color: [0.06, 0.06, 0.12], a: 0.9, lit: [0.25, 0.5], win: 0.8 },   // 中
+      { x: [-1.7, 0.25], base: WATER_Y, h: [0.14, 0.4], w: [0.1, 0.17], gap: [0.06, 0.28], tower: [0.25, 1.4],
+        color: [0.025, 0.03, 0.06], a: 0.97, lit: [0.45, 0.85], win: 1 },   // 手前のオフィスビル
+      { x: [0.95, 1.7], base: WATER_Y, h: [0.14, 0.4], w: [0.1, 0.17], gap: [0.06, 0.2], tower: [0.25, 1.4],
+        color: [0.025, 0.03, 0.06], a: 0.97, lit: [0.45, 0.85], win: 1 },   // 手前（観覧車の右）
+    ],
+    blobs: [
+      { n: 10, x: [-1.5, 1.5], y: [WATER_Y, WATER_Y + 0.04], r: [0.15, 0.3], color: [0.45, 0.32, 0.5], a: [0.08, 0.14], add: true, squash: 0.25 },   // 地平線の街明かり
+      { n: 24, x: [-1.6, 1.6], y: [WATER_Y, WATER_Y + 0.004], r: [0.1, 0.15], color: [0.6, 0.42, 0.3], a: [0.05, 0.08], add: true, squash: 0.05 },   // 岸の縁
+    ],
+    // 水辺の遊歩道の街灯。岸に沿って等間隔に並べ、水面に短い光の筋として映す。陸と水面の境目が分かる程度に控えめにする
+    // 玉ぼけは、同じく遠くにある窓の明かりのぼけと同じくらいの大きさにする（遠くの光はどれも同じくらいにぼけるため）
+    lamps: { y: WATER_Y + 0.016, spacing: 0.1, r: 0.008, color: [1, 0.68, 0.35], a: 0.3 },
+    motion: 'bayside',
+    lights: [
+      { dir: [-0.5, 0.4, 0.5], color: [1, 0.85, 0.6], power: 4, size: 0.12 },
+      { dir: [0.6, 0.4, -0.4], color: [1, 0.5, 0.8], power: 5, size: 0.1 },
+      { dir: [0.2, 0.7, 0.6], color: [0.6, 0.75, 1], power: 3, size: 0.12 },
+    ],
+    wind: { from: [0, -1.2], spread: [0.7, 0], dir: [0.05, 1], speed: 0.2 },
+    envGain: 1.6,
+    exposure: 1.0,
+  },
+];
+const MAX_LIGHTS = 3;                // 景色の lights の数の上限
+const MAX_STOPS = 10;                // 景色の sky のグラデーションの点の数の上限
+
+// ---- ユーティリティ ----
+// 画面の高さに対する、距離 d での見える範囲の半分（ワールド単位）
+const halfHeightAt = (d) => Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2) * d;
+const randUnit = (v) => v.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize();
+
+// 薄膜の干渉色の表。光路差（nm）ごとに、反射光の色（白色光で 1 になる）を sRGB の画面に出る値で持つ。
+// 表と裏の反射の位相が半波長ずれるので、光路差 0 では打ち消し合って黒くなる
+function buildFilmLut() {
+  // CIE 1931 の等色関数の近似（Wyman, Sloan, Shirley 2013）
+  const g = (l, mu, s1, s2) => Math.exp(-0.5 * ((l - mu) / (l < mu ? s1 : s2)) ** 2);
+  const cmf = [];
+  for (let l = 380; l <= 780; l += 5) {
+    cmf.push([l,
+      1.056 * g(l, 599.8, 37.9, 31.0) + 0.362 * g(l, 442.0, 16.0, 26.7) - 0.065 * g(l, 501.1, 20.4, 26.2),
+      0.821 * g(l, 568.8, 46.9, 40.5) + 0.286 * g(l, 530.9, 16.3, 31.1),
+      1.217 * g(l, 437.0, 11.8, 36.0) + 0.681 * g(l, 459.0, 26.0, 13.8)]);
+  }
+  const toRgb = (x, y, z) => [
+    3.2406 * x - 1.5372 * y - 0.4986 * z,
+    -0.9689 * x + 1.8758 * y + 0.0415 * z,
+    0.0557 * x - 0.2040 * y + 1.0570 * z];
+  const spectrum = (s) => {
+    let x = 0, y = 0, z = 0;
+    for (const [l, cx, cy, cz] of cmf) { const v = s(l); x += v * cx; y += v * cy; z += v * cz; }
+    return toRgb(x, y, z);
+  };
+  const white = spectrum(() => 1);
+  const data = new Uint16Array(LUT_SIZE * 4);
+  for (let i = 0; i < LUT_SIZE; i++) {
+    const opd = i / (LUT_SIZE - 1) * OPD_MAX;
+    const c = spectrum((l) => 1 - Math.cos(TAU * opd / l)).map((v, k) => v / white[k]);
+    const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    for (let k = 0; k < 3; k++) {
+      const v = Math.max(0, lum + (c[k] - lum) * FILM_SATURATION);
+      data[i * 4 + k] = THREE.DataUtils.toHalfFloat(v ** (1 / 2.2));
+    }
+    data[i * 4 + 3] = THREE.DataUtils.toHalfFloat(1);
+  }
+  const tex = new THREE.DataTexture(data, LUT_SIZE, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ---- シェーダー ----
+// 背景のグラデーション（景色の切替時に 1 回だけ描く）
+const SkyShader = {
+  uniforms: {
+    uStopY: { value: new Array(MAX_STOPS).fill(0) },
+    uStopColor: { value: Array.from({ length: MAX_STOPS }, () => new THREE.Vector3()) },
+    uStops: { value: 1 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uStopY[${MAX_STOPS}];
+    uniform vec3 uStopColor[${MAX_STOPS}];
+    uniform int uStops;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = uStopColor[0];
+      for (int i = 1; i < ${MAX_STOPS}; i++) {
+        if (i >= uStops) break;
+        float f = clamp((uStopY[i - 1] - vUv.y) / (uStopY[i - 1] - uStopY[i]), 0.0, 1.0);
+        c = mix(c, uStopColor[i], smoothstep(0.0, 1.0, f));
+      }
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+};
+
+// 描画先をそのまま写す。uGain で明るさを掛け、uDither で階調の段差を隠す
+const CopyShader = {
+  vertexShader: SkyShader.vertexShader,
+  fragmentShader: /* glsl */`
+    uniform sampler2D uMap;
+    uniform float uGain;
+    uniform float uDither;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D(uMap, vUv).rgb * uGain;
+      float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+      gl_FragColor = vec4(c + (n - 0.5) * uDither, 1.0);
+    }`,
+};
+
+// 草原の地面と丘（Meadow。景色の切替時に 1 回だけ描く）。
+// 丘は奥から順に、2 つの正弦波を重ねたなだらかな稜線の下を塗り、尾根の近くを少し明るくする。
+// 草原は手前の丘の尾根より下で、地面を斜めに見下ろしたときの地面の座標でノイズを引き、
+// 手前ほど模様が大きく、奥へ向かうほど細かく詰まるようにする。細かな模様は遠いほど薄める。
+// ぼけた後の見た目を直接描く: 稜線はぼけの幅だけやわらかくし、模様は画面での細かさに応じて、ぼかしで薄まる分だけ弱める
+const MAX_HILLS = 1;
+const FieldShader = {
+  uniforms: {
+    uAspect: { value: 1 },
+    uHorizon: { value: 0.5 },                // 地面の遠近の消失線（起伏に隠れて見えない、尾根より上の高さ）
+    uHill: { value: Array.from({ length: MAX_HILLS + 1 }, () => new THREE.Vector4(0, 0, 0, 0)) },   // 稜線: 高さ, 振幅, 波数, 位相（最後が草原の縁）
+    uHillColor: { value: Array.from({ length: MAX_HILLS }, () => new THREE.Vector3()) },
+    uNear: { value: new THREE.Vector3() },   // 手前の芝の色
+    uFar: { value: new THREE.Vector3() },    // 遠くの芝の色
+    uDry: { value: new THREE.Vector3() },    // 背の低い草の、黄緑の色むら
+    uSoft: { value: BG_SOFT * FIELD_SOFT },
+  },
+  vertexShader: SkyShader.vertexShader,
+  fragmentShader: /* glsl */`
+    uniform float uAspect;
+    uniform float uSoft;
+    uniform float uHorizon;
+    uniform vec4 uHill[${MAX_HILLS + 1}];
+    uniform vec3 uHillColor[${MAX_HILLS}];
+    uniform vec3 uNear;
+    uniform vec3 uFar;
+    uniform vec3 uDry;
+    varying vec2 vUv;
+    float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise2(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash2(i), hash2(i + vec2(1, 0)), f.x), mix(hash2(i + vec2(0, 1)), hash2(i + vec2(1, 1)), f.x), f.y);
+    }
+    float ridge(vec4 h, float x) { return h.x + h.y * (0.8 * sin(x * h.z + h.w) + 0.2 * sin(x * h.z * 1.9 + h.w * 1.7)); }
+    // 画面での角周波数 w（rad/背景の座標）の模様が、ぼかしで薄まる割合
+    float soften(float w) { return exp(-0.5 * w * w * uSoft * uSoft); }
+    void main() {
+      float x = (vUv.x - 0.5) * uAspect;
+      float e = ${(2 * BG_SOFT * RIDGE_SOFT).toFixed(5)};   // 稜線の境目をやわらかくする幅（ぼかした境目と同じくらいの傾き）
+      vec4 acc = vec4(0.0);
+      for (int i = 0; i < ${MAX_HILLS}; i++) {
+        float top = ridge(uHill[i], x);
+        float a = smoothstep(top + e, top - e, vUv.y);
+        vec3 hc = uHillColor[i] * (0.93 + 0.1 * smoothstep(top - 0.04, top, vUv.y));
+        acc = mix(acc, vec4(hc, 1.0), a);
+      }
+      float crest = ridge(uHill[${MAX_HILLS}], x);
+      float d = uHorizon - vUv.y;
+      float z = 1.0 / max(d, 1e-3);                                   // 奥行き（地平線で無限大）
+      vec2 g = vec2((vUv.x - 0.5) * uAspect * z, z);       // 地面の座標
+      float far = clamp((z - 2.0) / 40.0, 0.0, 1.0);
+      vec3 c = mix(uNear, uFar, sqrt(far));
+      // 地面の模様は、画面では横に z 倍、縦に z² 倍に詰まって見える。地面の座標での細かさ（格子の数）に掛けて、画面での角周波数とみなす。
+      // ノイズは格子より粗い成分も多く含むので、格子の細かさのとおりに弱めると平らになりすぎる
+      vec2 zoom = vec2(z, z * z);
+      // 背の低い草の色むら（大きなまだら）。遠くで細かく詰まると、ぼけて平均の濃さに近づく
+      float patchy = noise2(g * vec2(0.5, 0.12)) * 0.6 + noise2(g * vec2(1.3, 0.3)) * 0.4;
+      float dry = mix(0.1, smoothstep(0.5, 0.85, patchy), soften(length(zoom * vec2(0.5, 0.12))));
+      c = mix(c, uDry * mix(1.0, uFar.g / uNear.g, sqrt(far)), dry * 0.35);
+      // 芝刈りの縞（ごく淡く）
+      float stripe = smoothstep(-0.3, 0.3, sin(g.x * 2.5 + g.y * 0.35));
+      stripe = mix(0.5, stripe, soften(length(vec2(2.5 * z, z * z * (2.5 * x + 0.35)))));
+      c *= 1.0 + 0.04 * stripe * (1.0 - far);
+      // 芝の葉の粒立ち。地面の上で縦横同じ大きさの粒にする（遠近で上下につぶれて見える）。遠いほど薄める。
+      // 地面の縦横で大きさを変えると、粒が消失点から放射状の筋になるため
+      float grain = (noise2(g * 18.0) - 0.5) * 0.6 * soften(length(zoom) * 18.0)
+        + (noise2(g * 45.0) - 0.5) * 0.4 * soften(length(zoom) * 45.0);
+      c *= 1.0 + grain * 0.35 * exp(-z * 0.12);
+      // 尾根の近くは日が当たって少し明るい
+      c *= 1.0 + 0.06 * smoothstep(crest - 0.03, crest, vUv.y);
+      acc = mix(acc, vec4(c, 1.0), smoothstep(crest + e, crest - e, vUv.y));
+      gl_FragColor = acc;   // 乗算済みの色（丘と草原を順に重ねてある）
+    }`,
+};
+
+// 波打ち際（Beach。毎コマ描く）。波は砂浜を素早く駆け上がり、ゆっくり引いていく。
+// 駆け上がった先端には泡の筋が立ち、その後ろに薄い水の膜が残る。引いたあとの砂は濡れて暗く、夕日が映り、しだいに乾く。
+// 沖からは次の波の白い波頭が近づき、波打ち際で崩れて次の駆け上がりになる。
+// 波の大きさは 1 波ごとに変える。波打ち際全体でほぼ一斉に満ち引きし、着く時刻は場所によってわずかにずらすだけにする。
+// ほかの景色と同じく、ぼけた後の見た目（やわらかい境目と、粗い泡の模様）を直接描く
+const ShoreShader = {
+  uniforms: {
+    uAspect: { value: 1 },
+    uWaveT: { value: 0 },       // 経過時間 / 周期。精度を保つため、JS で 64 で割った余りにしてから渡す
+  },
+  // 板は、波・泡・濡れた砂の届く高さの帯（SHORE_BAND）だけに縮める（何も無い所までシェーダーを通さない）
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = vec2(uv.x, mix(${SHORE_BAND[0].toFixed(3)}, ${SHORE_BAND[1].toFixed(3)}, uv.y));
+      gl_Position = vec4(position.x, vUv.y * 2.0 - 1.0, 0.0, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uAspect;
+    uniform float uWaveT;
+    varying vec2 vUv;
+    const float ADV = ${WAVE_ADVANCE.toFixed(2)};
+    float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+    float noise1(float x) {
+      float i = floor(x);
+      float f = fract(x);
+      return mix(hash1(i), hash1(i + 1.0), f * f * (3.0 - 2.0 * f));
+    }
+    float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise2(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash2(i), hash2(i + vec2(1, 0)), f.x), mix(hash2(i + vec2(0, 1)), hash2(i + vec2(1, 1)), f.x), f.y);
+    }
+    // 泡のレース模様（0..1）。p は泡に付いて動く座標
+    float lace(vec2 p) { return smoothstep(0.3, 0.9, noise2(p) * 0.65 + noise2(p * 2.3 + 7.1) * 0.35); }
+    // 駆け上がった高さ（0..1）: 素早く駆け上がり、ゆっくり引く
+    float runup(float p) {
+      return p < ADV ? 1.0 - pow(1.0 - p / ADV, 2.0) : pow(1.0 - (p - ADV) / (1.0 - ADV), 1.6);
+    }
+    // 1 波ごとの駆け上がる距離
+    float reachOf(float cyc, float x) {
+      return ${WAVE_RUN.toFixed(3)} * (0.5 + 0.5 * hash1(cyc)) * (0.85 + 0.3 * noise1(x * 3.0 + cyc * 7.0));
+    }
+    // 沖から近づく波頭の高さ。k は何波あとの波か（0 が次の波）
+    float crestAt(float p, float k, float x, float cyc) {
+      return ${SHORE_Y.toFixed(3)} + ${WAVE_CREST.toFixed(3)} * pow((1.0 - p + k) / 2.0, 1.3) * 2.0 + 0.003 * sin(x * 4.0 + cyc + k * 2.0);
+    }
+    void main() {
+      float x = (vUv.x - 0.5) * uAspect;
+      float y = vUv.y;
+      float shore = ${SHORE_Y.toFixed(3)};
+      float w = uWaveT + 0.025 * sin(1.3 * x + 0.5) + 0.012 * sin(3.7 * x + 1.9);
+      float cyc = mod(floor(w), 64.0);
+      float p = fract(w);
+      float reach = reachOf(cyc, x);
+      float prevReach = reachOf(mod(cyc + 63.0, 64.0), x);
+      float run = runup(p);
+      // 先端はゆるやかに波打つ曲線にする
+      float wiggle = (noise1(x * 12.0 + cyc * 13.0) - 0.5) * 0.004 + (noise1(x * 4.0 + cyc * 5.0) - 0.5) * 0.01;
+      float front = shore - (reach - wiggle) * run;
+      float advancing = 1.0 - smoothstep(ADV - 0.05, ADV + 0.25, p);
+      float sun = exp(-(x - ${SUN_X.toFixed(3)}) * (x - ${SUN_X.toFixed(3)}) * 6.0);   // 夕日の正面ほど照り返しが強い
+      vec3 foamColor = vec3(${FOAM_COLOR.join(', ')}) * (0.55 + 0.45 * sun);
+      vec3 sheenColor = vec3(${SHEEN_COLOR.join(', ')});
+      vec3 add = vec3(0.0);
+      float dark = 0.0;
+      float d = y - front;   // 先端からの距離（正なら海の側）
+
+      // 濡れた砂: この波の跡（引き始めてから）と、前の波の跡。乾くにつれて薄れる。夕日が縦の筋になって映る
+      float cur = step(ADV, p) * (1.0 - 0.6 * (p - ADV) / (1.0 - ADV)) * smoothstep(shore - reach - 0.012, shore - reach + 0.012, y);
+      float prev = 0.4 * (1.0 - p) * smoothstep(shore - prevReach - 0.012, shore - prevReach + 0.012, y);
+      float wet = max(cur, prev) * smoothstep(0.006, -0.006, d) * smoothstep(shore + 0.015, shore - 0.01, y);
+      float streak = exp(-(x - ${SUN_X.toFixed(3)}) * (x - ${SUN_X.toFixed(3)}) * 60.0);
+      dark += 0.35 * wet;
+      add += sheenColor * wet * (0.05 + 0.25 * sun + 0.35 * streak);
+
+      // 薄い水の膜: 先端から波打ち際まで。空と夕日を映して砂より明るく、先端ほど薄い
+      float sheet = smoothstep(-0.006, 0.01, d) * smoothstep(shore + 0.018, shore, y) * step(0.0005, run);
+      float thin = smoothstep(0.0, 0.025, d);
+      add += sheenColor * sheet * (0.08 + 0.3 * sun + 0.3 * streak) * (0.4 + 0.6 * thin);
+      dark += 0.12 * sheet;
+
+      // 先端の泡の帯と、その後ろに残る泡のレース。駆け上がる間は厚く、引くにつれて細く薄れる
+      float edgeW = mix(0.008, 0.016, advancing);
+      float edge = d < 0.0 ? exp(-d * d / 0.00005) : exp(-d / edgeW) * (0.6 + 0.4 * lace(vec2(x * 20.0, d * 80.0) + cyc * 3.1));
+      float trail = smoothstep(0.0, 0.01, d) * exp(-max(d, 0.0) / mix(0.015, 0.03, advancing))
+        * lace(vec2(x * 15.0, (y - shore) * 60.0) + cyc * 1.7) * smoothstep(shore + 0.018, shore, y);
+      float foam = (edge * (0.35 + 0.65 * advancing) + trail * 0.6 * (0.25 + 0.75 * advancing)) * step(0.0005, run);
+      add += foamColor * foam * 0.5;
+
+      // 沖から近づく波頭（次の波と、その次の波）。波打ち際に近づくほど白く崩れ、崩れた後ろに泡が残る
+      for (int k = 0; k < 2; k++) {
+        float fk = float(k);
+        float cy = crestAt(p, fk, x, cyc);
+        float near = 1.0 - (1.0 - p + fk) / 2.0;   // 波打ち際に近いほど 1
+        float dc = y - cy;
+        float crest = exp(-dc * dc / 0.00012) * near * near * (0.6 + 0.4 * lace(vec2(x * 10.0, 0.0) + cyc * 5.0 + fk * 9.0));
+        float face = smoothstep(-0.025, 0.0, dc) * smoothstep(0.006, -0.002, dc) * near;   // 波頭の手前の、影になった波の面
+        float wake = smoothstep(0.0, 0.012, dc) * exp(-dc / 0.02) * near * near * lace(vec2(x * 14.0, dc * 70.0) + cyc * 2.3 + fk * 4.0);
+        dark += 0.12 * face;
+        add += foamColor * (crest * 0.45 + wake * 0.2);
+      }
+
+      gl_FragColor = vec4(add, dark);
+    }`,
+};
+
+// 背景の形。1 つのインスタンスが 1 つの形
+// kind 0: 玉ぼけ（輪郭のある、角を丸めた六角形。param が 1 なら、ふちを明るくせず輪郭をやわらげる）、1: ぼかした塊、（2 は使っていない）
+// 3: ビル（ぼけた四角に、明かりの点いた窓の並び。種で窓の点き方を決める。param は「窓の大きさの倍率 × 10 の整数部 + 窓の明るさ」）、
+// 4: 直角三角形（ヨットの帆。左辺が縦、下辺が横。大きさの x を負にすると左右が反転する）、
+// 5: 根もとから先へ細くなる枝（種が右側を明るくする割合、param が先の太さの割合）、6: 先へ行くほど曲がる草の葉（種が幅の割合、param が葉先の横のずれの割合）、
+// 7: 木の葉（両端のとがった楕円。縦が長さ）
+// 色の a が負なら、|a| の強さで加算する（光）。正なら、その不透明度で重ねる
+const SpriteShader = {
+  uniforms: { uAspect: { value: 1 }, uSoft: { value: BG_SOFT } },
+  vertexShader: /* glsl */`
+    attribute vec4 aRect;    // 中心 xy, 大きさ（半分）xy
+    attribute vec4 aMisc;    // 回転 (rad), 種類, 種, param
+    attribute vec4 aColor;
+    uniform float uAspect;
+    uniform float uSoft;
+    varying vec2 vLocal;
+    varying vec2 vSize;
+    varying vec3 vMisc;
+    varying vec4 vColor;
+    void main() {
+      // 枝・草の葉・木の葉（種類 5・6・7）は、ぼけて広がる分だけ四角を大きくする
+      vLocal = position.xy * (aMisc.y > 4.5 ? 1.0 + 2.5 * uSoft / aRect.zw : vec2(1.0));
+      vSize = aRect.zw;
+      vMisc = aMisc.yzw;
+      vColor = aColor;
+      float c = cos(aMisc.x), s = sin(aMisc.x);
+      vec2 p = vLocal * aRect.zw;
+      p = aRect.xy + vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+      gl_Position = vec4(p.x * 2.0 / uAspect, p.y * 2.0 - 1.0, 0.0, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uSoft;
+    varying vec2 vLocal;
+    varying vec2 vSize;
+    varying vec3 vMisc;
+    varying vec4 vColor;
+    float hash12(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    // 中心からの距離 d（0 以上）での、幅 m（半分）の帯の濃さ。ふちを e の幅でやわらかくする。
+    // 帯が e より細いと、ぼけたように広がって薄くなる
+    float band(float d, float m, float e) { return smoothstep(-e, e, m - d) + smoothstep(-e, e, m + d) - 1.0; }
+    void main() {
+      float vKind = vMisc.x;
+      float r = length(vLocal);
+      float a;
+      if (vKind > 2.5 && vKind < 3.5) {
+        // ビル: ふちをぼかした四角。窓は横に 3 つずつのまとまりで点き、まとまりごと・窓ごとに明るさを変える
+        vec2 edge = 1.0 - 0.02 / vSize;
+        float body = smoothstep(1.0, edge.x, abs(vLocal.x)) * smoothstep(1.0, edge.y, abs(vLocal.y));
+        // 窓の大きさは列ごとの倍率で決め、ビルの幅と高さにちょうど収まる整数個を並べる（端で窓が切れない）。
+        // 数は切り上げ、窓が上限より大きくならないようにする（細いビルや段の上で、窓が引き伸ばされて大きく見えないように）
+        vec2 count = max(vec2(1.0), ceil(vSize * 2.0 / (vec2(${WINDOW_CELL.join(', ')}) * floor(vMisc.z) * 0.1) - 0.01));
+        vec2 cell = (vLocal * 0.5 + 0.5) * count;
+        vec2 id = floor(cell);
+        vec2 f = fract(cell) - 0.5;
+        float lit = step(hash12(vec2(floor(id.x / 3.0), id.y) + vMisc.y), 0.7) * (0.4 + 0.6 * hash12(id + vMisc.y * 1.7));
+        float win = exp(-6.0 * f.x * f.x) * exp(-9.0 * f.y * f.y);
+        vec3 wc = fract(vMisc.y * 7.3) < 0.5 ? vec3(1.0, 0.85, 0.6) : vec3(0.75, 0.85, 1.0);
+        float ba = body * vColor.a;
+        gl_FragColor = vec4(vColor.rgb * ba + wc * win * lit * fract(vMisc.z) * body, ba);
+        return;
+      }
+      float shade = 1.0;
+      // 枝・草の葉・木の葉（種類 5・6・7）は、ぼけた後の見た目で描く。ふちのやわらかさに、ぼけの幅（四角の中の座標）を足す
+      vec2 blur = 2.0 * uSoft / vSize;
+      if (vKind > 6.5) {
+        // 木の葉: 幅が両端へ向けて細くなる
+        float hw = max(1.0 - vLocal.y * vLocal.y, 0.0);
+        a = band(abs(vLocal.x), 0.85 * hw, length(vec2(0.15, blur.x)));
+      } else if (vKind > 5.5) {
+        // 草の葉: 根もとから先へ細くなり、先へ行くほど横へ曲がる（中心線は放物線）。種は幅の割合、param は葉先の横のずれ
+        blur *= ${GRASS_SOFT.toFixed(3)};   // 草は木より手前にあり、ぼけが弱い
+        float v = vLocal.y * 0.5 + 0.5;
+        float cx = vMisc.z * (2.0 * v * v - 1.0);
+        float hw = vMisc.y * pow(max(1.0 - v, 0.0), 0.7);
+        a = band(abs(vLocal.x - cx), 0.65 * hw, length(vec2(0.35 * hw, blur.x))) * smoothstep(-1.0, 1.0, (vLocal.y + 0.95) / length(vec2(0.05, blur.y)));
+        shade = mix(0.5, 1.15, clamp(v, 0.0, 1.0));   // 根もとは影になって暗く、葉先は光を透かして明るい
+      } else if (vKind > 4.5) {
+        float w = mix(1.0, vMisc.z, vLocal.y * 0.5 + 0.5);
+        a = band(abs(vLocal.x), 0.8 * w, length(vec2(0.2 * w, blur.x))) * band(abs(vLocal.y), 0.925, length(vec2(0.075, blur.y)));
+        shade = 1.0 + vMisc.y * smoothstep(-0.1, 0.7, vLocal.x);   // 日の当たる側（右）を明るくする
+      } else if (vKind > 3.5) {
+        a = smoothstep(-1.0, -0.7, vLocal.x) * smoothstep(-1.0, -0.8, vLocal.y) * smoothstep(0.0, -0.35, vLocal.x + vLocal.y);
+      } else if (vKind < 0.5) {
+        // 玉ぼけ: ふちが少し明るい、輪郭のある、角を丸めた六角形（絞り羽根の形）。円と六角形の、中心からの距離を混ぜて角を丸める。
+        // 角が四角の外へ出ないよう、少し小さく描く
+        // param が 1 なら、ふちを明るくせず、輪郭をやわらげる（木漏れ日。シャボン玉と紛れないように）
+        vec2 q = abs(vLocal) * 1.1;
+        float d = mix(length(q), max(q.x * 0.866 + q.y * 0.5, q.y), ${BOKEH_HEX.toFixed(2)});
+        a = smoothstep(1.0, 0.9 - 0.25 * vMisc.z, d) * (0.85 + 0.3 * (1.0 - vMisc.z) * smoothstep(0.55, 0.97, d));
+      } else {
+        a = exp(-3.5 * r * r) * smoothstep(1.0, 0.8, r);
+      }
+      gl_FragColor = vColor.a < 0.0
+        ? vec4(vColor.rgb * shade * (-vColor.a) * a, 0.0)
+        : vec4(vColor.rgb * shade * vColor.a * a, vColor.a * a);
+    }`,
+};
+
+// 膜の模様に使う値ノイズ
+const NOISE_GLSL = /* glsl */`
+  float hash3(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float noise3(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x),
+                   mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x),
+                   mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+  }`;
+
+// シャボン玉。半径 1 の球をインスタンスごとに動かし、膜の干渉色と映り込みを加算で重ねる
+const BubbleShader = {
+  vertexShader: /* glsl */`
+    attribute vec4 aSphere;  // 中心 xyz, 半径
+    attribute vec4 aPop;     // 穴の向き xyz, 穴の広がり（cos。1 で穴なし、-1 で消える）
+    attribute vec4 aShape;   // 揺れの軸 xyz, 揺れの大きさ
+    attribute vec4 aFilm;    // 模様をずらす種, 寿命の進み（0..1）, 厚さの倍率
+    varying vec3 vN;
+    varying vec3 vWorld;
+    varying vec4 vPop;
+    varying vec4 vFilm;
+    void main() {
+      vec3 n = position;
+      vec3 axis = aShape.xyz;
+      float along = dot(n, axis);
+      // 軸の向きに伸び、横に縮む（体積がおよそ変わらない）
+      vec3 p = n + axis * along * aShape.w - (n - axis * along) * aShape.w * 0.5;
+      vN = n;
+      vWorld = aSphere.xyz + p * aSphere.w;
+      vPop = aPop;
+      vFilm = aFilm;
+      gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D uBg;
+    uniform sampler2D uLut;
+    uniform mat3 uFlow1;
+    uniform mat3 uFlow2;
+    uniform vec3 uLightDir[${MAX_LIGHTS}];
+    uniform vec3 uLightColor[${MAX_LIGHTS}];   // 色 × 強さ
+    uniform float uLightSharp[${MAX_LIGHTS}];
+    uniform float uEnvGain;
+    uniform float uGain;
+    varying vec3 vN;
+    varying vec3 vWorld;
+    varying vec4 vPop;
+    varying vec4 vFilm;
+    ${NOISE_GLSL}
+    void main() {
+      vec3 n = normalize(vN);
+      // はじける: 穴の向きから cos が vPop.w を超える所は膜が無い
+      float k = dot(n, vPop.xyz);
+      if (k > vPop.w) discard;
+      float rim = smoothstep(vPop.w - ${POP_RIM.toFixed(3)}, vPop.w, k) * step(vPop.w, 0.999);
+
+      // 膜の厚さ (nm): 液が下へ流れて上ほど薄い。そこに渦を巻くむらを重ね、寿命が進むほど上から薄くなる
+      float g = 0.5 - 0.5 * n.y;
+      float d = mix(${FILM_TOP_NM.toFixed(1)}, ${FILM_BOTTOM_NM.toFixed(1)}, g);
+      vec3 seed = vFilm.x * vec3(13.1, 7.7, 3.3);
+      float w = noise3(uFlow1 * n * 1.6 + seed);
+      float sw = noise3(uFlow2 * n * 2.4 + seed.zxy + w * 1.8);
+      d *= 1.0 + ${FILM_SWIRL.toFixed(3)} * (sw - 0.5) * 2.0;
+      d *= (1.0 - ${DRAIN_TOP.toFixed(3)} * vFilm.y * pow(1.0 - g, 1.5)) * (1.0 - ${DRAIN_ALL.toFixed(3)} * vFilm.y);
+      d *= vFilm.z * (1.0 + 2.0 * rim);   // 穴のふちは膜が丸まって厚い
+
+      vec3 v = normalize(cameraPosition - vWorld);
+      vec3 nf = gl_FrontFacing ? n : -n;
+      float c = clamp(dot(nf, v), 0.0, 1.0);
+      // 膜の中を斜めに進むほど、光路差は小さくなる
+      float cosT = sqrt(1.0 - (1.0 - c * c) / ${(FILM_N * FILM_N).toFixed(4)});
+      vec3 film = texture2D(uLut, vec2(2.0 * ${FILM_N.toFixed(3)} * d * cosT / ${OPD_MAX.toFixed(1)}, 0.5)).rgb;
+
+      // 映り込み: ぼかした背景を環境として引く。光源ははっきりした小さなハイライト
+      vec3 r = (viewMatrix * vec4(reflect(-v, nf), 0.0)).xyz;
+      vec3 env = texture2D(uBg, vec2(0.5 + r.x * 0.35, 0.5 + r.y * 0.45)).rgb * uEnvGain;
+      for (int i = 0; i < ${MAX_LIGHTS}; i++) {
+        env += uLightColor[i] * pow(max(dot(r, uLightDir[i]), 0.0), uLightSharp[i]);
+      }
+      float f = ${FILM_R0.toFixed(3)} + ${(1 - FILM_R0).toFixed(3)} * pow(1.0 - c, ${FILM_FRESNEL_POW.toFixed(1)});
+      vec3 col = film * env * f * uGain + rim * 0.5 * env;
+      gl_FragColor = vec4(col, f * ${FILM_DARKEN.toFixed(3)} * uGain);
+    }`,
+};
+
+// はじけたあとのしずく
+const DropShader = {
+  vertexShader: /* glsl */`
+    attribute float aAlpha;
+    attribute float aSize;
+    uniform float uScale;
+    varying float vAlpha;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vAlpha = aAlpha;
+      gl_PointSize = max(1.5, aSize * uScale / -mv.z);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uColor;
+    varying float vAlpha;
+    void main() {
+      float r = length(gl_PointCoord - 0.5) * 2.0;
+      gl_FragColor = vec4(uColor * vAlpha * smoothstep(1.0, 0.4, r), 0.0);
+    }`,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.1, 50);
+const quadGeometry = new THREE.PlaneGeometry(2, 2);
+const premultiplied = {
+  blending: THREE.CustomBlending,
+  blendSrc: THREE.OneFactor,
+  blendDst: THREE.OneMinusSrcAlphaFactor,
+  depthTest: false,
+  depthWrite: false,
+  transparent: true,
+};
+
+// 背景の描画先: 静止した部分（景色の切替時に描く）と、動く部分を重ねたもの（毎コマ）
+const bgTargetOptions = { type: THREE.HalfFloatType, depthBuffer: false };
+const staticTarget = new THREE.WebGLRenderTarget(1, 1, bgTargetOptions);
+const bgTarget = new THREE.WebGLRenderTarget(1, 1, bgTargetOptions);
+
+const skyQuad = new THREE.Mesh(quadGeometry, new THREE.ShaderMaterial({ ...SkyShader, depthTest: false, depthWrite: false }));
+skyQuad.frustumCulled = false;
+const fieldQuad = new THREE.Mesh(quadGeometry, new THREE.ShaderMaterial({ ...FieldShader, ...premultiplied }));
+fieldQuad.frustumCulled = false;
+fieldQuad.renderOrder = 0.5;   // 空の後、形の前
+fieldQuad.visible = false;
+const shoreQuad = new THREE.Mesh(quadGeometry, new THREE.ShaderMaterial({ ...ShoreShader, ...premultiplied }));
+shoreQuad.frustumCulled = false;
+shoreQuad.renderOrder = 0.6;   // 静止した部分の後、形の前
+shoreQuad.visible = false;
+const copyQuad = new THREE.Mesh(quadGeometry, new THREE.ShaderMaterial({
+  ...CopyShader,
+  uniforms: { uMap: { value: staticTarget.texture }, uGain: { value: 1 }, uDither: { value: 0 } },
+  depthTest: false,
+  depthWrite: false,
+}));
+copyQuad.frustumCulled = false;
+
+const spriteGeometry = new THREE.InstancedBufferGeometry().copy(quadGeometry);
+const spriteAttrs = {
+  aRect: new THREE.InstancedBufferAttribute(new Float32Array(MAX_SPRITES * 4), 4),
+  aMisc: new THREE.InstancedBufferAttribute(new Float32Array(MAX_SPRITES * 4), 4),
+  aColor: new THREE.InstancedBufferAttribute(new Float32Array(MAX_SPRITES * 4), 4),
+};
+for (const [name, attr] of Object.entries(spriteAttrs)) spriteGeometry.setAttribute(name, attr.setUsage(THREE.DynamicDrawUsage));
+spriteGeometry.instanceCount = 0;
+const spriteMesh = new THREE.Mesh(spriteGeometry, new THREE.ShaderMaterial({ ...SpriteShader, ...premultiplied, side: THREE.DoubleSide }));
+spriteMesh.frustumCulled = false;
+spriteMesh.renderOrder = 1;
+
+const bgScene = new THREE.Scene();
+bgScene.add(skyQuad, fieldQuad, copyQuad, shoreQuad, spriteMesh);
+const bgCamera = new THREE.Camera();   // 頂点シェーダーで直接画面の位置を決めるので使わない
+
+// 画面に描くシーン: 背景 → シャボン玉の奥側の膜 → 手前側の膜 → しずく
+const scene = new THREE.Scene();
+const screenQuad = new THREE.Mesh(quadGeometry, new THREE.ShaderMaterial({
+  ...CopyShader,
+  uniforms: { uMap: { value: bgTarget.texture }, uGain: { value: 1 }, uDither: { value: 1.5 / 255 } },
+  depthTest: false,
+  depthWrite: false,
+}));
+screenQuad.frustumCulled = false;
+scene.add(screenQuad);
+
+const bubbleGeometry = new THREE.InstancedBufferGeometry().copy(new THREE.SphereGeometry(1, ...SPHERE_SEGMENTS));
+const bubbleAttrs = {
+  aSphere: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
+  aPop: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
+  aShape: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
+  aFilm: new THREE.InstancedBufferAttribute(new Float32Array(MAX_BUBBLES * 4), 4),
+};
+for (const [name, attr] of Object.entries(bubbleAttrs)) bubbleGeometry.setAttribute(name, attr.setUsage(THREE.DynamicDrawUsage));
+bubbleGeometry.instanceCount = 0;
+
+const bubbleUniforms = {
+  uBg: { value: bgTarget.texture },
+  uLut: { value: buildFilmLut() },
+  uFlow1: { value: new THREE.Matrix3() },
+  uFlow2: { value: new THREE.Matrix3() },
+  uLightDir: { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Vector3(0, 0, 1)) },
+  uLightColor: { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Vector3()) },
+  uLightSharp: { value: new Array(MAX_LIGHTS).fill(1) },
+  uEnvGain: { value: 1 },
+};
+function makeBubbleMesh(side, gain, order) {
+  const mesh = new THREE.Mesh(bubbleGeometry, new THREE.ShaderMaterial({
+    ...BubbleShader,
+    uniforms: { ...bubbleUniforms, uGain: { value: gain } },
+    side,
+    ...premultiplied,
+  }));
+  mesh.frustumCulled = false;
+  mesh.renderOrder = order;
+  return mesh;
+}
+scene.add(makeBubbleMesh(THREE.BackSide, BACK_FACE_GAIN, 1), makeBubbleMesh(THREE.FrontSide, 1, 2));
+
+const dropGeometry = new THREE.BufferGeometry();
+dropGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_DROPS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+dropGeometry.setAttribute('aAlpha', new THREE.BufferAttribute(new Float32Array(MAX_DROPS), 1).setUsage(THREE.DynamicDrawUsage));
+dropGeometry.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(MAX_DROPS), 1).setUsage(THREE.DynamicDrawUsage));
+dropGeometry.setDrawRange(0, 0);
+const dropUniforms = { uScale: { value: 1 }, uColor: { value: new THREE.Vector3(1, 1, 1) } };
+const drops3d = new THREE.Points(dropGeometry, new THREE.ShaderMaterial({
+  ...DropShader,
+  uniforms: dropUniforms,
+  ...premultiplied,
+}));
+drops3d.frustumCulled = false;
+drops3d.renderOrder = 3;
+scene.add(drops3d);
+
+// ---- 状態 ----
+let time = 0;
+let sceneIndex = 0;
+let puffRate = BASE_PUFFS;   // 吹く頻度（回/分）
+let puffWait = 0;            // 次に吹くまでの秒数
+let bubbles = [];
+let drops = [];
+let staticSprites = [];      // 背景の静止した部分の形（景色の切替時に作る）
+let motion = null;           // 背景の動く部分（MOTIONS の 1 つと、その状態）
+let clouds = { list: [], dir: 1, morph: [] };   // 流れる雲（景色の切替時に作る）と、流れる向き、かたまりごとの形の揺れ [角振動数, 位相]
+let buildingTops = [];       // ビルの輪郭（奥の列から）。[左端, 右端, 上端] の四角の並び（段になったビルは 2 つ）。航空障害灯を点ける屋上を選ぶのに使う
+let hillPhases = [];         // 丘の稜線の位相（景色の切替時に選ぶ）
+
+// ---- 背景 ----
+let spriteCount = 0;
+// 形を 1 つ積む。毎コマ数千回呼ぶので、一時的な配列を作らずに直接書く
+const spriteRect = spriteAttrs.aRect.array, spriteMisc = spriteAttrs.aMisc.array, spriteColor = spriteAttrs.aColor.array;
+function pushSprite(x, y, sx, sy, angle, kind, r, g, b, a, seed = 0, param = 0) {
+  if (spriteCount >= MAX_SPRITES) return;
+  const i = spriteCount++ * 4;
+  spriteRect[i] = x; spriteRect[i + 1] = y; spriteRect[i + 2] = sx; spriteRect[i + 3] = sy;
+  spriteMisc[i] = angle; spriteMisc[i + 1] = kind; spriteMisc[i + 2] = seed; spriteMisc[i + 3] = param;
+  spriteColor[i] = r; spriteColor[i + 1] = g; spriteColor[i + 2] = b; spriteColor[i + 3] = a;
+}
+// 積んだ形を GPU へ送る。書いた範囲だけを送る（配列全体は MAX_SPRITES 分ある）
+function flushSprites() {
+  for (const attr of Object.values(spriteAttrs)) {
+    attr.clearUpdateRanges();
+    attr.addUpdateRange(0, spriteCount * 4);
+    attr.needsUpdate = true;
+  }
+  spriteGeometry.instanceCount = spriteCount;
+  spriteCount = 0;
+}
+
+// 景色の blobs・clouds のまとまりから形を作り、list に足す
+// { n: 数, x, y: 置く範囲, r: 大きさ, color: 色（色の配列なら 1 つ選ぶ）, a: 不透明度, add: 加算するか, squash: 縦/横の比 }
+// clusters: [かたまりの数, 横の広がり, 縦の広がり] があれば、置く範囲に選んだかたまりの中心のまわりに寄せる（下側は平らに近くする）
+function makeShapes(groups, kind, list = []) {
+  for (const grp of groups) {
+    const centers = grp.clusters ? Array.from({ length: grp.clusters[0] }, () => [randIn(grp.x), randIn(grp.y)]) : null;
+    for (let i = 0; i < grp.n; i++) {
+      const r = randIn(grp.r);
+      const color = Array.isArray(grp.color[0]) ? pick(grp.color) : grp.color;
+      const a = randIn(grp.a);
+      const sq = grp.squash ?? 1;
+      let x, y;
+      if (centers) {
+        const [cx, cy] = pick(centers);
+        x = cx + rand(-1, 1) * grp.clusters[1];
+        y = cy + rand(-0.4, 1) * grp.clusters[2];
+      } else {
+        x = randIn(grp.x);
+        y = randIn(grp.y);
+      }
+      list.push([x, y, r, r * sq, 0, kind, ...color, grp.add ? -a : a]);
+    }
+  }
+  return list;
+}
+
+function buildStatic(s) {
+  const list = [];
+  hillPhases = Array.from({ length: MAX_HILLS + 1 }, () => rand(0, TAU));   // 丘の稜線は景色に切り替えるたびに変える
+  // ビルを奥の列から順に左から並べ、水面に映る明かりを足す。すき間が負なら隣と重なる。
+  // ときどき高層ビル（tower: [割合, 高さの倍率]）を混ぜ、上が細く段になったビルも作る。
+  // 窓の大きさの倍率（win）と明るさは、param に「倍率 × 10 の整数部 + 明るさ（0..1）」としてまとめて渡す
+  buildingTops = [];
+  for (const grp of s.buildings ?? []) {
+    for (let x = grp.x[0]; x < grp.x[1];) {
+      const w = randIn(grp.w);
+      const h = randIn(grp.h) * (Math.random() < grp.tower[0] ? grp.tower[1] : 1);
+      const lit = randIn(grp.lit);
+      const param = Math.round(grp.win * 10) + Math.min(lit, 0.99);
+      const cx = x + w / 2;
+      list.push([cx, grp.base + h / 2, w / 2, h / 2, 0, 3, ...grp.color, grp.a, rand(0, 100), param]);
+      let top = grp.base + h;
+      const outline = [[cx - w / 2, cx + w / 2, top]];
+      if (Math.random() < SETBACK_CHANCE) {
+        const sw = w * rand(0.5, 0.75), sh = h * rand(0.12, 0.3);
+        const sx = cx + rand(-0.5, 0.5) * (w - sw) / 2;
+        list.push([sx, top + sh / 2, sw / 2, sh / 2, 0, 3, ...grp.color, grp.a, rand(0, 100), param]);
+        top += sh;
+        outline.push([sx - sw / 2, sx + sw / 2, top]);
+      }
+      list.push([cx, grp.base - h * 0.35, w * 0.45, h * 0.35, 0, 1, 0.9, 0.85, 0.8, -lit * 0.3]);
+      buildingTops.push(outline);
+      x += w + randIn(grp.gap);
+    }
+  }
+  makeShapes(s.blobs, 1, list);
+  if (s.lamps) {
+    const { y, spacing, r, color, a } = s.lamps;
+    for (let x = -1.6 + rand(0, spacing); x < 1.6; x += spacing) {
+      list.push([x, y, r, r, 0, 0, ...color, -a]);
+      list.push([x, WATER_Y - 0.05, r * 0.9, 0.05, 0, 1, ...color, -a * 0.55]);
+    }
+  }
+  return list;
+}
+
+function renderStatic() {
+  const s = SCENES[sceneIndex];
+  const u = skyQuad.material.uniforms;
+  s.sky.forEach(([y, color], i) => { u.uStopY.value[i] = y; u.uStopColor.value[i].fromArray(color); });
+  u.uStops.value = s.sky.length;
+  for (const sp of staticSprites) pushSprite(...sp);
+  flushSprites();
+  if (s.field) {
+    const f = fieldQuad.material.uniforms;
+    f.uAspect.value = spriteMesh.material.uniforms.uAspect.value;
+    f.uHorizon.value = s.field.horizon;
+    f.uNear.value.fromArray(s.field.near);
+    f.uFar.value.fromArray(s.field.far);
+    f.uDry.value.fromArray(s.field.dry);
+    const ridges = [...s.field.hills, s.field.crest];
+    ridges.forEach((h, i) => f.uHill.value[i].set(h.y, h.amp, h.freq, hillPhases[i]));
+    s.field.hills.forEach((h, i) => f.uHillColor.value[i].fromArray(h.color));
+  }
+  const shore = shoreQuad.visible;
+  skyQuad.visible = true;
+  fieldQuad.visible = !!s.field;
+  copyQuad.visible = false;
+  shoreQuad.visible = false;
+  renderer.setRenderTarget(staticTarget);
+  renderer.render(bgScene, bgCamera);
+  renderer.setRenderTarget(null);
+  skyQuad.visible = false;
+  fieldQuad.visible = false;
+  copyQuad.visible = true;
+  shoreQuad.visible = shore;
+}
+
+// 画面の幅の半分（背景の座標）
+const screenHalfWidth = () => spriteMesh.material.uniforms.uAspect.value / 2;
+
+// 夕日の照り返しのきらめき（Beach）。夕日の真下に縦の帯として集まり、水平線に近いほど帯が細く、明るい。
+// 遠くの光なので、玉ぼけの大きさはほとんど変えない
+function placeGlint(p) {
+  const near = Math.random() ** 1.6;   // 0: 水平線, 1: 帯の手前の端。水平線の近くほど密にする
+  const y = SEA_HORIZON_Y - 0.008 - near * (SEA_HORIZON_Y - SHORE_Y - 0.05);
+  const gauss = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+  p.x = GLITTER_X + gauss * (GLITTER_WIDTH[0] + near * (GLITTER_WIDTH[1] - GLITTER_WIDTH[0]));
+  p.y = y;
+  p.r = GLITTER_SIZE * rand(0.8, 1.2);
+  p.a = GLITTER_BRIGHTNESS * (1 - 0.6 * near) * (1 - 0.7 * Math.abs(gauss));   // 帯の中心と水平線の近くほど明るい
+  p.f = randIn(GLITTER_RATE);
+  return p;
+}
+
+// ヨット（Beach）。画面の中央の範囲だけを、速さを不規則に変えながら行き来する。
+// 互いに近づかないようにし、重なって見えたり、並んで走ったりしないようにする
+// ヨットの見かけの大きさと速さの倍率。遠近は控えめにし、遠い船も小さくなりすぎないようにする
+const yachtScale = (y) => 1 + YACHT_PERSPECTIVE * ((SEA_HORIZON_Y - y.y) / YACHT_REF_DEPTH - 1);
+const yachtGap = () => Math.min(YACHT_GAP, 2 * YACHT_AREA * screenHalfWidth() / (YACHT_COUNT + 1));   // 縦長の画面では範囲に収まるよう狭める
+function newYacht(others) {
+  const dir = randSign();
+  const speed = randIn(YACHT_SPEED);
+  // 先に置いたヨットから離れた位置を選ぶ（見つからなければ最後の候補）
+  let x;
+  for (let n = 0; n < 20; n++) {
+    x = rand(-1, 1) * YACHT_AREA * screenHalfWidth();
+    if (others.every((o) => Math.abs(o.x - x) > yachtGap())) break;
+  }
+  return {
+    x, y: SEA_HORIZON_Y - randIn(YACHT_DEPTH),
+    dir, speed, target: speed, v: dir * speed, face: dir, speedWait: randIn(YACHT_SPEED_CHANGE), ph: rand(0, TAU),
+  };
+}
+// きらめき p が、ヨット y の帆か船体の陰（ヨットより奥）にあるか。帆は、マストから前後へ下ほど広がる三角形。
+// 帆と船体の大きさは、MOTIONS.seaside の draw で描く形に合わせてある（そちらを変えたら、ここも直す）
+function yachtHides(y, p) {
+  const k = yachtScale(y);
+  const up = p.y + p.r - (y.y + 0.006 * k);   // 帆の下端からの高さ
+  if (up < 0) return false;                   // ヨットより手前
+  const u = (p.x - y.x) * Math.sign(y.face || 1);   // マストからの距離（前が正）
+  const w = Math.abs(y.face) * k, h = YACHT_HEIGHT * k;
+  if (Math.abs(u) < 0.05 * k + p.r && up < 0.02 * k) return true;   // 船体
+  return u > 0 ? u - p.r < 0.034 * w * (1 - up / (0.72 * h)) : -u - p.r < 0.06 * w * (1 - up / h);
+}
+function updateYacht(y, dt, others) {
+  // たまに向きを変える。範囲の端では外へ向かっていれば必ず変える
+  const edge = YACHT_AREA * screenHalfWidth();
+  if (Math.random() < YACHT_TURN_RATE * dt || y.x * y.dir > edge) y.dir = -y.dir;
+  // 近くのヨットへ向かっていたら向きを変える（向かい合っていれば両方が、同じ向きなら後ろの方が変える）。
+  // ただし、変えると範囲の外へ向かう端の近くでは変えない（端で向きが行ったり来たりしないように）
+  else if (others.some((o) => o !== y && Math.abs(o.x - y.x) < yachtGap() && (o.x - y.x) * y.dir > 0) && -y.dir * y.x < edge * 0.8) y.dir = -y.dir;
+  y.speedWait -= dt;
+  if (y.speedWait <= 0) {
+    y.target = randIn(YACHT_SPEED);
+    y.speedWait = randIn(YACHT_SPEED_CHANGE);
+  }
+  const k = 1 - Math.exp(-dt / YACHT_TURN_TIME);
+  y.speed += (y.target - y.speed) * k;
+  y.v += (y.dir * y.speed - y.v) * k;   // 向きを変えるときは、いったん止まってから反対へ進む
+  y.x += y.v * dt * yachtScale(y);   // 遠いほど見かけの動きが遅い
+  // 見た目の向き（-1..1）。向きを変える間に帆がいったん細くなり、反対向きに開く
+  y.face = clamp(y.face + Math.sign(y.dir - y.face) * 2 * dt / YACHT_TURN_TIME, -1, 1);
+}
+
+// 手前の木の枝を 1 本伸ばし、先で枝分かれを繰り返す。位置は根もとの側の画面の端からの距離で持つ（画面の幅が変わっても端に付いたまま）。
+// reach は根もとからの段数の割合で、揺れの大きさに使う
+function growBranch(parts, tree, x, y, ang, len, w, depth, level) {
+  const reach = level / tree.depth;
+  const ph = rand(0, TAU);
+  // 枝を節に分け、節ごとに向きを少しずつ変えて緩やかに曲げる。太さは根もとから先へ 7 割まで細くし、幹の根もとは裾を広げる
+  const bend = rand(-1, 1) * BRANCH_BEND;
+  const seg = len / BRANCH_SEGMENTS;
+  const width = (i) => w * (1 - 0.3 * i / BRANCH_SEGMENTS) * (level === 0 ? 1 + 0.4 * Math.max(0, 1 - i / 3) ** 2 : 1);
+  let ex = x, ey = y, a = ang;
+  for (let i = 0; i < BRANCH_SEGMENTS; i++) {
+    a = ang + bend * ((i + 0.5) / BRANCH_SEGMENTS - 0.5) + rand(-1, 1) * BRANCH_KINK;
+    const sx = ex, sy = ey;
+    ex = sx - Math.sin(a) * seg;
+    ey = sy + Math.cos(a) * seg;
+    // 節は前後へ長めに重ね、太さも重ねた長さに合わせて、継ぎ目を見せない
+    const sw = width(i - 0.2), taper = width(i + 1.2) / sw;
+    const mx = (sx + ex) / 2, my = (sy + ey) / 2;
+    parts.branches.push({ edge: tree.edge, x: mx, y: my, w: sw, hl: seg / 2 * 1.4, ang: a, taper, color: BARK_COLOR, a: 0.96, reach, ph });
+    // 幹から分かれた枝は、途中の先寄りにも小さめの葉の房を 1 つ付ける。
+    // 樹冠の内側にも葉を付けるが、房を小さくまとめて数を抑え、房の間に空の見えるすき間をはっきり残す
+    if (level === 1 && i === 4) addClump(parts, tree, ex, ey, a, CLUMP_SIZE[0] * rand(0.7, 0.95) * tree.scale, reach, ph);
+    // 太い枝は、木漏れ日の落ちる場所の候補にする
+    if (sw > 0.012 * tree.scale) parts.bark.push({ edge: tree.edge, x: mx, y: my, w: sw, ang: a, reach, ph });
+  }
+  ang = a;   // 枝分かれは、先の節の向きから開く
+  if (depth <= 2) addClump(parts, tree, ex, ey, ang, randIn(CLUMP_SIZE) * tree.scale, reach, ph);
+  if (depth === 0) return;
+  const n = level === 0 ? 3 : 2 + (Math.random() < 0.4 ? 1 : 0);   // 幹は 3 本に、その先は 2〜3 本に分かれる
+  for (let i = 0; i < n; i++) {
+    // 左右へ開きつつ、根もとから離れる向き（画面の内側）へ寄せる
+    const spread = (i / (n - 1) - 0.5) * BRANCH_SPREAD + rand(-0.2, 0.2);
+    growBranch(parts, tree, ex, ey, clamp(ang * 0.6 + spread + tree.edge * BRANCH_INWARD, -BRANCH_MAX_TILT, BRANCH_MAX_TILT), (level === 0 ? tree.limb * tree.scale * rand(0.85, 1.1) : len * rand(0.62, 0.82)), w * BRANCH_THIN, depth - 1, level + 1);
+  }
+}
+
+// 葉が重みで下を向いた後の向き。la は重みが無いときの向き（rad。0 が上、正で左へ）
+const droop = (la) => Math.atan2(Math.sin(la), Math.cos(la) - LEAF_DROOP);
+
+// 葉を 1 枚足す。色は LEAF_COLORS の tone 番目に、葉ごとの明るさのむらを付ける。揺れの位相は ph から ±jitter だけずらす
+function pushLeaf(parts, tree, x, y, ang, r, tone, reach, ph, jitter) {
+  const k = rand(0.85, 1.15);
+  const [cr, cg, cb, ca] = LEAF_COLORS[tone];
+  parts.leaves.push({ edge: tree.edge, x, y, sx: r * rand(0.42, 0.58), sy: r, ang, color: [cr * k, cg * k, cb * k, ca], tone, reach, ph: ph + rand(-jitter, jitter) });
+}
+
+// 葉の房: 枝先からほぼ全方向へ小枝を開き、葉を小枝に沿って左右交互に付ける。葉は重みで下を向く。
+// 房の内側には地の暗がりを置いて葉で埋め、葉の重なりの奥に見せる。房の外側と上側の葉ほど、日が当たったり透けたりして明るい。
+// ang は枝先の向き（rad。0 が上、正で左へ）
+function addClump(parts, tree, cx, cy, ang, size, reach, ph) {
+  parts.bodies.push({ edge: tree.edge, x: cx + rand(-0.25, 0.25) * size, y: cy + rand(-0.25, 0.25) * size, sx: size * rand(0.4, 0.55), sy: size * rand(0.3, 0.45), ang: 0, color: CANOPY_SHADE_COLOR, reach, ph });
+  // (px, py) から la の向きへ葉を 1 枚出す。付け根が (px, py) に触れるよう、葉の半分の長さだけ先へ置く
+  const addLeaf = (px, py, la) => {
+    const a = droop(la);
+    const r = randIn(LEAF_SIZE) * tree.scale;
+    const x = px - Math.sin(a) * r * 0.9, y = py + Math.cos(a) * r * 0.9;
+    const light = 0.5 * Math.hypot(x - cx, y - cy) / size + 0.25 * (y - cy) / size + rand(0, 0.5);
+    pushLeaf(parts, tree, x, y, a, r, light < 0.3 ? 0 : light < 0.55 ? 1 : light < 0.8 ? 2 : 3, reach, ph, 0.5);
+  };
+  const few = size / (CLUMP_SIZE[1] * tree.scale);   // 小さい房は、小枝と葉を減らす
+  const ns = Math.round((SPRIGS_PER_CLUMP[0] + randInt(SPRIGS_PER_CLUMP[1] - SPRIGS_PER_CLUMP[0] + 1)) * few);
+  for (let i = 0; i < ns; i++) {
+    const a = ang + rand(-1, 1) * SPRIG_SPREAD;
+    const len = size * rand(0.5, 0.85);
+    parts.twigs.push({ edge: tree.edge, x: cx - Math.sin(a) * len / 2, y: cy + Math.cos(a) * len / 2, w: TWIG_WIDTH * tree.scale, hl: len / 2, ang: a, taper: 0.4, color: BARK_COLOR, a: 0.85, reach, ph });
+    const nl = LEAVES_PER_SPRIG[0] + randInt(LEAVES_PER_SPRIG[1] - LEAVES_PER_SPRIG[0] + 1);
+    for (let j = 0; j < nl; j++) {
+      const u = 0.12 + 0.88 * (j + rand(0, 1)) / nl;
+      addLeaf(cx - Math.sin(a) * len * u, cy + Math.cos(a) * len * u, a + (j % 2 ? 1 : -1) * rand(0.5, 1.2));
+    }
+  }
+  for (let i = 0; i < FILL_LEAVES * few; i++) {
+    const d = size * 0.55 * Math.sqrt(Math.random()), th = rand(0, TAU);
+    addLeaf(cx + Math.cos(th) * d, cy + Math.sin(th) * d, rand(0, TAU));
+  }
+}
+
+// 樹冠の上の方の、薄い葉の層（CANOPY_VEIL）。width は層が根もとの側の端から広がる幅。
+// 揺れの位相は位置でなめらかに変え、近くの葉がまとまって揺れるようにする。穴は木漏れ日の場所として parts.holes に足す
+function addCanopyVeil(parts, tree, width) {
+  const v = CANOPY_VEIL;
+  const wave = rand(0, TAU);
+  const floor = (u) => v.y[0] + (v.y[1] - v.y[0]) * u / width + 0.06 * Math.sin(u * 9 + wave);   // 層の下端（波打たせる）
+  const phase = (u, y) => (u * 2.5 + y * 3 + wave) % TAU;
+  const holes = Array.from({ length: v.holes }, () => {
+    const u = rand(0.1, 0.95) * width;
+    return { u, y: rand(floor(u) + v.fade * 0.5, 1), r: randIn(v.holeSize) };
+  });
+  for (let i = 0; i < v.leaves; i++) {
+    const u = rand(0, width), y0 = floor(u), y = rand(y0, 1.05);
+    if (Math.random() > (y - y0) / v.fade) continue;   // 下端に近いほどまばらにする
+    if (holes.some((h) => Math.hypot(u - h.u, y - h.y) < h.r)) continue;
+    const a = droop(rand(0, TAU));
+    const r = randIn(LEAF_SIZE) * tree.scale;
+    const tone = Math.random() < 0.45 ? 1 : Math.random() < 0.75 ? 2 : 3;   // 中くらいの緑を多くし、明るい葉は少なめにする
+    pushLeaf(parts, tree, -tree.edge * u, y, a, r, tone, 1, phase(u, y), 0.3);
+  }
+  for (const h of holes) parts.holes.push({ edge: tree.edge, x: -tree.edge * h.u, y: h.y, r: h.r, reach: 1, ph: phase(h.u, h.y) });
+}
+
+// ぼかした塊（kind 1）で描く葉の房の地を、BG_SOFT だけぼけた後の大きさと濃さにする。
+// 塊の濃さは、標準偏差が大きさの 1/√7 のガウス分布に近いので、標準偏差どうしを 2 乗和で足し、広がった分だけ薄める
+function softenBlob(p) {
+  const sx = Math.hypot(p.sx, BG_SOFT * Math.sqrt(7)), sy = Math.hypot(p.sy, BG_SOFT * Math.sqrt(7));
+  const [r, g, b, a] = p.color;
+  return { ...p, sx, sy, color: [r, g, b, a * p.sx * p.sy / (sx * sy)] };
+}
+
+// 背景の動く部分。init で状態を作り、update で進め、draw で形を積む
+const MOTIONS = {
+  // 手前の木と木漏れ日の明滅、手前の草の葉
+  leaves: {
+    init() {
+      const parts = { branches: [], bark: [], twigs: [], bodies: [], leaves: [], holes: [] };
+      // 左右を入れ替えるときは、端・端からの距離・向きを反転する
+      const flip = Math.random() < 0.5 ? -1 : 1;
+      const trees = FOREGROUND_TREES.map((t) => ({ ...t, edge: t.edge * flip, x: t.x * flip, angle: t.angle * flip }));
+      for (const tree of trees) {
+        growBranch(parts, tree, tree.x, tree.y, tree.angle, tree.len * tree.scale, tree.w * tree.scale, tree.depth, 0);
+        // 葉の層は、枝の葉の房が広がる幅の内側に収める（木の幅を広げない）
+        const width = Math.max(...parts.leaves.filter((l) => l.edge === tree.edge && l.y > CANOPY_VEIL.y[0]).map((l) => -l.edge * l.x));
+        addCanopyVeil(parts, tree, width * 0.95);
+      }
+      // 樹冠は画面の端と上端の外まで広がっている。画面に入らない分（上端より上、端より外）は捨てる
+      const inFrame = (size) => (p) => p.y - size(p) < 1.02 && -p.edge * p.x + size(p) > -0.02;
+      parts.branches = parts.branches.filter(inFrame((b) => b.hl + b.w));
+      parts.twigs = parts.twigs.filter(inFrame((b) => b.hl));
+      parts.bodies = parts.bodies.filter(inFrame((b) => b.sx)).map(softenBlob);
+      parts.leaves = parts.leaves.filter(inFrame((l) => l.sy));
+      parts.leaves.sort((a, b) => a.tone - b.tone);   // 暗い葉から描き、明るい葉を手前に重ねる
+      // 木漏れ日は、葉の層の穴（まわりを葉が囲む、空の見える所）に集める。空の中には浮かせない。
+      // 明滅と揺れは、まわりの葉の揺れ（reach・ph）に合わせる。同じ穴の玉ぼけは、ほぼ同じときに光る。大きい玉ぼけほど淡い
+      const flecks = [];
+      for (const c of parts.holes) {
+        const r = randIn(DAPPLE_SIZE);
+        const open = rand(0, TAU);   // 穴が開く、葉の揺れの位相
+        const n = DAPPLES_PER_GROUP[0] + randInt(DAPPLES_PER_GROUP[1] - DAPPLES_PER_GROUP[0] + 1);
+        for (let i = 0; i < n; i++) {
+          const d = c.r * Math.sqrt(Math.random()), th = rand(0, TAU);
+          flecks.push({ edge: c.edge, x: c.x + Math.cos(th) * d, y: c.y + Math.sin(th) * d, r: r * rand(0.8, 1.2),
+            a: DAPPLE_BRIGHTNESS * rand(0.4, 1) * DAPPLE_SIZE[0] / r, color: pick(DAPPLE_COLORS),
+            reach: c.reach, ph: c.ph, open: open + rand(-0.6, 0.6), flutter: rand(0, TAU) });
+        }
+      }
+      // 幹と太い枝に落ちる木漏れ日: 樹皮の上の、枝に沿って長い淡い光の斑
+      const spots = Array.from({ length: TRUNK_DAPPLES }, () => {
+        const b = pick(parts.bark);
+        const off = rand(-0.45, 0.45) * b.w;
+        return { ...b, x: b.x + Math.cos(b.ang) * off, y: b.y + Math.sin(b.ang) * off, sx: b.w * rand(0.25, 0.4), sy: b.w * rand(0.4, 0.8), open: rand(0, TAU), flutter: rand(0, TAU) };
+      });
+      // 草の葉: 層ごとに株を範囲に均等に散らし、株の葉を扇状に開く（奥の層から描く）
+      const blades = [];
+      for (const layer of GRASS_LAYERS) {
+        for (let i = 0; i < layer.tufts; i++) {
+          // 間隔は不揃いにし、株ごとに大きさと傾きを変える（櫛のように等間隔に並んで見えないようにする）
+          const tx = -GRASS_SPAN + (i + rand(-0.5, 1.5)) * 2 * GRASS_SPAN / layer.tufts;
+          const n = layer.blades[0] + randInt(layer.blades[1] - layer.blades[0] + 1);
+          const size = rand(0.6, 1.25);
+          const tilt = rand(-0.15, 0.15);
+          for (let j = 0; j < n; j++) {
+            const open = n > 1 ? (j / (n - 1) * 2 - 1) : 0;   // 株の中での位置（-1: 左端, 1: 右端）
+            const lean = tilt + open * GRASS_FAN * rand(0.6, 1.2) + rand(-0.2, 0.2);
+            const len = randIn(layer.len) * size * (1 - 0.35 * Math.abs(open));   // 外側の葉ほど短い
+            blades.push({
+              x: tx + rand(-0.015, 0.015), y: layer.y + rand(-0.01, 0.01), len, w: randIn(layer.w), lean,
+              curl: Math.sign(lean || 1) * randIn(GRASS_CURL) * (0.4 + 0.6 * Math.abs(open)),
+              flex: layer.flex * len / layer.len[1], ph: rand(0, TAU), f: randIn(GRASS_FLUTTER.slice(1)),
+              color: layer.colors[Math.random() < 0.45 ? 0 : Math.random() < 0.75 ? 1 : 2],
+            });
+          }
+        }
+      }
+      // 木が画面の端から内側へ占める幅（葉・葉の房の地・木漏れ日の、いちばん内側の端）。画面の上端より上へ見切れる分は数えない
+      const inner = (list, size) => list.filter((p) => p.y < 1).map((p) => -p.edge * p.x + size(p));
+      const extent = Math.max(...inner(parts.leaves, (l) => l.sy), ...inner(parts.bodies, (b) => b.sx * 0.6), ...inner(flecks, (f) => f.r), 0.01);
+      return { ...parts, trees, extent, flecks, spots, blades };
+    },
+    update() {},
+    draw(st, t) {
+      // 手前の木: 木陰・枝・樹皮に落ちる木漏れ日・葉の房の地・小枝・葉・木漏れ日の順に描く。
+      // 根もとから遠いものほど風で大きく揺れる。小枝は葉と同じだけ揺らし、葉が小枝から離れないようにする
+      // 木が画面の幅の TREE_MAX_WIDTH に収まるよう、はみ出す分は端からの距離を詰める（大きさは変えない。枝は、詰めた後の向きと長さに直す）
+      const half = screenHalfWidth();
+      const fit = Math.min(1, TREE_MAX_WIDTH * 2 * half / st.extent);
+      const px = (p) => p.edge * half + p.x * fit;
+      const [swayRate, flutterRate] = TREE_SWAY_RATE;
+      const sway = (p, gain) => TREE_SWAY * gain * p.reach * Math.sin(swayRate * t + p.ph);
+      // 枝・小枝を 1 節描く。gain は揺れの大きさの倍率、lit は日の当たる側を明るくする割合
+      const branch = (b, gain, lit) => {
+        const sn = Math.sin(b.ang) * fit, cs = Math.cos(b.ang);
+        pushSprite(px(b) + sway(b, gain), b.y, b.w, b.hl * Math.hypot(sn, cs), Math.atan2(sn, cs), 5, ...b.color, b.a, lit, b.taper);
+      };
+      // 木漏れ日の明るさ: 枝の揺れと葉の細かな揺れが、すき間の開く向きに重なったときに日が漏れる
+      const leak = (p) => Math.max(0, 0.6 * Math.sin(swayRate * t + p.ph + p.open) + 0.4 * Math.sin(flutterRate * t + p.flutter)) ** 2;
+      for (const tr of st.trees) {
+        pushSprite(px(tr) - tr.edge * TREE_SHADE.x, TREE_SHADE.y, ...TREE_SHADE.size, 0, 1, ...TREE_SHADE.color);
+      }
+      for (const b of st.branches) branch(b, 0.6, BARK_LIT);
+      for (const p of st.spots) {
+        pushSprite(px(p) + sway(p, 0.6), p.y, p.sx, p.sy, p.ang, 1, 1, 0.9, 0.65, -0.4 * (0.35 + 0.65 * leak(p)));
+      }
+      for (const p of st.bodies) {
+        pushSprite(px(p) + sway(p, 1), p.y, p.sx, p.sy, p.ang, 1, ...p.color);
+      }
+      for (const b of st.twigs) branch(b, 1, 0);
+      for (const p of st.leaves) {
+        const dx = sway(p, 1) + 0.002 * Math.sin(flutterRate * t + p.ph * 3);
+        pushSprite(px(p) + dx, p.y + dx * 0.3, p.sx, p.sy, p.ang, 7, ...p.color);
+      }
+      for (const p of st.flecks) {
+        const b = p.a * leak(p);
+        const x = px(p) + sway(p, 1);
+        pushSprite(x, p.y, p.r * DAPPLE_GLOW[0], p.r * DAPPLE_GLOW[0], 0, 1, ...p.color, -b * DAPPLE_GLOW[1]);
+        pushSprite(x, p.y, p.r, p.r, 0, 0, ...p.color, -b, 0, 1);
+      }
+      // 風の強い所がまだらになって左から右へ草原を渡る。葉は根もとから右へ傾き、葉先ほど大きくなびく。
+      // 風を受けた葉は裏の明るい面が見え、風の通り道が明るい筋になって流れる。葉ごとの細かな揺れも重ねる
+      const [[w1, k1], [w2, k2]] = GRASS_GUSTS;
+      for (const bl of st.blades) {
+        const g = clamp(0.5 + 0.3 * Math.sin(w1 * t - k1 * bl.x) + 0.25 * Math.sin(w2 * t - k2 * bl.x + 1.3), 0, 1) ** 1.5;
+        const flutter = GRASS_FLUTTER[0] * (0.4 + g) * Math.sin(bl.f * t + bl.ph);
+        const lean = bl.lean + (GRASS_LEAN * g + flutter) * bl.flex;   // 右へ傾くのが正
+        const dx = (bl.curl + GRASS_BEND * g * bl.flex) * bl.len;      // 葉先の横のずれ（右が正）
+        const sy = bl.len / 2 * (1 - 0.25 * Math.min(1, Math.abs(dx) / bl.len));   // 曲がるほど見かけの高さが縮む
+        const sx = Math.abs(dx) / 2 + bl.w;
+        // 根もとを起点に、葉の向き（右へ lean 傾く）に沿って、葉の真ん中へ置く
+        const c = Math.cos(lean), sn = Math.sin(lean);
+        const lit = 1 + 0.25 * g;
+        pushSprite(bl.x + c * dx / 2 + sn * sy, bl.y - sn * dx / 2 + c * sy, sx, sy, -lean, 6,
+          bl.color[0] * lit, bl.color[1] * lit, bl.color[2] * lit, bl.color[3], bl.w / sx, dx / 2 / sx);
+      }
+    },
+  },
+  // 水面のきらめき、波打ち際の波、ヨット
+  seaside: {
+    init() {
+      const sparks = Array.from({ length: GLITTER_COUNT }, () => placeGlint({ ph: rand(0, TAU) }));
+      // ヨットは最初から画面の中にいる
+      const yachts = [];
+      for (let i = 0; i < YACHT_COUNT; i++) yachts.push(newYacht(yachts));
+      return { sparks, yachts };
+    },
+    update(st, dt) {
+      for (const y of st.yachts) updateYacht(y, dt, st.yachts);
+      // きらめきは 1 回光るごとに場所を変える（同じ所で光り続けない）
+      for (const p of st.sparks) {
+        p.ph += p.f * dt;
+        if (p.ph > TAU) placeGlint(p).ph -= TAU;
+      }
+    },
+    draw(st, t) {
+      // ヨット: 遠い順に、船体・帆と、水面に映る影。逆光なので影絵に近い
+      for (const y of [...st.yachts].sort((a, b) => b.y - a.y)) {
+        const k = yachtScale(y);
+        const h = YACHT_HEIGHT * k;
+        const fade = YACHT_HAZE + (1 - YACHT_HAZE) * (SEA_HORIZON_Y - y.y - YACHT_DEPTH[0]) / (YACHT_DEPTH[1] - YACHT_DEPTH[0]);
+        const d = y.face;
+        const by = y.y + 0.0015 * k * Math.sin(1.3 * t + y.ph);   // 波に揺れる
+        pushSprite(y.x, by - h * 0.3, 0.03 * k, h * 0.3, 0, 1, 0.1, 0.05, 0.08, 0.3 * fade);
+        pushSprite(y.x, by + 0.005 * k, 0.05 * k, 0.01 * k, 0, 1, 0.12, 0.06, 0.1, 0.85 * fade);
+        const sail = (w, hh, side) => pushSprite(y.x + side * d * w, by + 0.006 * k + hh, side * d * w, hh, 0, 4, 0.32, 0.17, 0.2, 0.8 * fade);
+        sail(0.03 * k, h / 2, -1);         // 主帆（マストより後ろ）
+        sail(0.017 * k, h * 0.36, 1);       // 前帆（マストより前）
+        pushSprite(y.x, by + 0.006 * k + h * 0.52, 0.004 * k, h * 0.52, 0, 1, 0.12, 0.06, 0.1, 0.8 * fade);   // マスト
+      }
+      // きらめきはヨットの後に描き、ヨットより手前のものが船体や影に隠れないようにする。
+      // ヨットより奥で帆や船体の陰になるものは描かない（ヨットは半透明なので、先に描いて重ねると透けて、手前にあるように見える）
+      for (const p of st.sparks) {
+        if (st.yachts.some((y) => yachtHides(y, p))) continue;
+        const b = Math.sin(p.ph / 2) ** 6;   // 1 周の間に 1 回、短く光る
+        pushSprite(p.x, p.y, p.r, p.r, 0, 0, 1, 0.85, 0.6, -p.a * b);
+      }
+    },
+  },
+  // ゆっくり回る観覧車と、水面に映るその電飾、ビルの屋上の航空障害灯
+  bayside: {
+    init() {
+      // 航空障害灯は、画面に見えるビルのうち背の高いもの（BEACON_HEIGHT より高いもの。少なければ高い順に BEACON_MIN_BUILDINGS 本まで足す）の、屋上の左右の角に付ける。
+      // 手前のビルに隠れる角には付けない
+      const half = screenHalfWidth();
+      const hidden = (x, y, i) => buildingTops.slice(i + 1).some((o) => o.some(([l, r, top]) => x > l && x < r && y < top));
+      const corners = (i) => {
+        const [l, r, top] = buildingTops[i].at(-1);
+        return [l + BEACON_INSET, r - BEACON_INSET].filter((x) => Math.abs(x) < half && !hidden(x, top, i)).map((x) => [x, top]);
+      };
+      const order = buildingTops.map((o, i) => [o.at(-1)[2], i]).filter(([, i]) => corners(i).length > 0).sort((a, b) => b[0] - a[0]);
+      const lit = order.filter(([top], n) => top > BEACON_HEIGHT || n < BEACON_MIN_BUILDINGS);
+      const beacons = lit.flatMap(([, i]) => corners(i)).map(([x, y]) => ({ x, y, ph: rand(0, TAU) }));
+      return { beacons };
+    },
+    update() {},
+    draw(st, t) {
+      const cx = Math.min(WHEEL_CENTER[0], screenHalfWidth() - WHEEL_RADIUS * 0.6);   // 縦長の画面では左へ寄せる
+      const cy = WHEEL_CENTER[1];
+      const rot = (t / WHEEL_PERIOD % 1) * TAU;
+      const col = new THREE.Color();
+      // 中心の軸と、軸から外周へのスポーク
+      pushSprite(cx, cy, 0.028, 0.028, 0, 1, 1, 0.95, 0.9, -0.35);
+      for (let i = 0; i < WHEEL_LIGHTS; i++) {
+        const th = rot + i / WHEEL_LIGHTS * TAU;
+        const c = Math.cos(th), s = Math.sin(th);
+        // 色は外周の 1 周で虹の 1 周。電飾ごとに決まった色なので、ゴンドラと同じ速さで虹が回る。明るさの波も外周を回る
+        col.setHSL(i / WHEEL_LIGHTS, 0.75, 0.6);
+        const wave = 0.6 + 0.4 * Math.sin(i / WHEEL_LIGHTS * TAU * WHEEL_WAVES - t * WHEEL_WAVE_SPEED);
+        const x = cx + c * WHEEL_RADIUS, y = cy + s * WHEEL_RADIUS;
+        pushSprite(x, y, 0.028, 0.028, 0, 1, col.r, col.g, col.b, -0.4 * wave);
+        if (i % 2 === 0) {
+          pushSprite(cx + c * WHEEL_RADIUS / 2, cy + s * WHEEL_RADIUS / 2, WHEEL_RADIUS / 2, 0.012, th, 1, col.r, col.g, col.b, -0.08);
+          pushSprite(x, y - 0.022, 0.014, 0.014, 0, 0, 1, 0.85, 0.6, -0.1);   // ゴンドラ
+        }
+        // 水面に映る電飾。縦に伸ばし、波で左右に揺らす
+        const ry = 2 * WATER_Y - y;
+        if (ry > 0) pushSprite(x + 0.015 * Math.sin(3 * t + ry * 40), ry, 0.03, 0.09, 0, 1, col.r, col.g, col.b, -0.13 * wave);
+      }
+      for (const b of st.beacons) {
+        // 消えずに、明るさをぼんやり上げ下げする
+        const k = BEACON_MIN + (1 - BEACON_MIN) * (0.5 + 0.5 * Math.sin(b.ph + t * TAU / BEACON_PERIOD));
+        pushSprite(b.x, b.y + BEACON_SIZE, BEACON_SIZE, BEACON_SIZE, 0, 0, 1, 0.15, 0.1, -BEACON_MAX * k);
+      }
+    },
+  },
+};
+
+// 雲は一方へゆっくり流れ、端から出たら反対の端へ回り込む。
+// 雲を作る丸いかたまりの位置・大きさ・濃さを、かたまりごとにずらしてゆっくり揺らし、雲の形を緩やかに変える
+function drawClouds() {
+  const off = clouds.dir * CLOUD_SPEED * time;
+  const [move, grow] = CLOUD_MORPH;
+  clouds.list.forEach((c, i) => {
+    const [w, ph] = clouds.morph[i];
+    const k = Math.sin(w * time + ph);
+    const x = ((c[0] + off + move * Math.sin(w * 0.7 * time + ph * 1.3) + CLOUD_SPAN) % (2 * CLOUD_SPAN) + 2 * CLOUD_SPAN) % (2 * CLOUD_SPAN) - CLOUD_SPAN;
+    const g = 1 + grow * k;
+    pushSprite(x, c[1] + move * 0.5 * Math.cos(w * time + ph), c[2] * g, c[3] * g, c[4], c[5], c[6], c[7], c[8], c[9] * (1 + grow * Math.sin(w * 0.8 * time + ph * 0.6)));
+  });
+}
+
+// 背景: 静止した部分を写し、雲と動く部分を重ねる。どの景色も、ぼけた後の見た目（やわらかい形）を直接描いてある
+function renderBackground() {
+  drawClouds();
+  motion.def.draw(motion.state, time);
+  flushSprites();
+  renderer.setRenderTarget(bgTarget);
+  renderer.render(bgScene, bgCamera);
+  renderer.setRenderTarget(null);
+}
+
+// ---- シャボン玉 ----
+const _v = new THREE.Vector3();
+const windDir = new THREE.Vector3();
+
+function puff() {
+  const s = SCENES[sceneIndex];
+  const w = s.wind;
+  const depth = randIn(DEPTH_RANGE);
+  const hh = halfHeightAt(depth);
+  const hw = hh * camera.aspect;
+  const ox = (w.from[0] + rand(-1, 1) * w.spread[0]) * hw;
+  const oy = (w.from[1] + rand(-1, 1) * w.spread[1]) * hh;
+  const n = PUFF_COUNT[0] + randInt(PUFF_COUNT[1] - PUFF_COUNT[0] + 1);
+  for (let i = 0; i < n && bubbles.length < MAX_BUBBLES; i++) {
+    const pos = new THREE.Vector3(ox, oy, -depth).add(randUnit(_v).multiplyScalar(PUFF_JITTER * Math.random()));
+    pos.z += rand(-0.5, 0.5) * DEPTH_SPREAD;
+    pos.addScaledVector(windDir, -rand(0, 0.6));   // 先に吹き出した分を先へ
+    const vel = windDir.clone().multiplyScalar(w.speed * BLOW_BOOST).add(randUnit(_v).multiplyScalar(BLOW_SPREAD * Math.random()));
+    bubbles.push({
+      pos, vel,
+      r: RADIUS_RANGE[0] * (RADIUS_RANGE[1] / RADIUS_RANGE[0]) ** (Math.random() ** RADIUS_BIAS),
+      axis: vel.clone().normalize(),
+      age: 0,
+      life: randIn(LIFE_RANGE),
+      seed: rand(0, 100),
+      thick: randIn(FILM_THICK_RANGE),
+      pop: -1,                       // はじけ始めてからの進み（0..1）。はじけていなければ負
+      hole: new THREE.Vector3(),
+    });
+  }
+}
+
+// 風の流れ。近くの玉は似た流れに乗る
+function windAt(p, out) {
+  const s = SCENES[sceneIndex];
+  const t = time;
+  const gust = 1 + 0.3 * Math.sin(t * TAU / GUST_PERIODS[0]) + 0.15 * Math.sin(t * TAU / GUST_PERIODS[1]);
+  out.copy(windDir).multiplyScalar(s.wind.speed * gust);
+  out.x += TURB_AMP * (Math.sin(0.9 * p.y + 0.37 * t) + 0.6 * Math.sin(1.7 * p.z + 0.23 * t + 1.3));
+  out.y += TURB_AMP * (Math.sin(0.8 * p.x - 0.29 * t + 2.1) + 0.6 * Math.sin(1.3 * p.z + 0.41 * t)) - SINK_SPEED;
+  out.z += TURB_AMP * 0.5 * (Math.sin(0.7 * p.x + 0.31 * t) + Math.sin(1.1 * p.y - 0.19 * t + 0.7));
+  return out;
+}
+
+function spawnDrops(b) {
+  const n = DROP_COUNT[0] + randInt(DROP_COUNT[1] - DROP_COUNT[0] + 1);
+  for (let i = 0; i < n && drops.length < MAX_DROPS; i++) {
+    // 膜が最後に残る、穴の反対側から散る
+    const dir = randUnit(new THREE.Vector3()).multiplyScalar(0.6).sub(b.hole).normalize();
+    drops.push({
+      pos: b.pos.clone().addScaledVector(dir, b.r),
+      vel: dir.clone().multiplyScalar(DROP_SPEED * rand(0.3, 1)).add(b.vel),
+      age: 0, life: randIn(DROP_LIFE), size: randIn(DROP_SIZE),
+    });
+  }
+}
+
+function updateBubbles(dt) {
+  puffWait -= dt;
+  if (puffWait <= 0) {
+    puff();
+    puffWait = 60 / puffRate * rand(0.5, 1.5);
+  }
+  const k = 1 - Math.exp(-dt / RELAX_TIME);
+  const keep = [];
+  for (const b of bubbles) {
+    b.age += dt;
+    b.vel.lerp(windAt(b.pos, _v), k);
+    b.pos.addScaledVector(b.vel, dt);
+    if (b.pop < 0 && b.age >= b.life) {
+      b.pop = 0;
+      randUnit(b.hole);
+    }
+    if (b.pop >= 0) {
+      b.pop += dt / POP_TIME;
+      if (b.pop >= 1) { spawnDrops(b); continue; }
+    }
+    // 吹き出したばかりの玉を除き、画面の外へ出たら消す
+    const d = -b.pos.z;
+    const hh = halfHeightAt(d) + b.r + 0.2;
+    if (b.age > EXIT_AGE && (d < 0.3 || Math.abs(b.pos.y) > hh || Math.abs(b.pos.x) > hh * camera.aspect)) continue;
+    keep.push(b);
+  }
+  bubbles = keep;
+
+  const live = [];
+  for (const p of drops) {
+    p.age += dt;
+    if (p.age >= p.life) continue;
+    p.vel.y -= GRAVITY * dt;
+    p.pos.addScaledVector(p.vel, dt);
+    live.push(p);
+  }
+  drops = live;
+}
+
+// 遠い順に並べて、インスタンスの属性に書く
+function writeBubbles() {
+  bubbles.sort((a, b) => a.pos.z - b.pos.z);
+  const { aSphere, aPop, aShape, aFilm } = bubbleAttrs;
+  bubbles.forEach((b, i) => {
+    const wob = WOBBLE_AMP * Math.exp(-b.age * WOBBLE_DECAY) * Math.sin(b.age * WOBBLE_FREQ);
+    aSphere.array.set([b.pos.x, b.pos.y, b.pos.z, b.r], i * 4);
+    aPop.array.set([b.hole.x, b.hole.y, b.hole.z, b.pop < 0 ? 2 : 1 - 2 * b.pop], i * 4);
+    aShape.array.set([b.axis.x, b.axis.y, b.axis.z, wob], i * 4);
+    aFilm.array.set([b.seed, Math.min(1, b.age / b.life) ** 2, b.thick, 0], i * 4);
+  });
+  for (const attr of Object.values(bubbleAttrs)) attr.needsUpdate = true;
+  bubbleGeometry.instanceCount = bubbles.length;
+
+  const pos = dropGeometry.attributes.position.array;
+  const alpha = dropGeometry.attributes.aAlpha.array;
+  const size = dropGeometry.attributes.aSize.array;
+  drops.forEach((p, i) => {
+    pos.set([p.pos.x, p.pos.y, p.pos.z], i * 3);
+    alpha[i] = 1 - p.age / p.life;
+    size[i] = p.size;
+  });
+  for (const attr of Object.values(dropGeometry.attributes)) attr.needsUpdate = true;
+  dropGeometry.setDrawRange(0, drops.length);
+}
+
+// ---- 時間で動く位相 ----
+// GPU の float は精度が低いので、膜の模様を回す角度は JS で 0..2π に収めてから渡す
+const FLOW_AXES = [new THREE.Vector3(0.3, 1, 0.2).normalize(), new THREE.Vector3(-0.5, 0.7, 0.4).normalize()];
+const _m4 = new THREE.Matrix4();
+function updatePhases() {
+  const flows = [bubbleUniforms.uFlow1.value, bubbleUniforms.uFlow2.value];
+  FLOW_PERIODS.forEach((period, i) => {
+    flows[i].setFromMatrix4(_m4.makeRotationAxis(FLOW_AXES[i], (time / period % 1) * TAU));
+  });
+  shoreQuad.material.uniforms.uWaveT.value = time / WAVE_PERIOD % 64;
+}
+
+// ---- 大きさ ----
+function resize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const h = Math.max(1, Math.min(BG_MAX_HEIGHT, Math.round(buf.y * BG_SCALE)));
+  const w = Math.max(1, Math.round(h * buf.x / buf.y));
+  staticTarget.setSize(w, h);
+  bgTarget.setSize(w, h);
+  spriteMesh.material.uniforms.uAspect.value = w / h;
+  shoreQuad.material.uniforms.uAspect.value = w / h;
+  dropUniforms.uScale.value = buf.y / (2 * halfHeightAt(1));
+}
+
+// ---- シーン切替 ----
+const sceneNameEl = document.getElementById('scene-name');
+
+function setScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  sceneNameEl.textContent = s.name;
+  windDir.set(s.wind.dir[0], s.wind.dir[1], 0).normalize();
+  for (let i = 0; i < MAX_LIGHTS; i++) {
+    const l = s.lights[i];
+    bubbleUniforms.uLightDir.value[i].fromArray(l ? l.dir : [0, 0, 1]).normalize();
+    bubbleUniforms.uLightColor.value[i].fromArray(l ? l.color : [0, 0, 0]).multiplyScalar(l ? l.power : 0);
+    bubbleUniforms.uLightSharp.value[i] = l ? 2 / (l.size * l.size) : 1;
+  }
+  bubbleUniforms.uEnvGain.value = s.envGain;
+  screenQuad.material.uniforms.uGain.value = s.exposure;
+  dropUniforms.uColor.value.fromArray(s.lights[0].color);
+  shoreQuad.visible = !!s.shore;
+  staticSprites = buildStatic(s);
+  renderStatic();
+  const cloudList = makeShapes(s.clouds ?? [], 1);
+  clouds = { list: cloudList, dir: randSign(), morph: cloudList.map(() => [TAU / randIn(CLOUD_MORPH_PERIOD), rand(0, TAU)]) };
+  motion = { def: MOTIONS[s.motion], state: MOTIONS[s.motion].init() };
+  // 流れていた分のシャボン玉を先に置く
+  bubbles = [];
+  drops = [];
+  puffWait = 0;
+  const step = 1 / 20;
+  for (let t = 0; t < PREFILL_TIME; t += step) {
+    time += step;
+    updateBubbles(step);
+    motion.def.update(motion.state, step);
+  }
+}
+
+// 暗転している間に、次の景色へ
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
+
+// ---- 強度 ----
+function setPuffRate(value) {
+  puffRate = clamp(value, MIN_PUFFS, MAX_PUFFS);
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  time += dt;
+  updatePhases();
+  updateBubbles(dt);
+  motion.def.update(motion.state, dt);
+  writeBubbles();
+  renderBackground();
+  renderer.render(scene, camera);
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。暗転して次の場面へ移る
+  changeScene: nextScene,
+  // 強度（↑↓・上下スワイプ）。強める・弱める処理と、ゲージの位置
+  intensity: {
+    up: () => setPuffRate(puffRate * PUFF_STEP),
+    down: () => setPuffRate(puffRate / PUFF_STEP),
+    level: () => logPosition(puffRate, MIN_PUFFS, MAX_PUFFS),   // ゲージの位置（0..1）
+  },
+  onResize() {
+    resize();
+    renderStatic();
+  },
+});
+
+// ---- 開始 ----
+resize();
+setPuffRate(BASE_PUFFS);
+setScene(randInt(SCENES.length));
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）
-export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot'];
+export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot', 'bubbles'];
 
 // 作品ごとの場面の選び方。シーン（scenes）と配色（presets）は別々に選べ、両方を持つ作品は同時に指定できる。
 // ここに無い作品・無い種類は選べない。
@@ -16,6 +16,7 @@ export const CHOICES = {
   ripple: { scenes: SCENES },
   waterfall: { scenes: SCENES },
   penguins: { scenes: SCENES },
+  bubbles: { scenes: SCENES },
   teapot: { scenes: SCENES, presets: PRESETS },   // 配色はポットの色。Wireframe に戻ると作品が選び直す
   tube: { presets: PRESETS },
   aurora: { presets: PRESETS },

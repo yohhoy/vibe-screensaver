@@ -192,6 +192,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 次の時代 / 強度: 回る速さ
 
+## [シャボン玉](https://yohhoy.github.io/vibe-screensaver/bubbles.html)
+
+[<img src="docs/images/bubbles.jpg" width="480" alt="シャボン玉">](https://yohhoy.github.io/vibe-screensaver/bubbles.html)
+
+風に乗って流れてくるシャボン玉を、近くから眺めます。膜には虹色の模様がゆっくり流れ、やがてはじけて消えます。背景は昼の草原・ヨットの行き交う夕暮れの海辺・観覧車の回る夜の臨海エリアの 3 つです。
+
+シーン切替: 次の景色 / 強度: 吹く頻度
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
