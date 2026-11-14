@@ -100,7 +100,7 @@ const GRASS_CURL = [0.15, 0.6];      // 風が無いときの葉先の垂れ（�
 const GRASS_LEAN = 0.35;             // 強い風で根もとから傾く角度（rad）
 const GRASS_BEND = 0.45;             // 強い風で葉先がなびく大きさ（葉の長さに対する横のずれ）
 const GRASS_FLUTTER = [0.04, 2, 4];  // 葉ごとの細かな揺れ: 角度（rad）と、角振動数の範囲（rad/秒）
-// 風の強さの模様: 左から右へ草原を渡る 2 つの波 [角振動数（rad/秒）, 横方向の波数（rad/背景の座標）]。重ねて、強い所がまだらに流れる
+// 風の強さの模様: 風下へ草原を渡る 2 つの波 [角振動数（rad/秒）, 横方向の波数（rad/背景の座標）]。重ねて、強い所がまだらに流れる
 const GRASS_GUSTS = [[0.9, 2.2], [0.37, 0.8]];
 
 // 臨海エリア（Waterfront）。位置と大きさは背景の座標
@@ -785,7 +785,7 @@ const BubbleShader = {
     attribute vec4 aSphere;  // 中心 xyz, 半径
     attribute vec4 aPop;     // 穴の向き xyz, 穴の広がり（cos。1 で穴なし、-1 で消える）
     attribute vec4 aShape;   // 揺れの軸 xyz, 揺れの大きさ
-    attribute vec4 aFilm;    // 模様をずらす種, 寿命の進み（0..1）, 厚さの倍率
+    attribute vec4 aFilm;    // 模様をずらす種, 寿命の進み（0..1）, 厚さの倍率, ハートか（0: ふつうの玉, 1: ハート）
     attribute vec4 aHeart;   // ハートへの変形の割合（0: 球, 1: ハート）, 首振り（y 軸まわり, rad）, 傾き（z 軸まわり, rad）
     attribute vec3 aHeartPos;     // 同じ向きのハートの表面の位置（addHeartShape）
     attribute vec3 aHeartNormal;  // その面の向き
@@ -1011,7 +1011,7 @@ let sceneIndex = 0;
 let puffRate = BASE_PUFFS;   // 吹く頻度（回/分）
 let puffWait = 0;            // 次に吹くまでの秒数
 let bubbles = [];
-let emitters = [];          // 吹いている途中のひと吹き（まだ出していない玉の数など）
+let emitters = [];           // 吹いている途中のひと吹き（吹き出し口の位置、残りの息の量など）
 let drops = [];
 let staticSprites = [];      // 背景の静止した部分の形（景色の切替時に作る）
 let motion = null;           // 背景の動く部分（MOTIONS の 1 つと、その状態）
@@ -1421,14 +1421,16 @@ const MOTIONS = {
         pushSprite(x, p.y, p.r * DAPPLE_GLOW[0], p.r * DAPPLE_GLOW[0], 0, 1, ...p.color, -b * DAPPLE_GLOW[1]);
         pushSprite(x, p.y, p.r, p.r, 0, 0, ...p.color, -b, 0, 1);
       }
-      // 風の強い所がまだらになって左から右へ草原を渡る。葉は根もとから右へ傾き、葉先ほど大きくなびく。
-      // 風を受けた葉は裏の明るい面が見え、風の通り道が明るい筋になって流れる。葉ごとの細かな揺れも重ねる
+      // 風の強い所がまだらになって風下へ草原を渡る。葉は根もとから風下へ傾き、葉先ほど大きくなびく。
+      // 風を受けた葉は裏の明るい面が見え、風の通り道が明るい筋になって流れる。葉ごとの細かな揺れも重ねる。
+      // 風の向きは、雲・シャボン玉と同じ（wind。右へ吹くのが 1、左へ吹くのが -1）
+      const wind = clouds.dir;
       const [[w1, k1], [w2, k2]] = GRASS_GUSTS;
       for (const bl of st.blades) {
-        const g = clamp(0.5 + 0.3 * Math.sin(w1 * t - k1 * bl.x) + 0.25 * Math.sin(w2 * t - k2 * bl.x + 1.3), 0, 1) ** 1.5;
+        const g = clamp(0.5 + 0.3 * Math.sin(w1 * t - wind * k1 * bl.x) + 0.25 * Math.sin(w2 * t - wind * k2 * bl.x + 1.3), 0, 1) ** 1.5;
         const flutter = GRASS_FLUTTER[0] * (0.4 + g) * Math.sin(bl.f * t + bl.ph);
-        const lean = bl.lean + (GRASS_LEAN * g + flutter) * bl.flex;   // 右へ傾くのが正
-        const dx = (bl.curl + GRASS_BEND * g * bl.flex) * bl.len;      // 葉先の横のずれ（右が正）
+        const lean = bl.lean + (wind * GRASS_LEAN * g + flutter) * bl.flex;   // 右へ傾くのが正
+        const dx = (bl.curl + wind * GRASS_BEND * g * bl.flex) * bl.len;      // 葉先の横のずれ（右が正）
         const sy = bl.len / 2 * (1 - 0.25 * Math.min(1, Math.abs(dx) / bl.len));   // 曲がるほど見かけの高さが縮む
         const sx = Math.abs(dx) / 2 + bl.w;
         // 根もとを起点に、葉の向き（右へ lean 傾く）に沿って、葉の真ん中へ置く
@@ -1439,7 +1441,7 @@ const MOTIONS = {
       }
     },
   },
-  // 水面のきらめき、波打ち際の波、ヨット
+  // 水面のきらめき、ヨット（波打ち際の波は shoreQuad で描く）
   seaside: {
     init() {
       const sparks = Array.from({ length: GLITTER_COUNT }, () => placeGlint({ ph: rand(0, TAU) }));
@@ -1663,9 +1665,10 @@ function updateBubbles(dt) {
       b.pop += dt / b.popTime;
       if (b.pop >= 1) { spawnDrops(b); continue; }
     }
-    // 画面に入ってから外へ出たら消す（吹き出したばかりで、まだ入っていない玉は残す）
-    const hh = halfHeightAt(d) + b.r + 0.2;
-    const outside = d < 0.3 || Math.abs(b.pos.y) > hh || Math.abs(b.pos.x) > hh * camera.aspect;
+    // 画面に入ってから外へ出たら消す（吹き出したばかりで、まだ入っていない玉は残す）。
+    // 余白（玉の半径 + 0.2）は縦横とも同じ幅にする（画面の縦横比を掛けると、縦長の画面で玉が見えているうちに消える）
+    const hh = halfHeightAt(d), margin = b.r + 0.2;
+    const outside = d < 0.3 || Math.abs(b.pos.y) > hh + margin || Math.abs(b.pos.x) > hh * camera.aspect + margin;
     if (!outside) b.entered = true;
     else if (b.entered || b.age > ENTER_TIMEOUT) continue;
     keep.push(b);
