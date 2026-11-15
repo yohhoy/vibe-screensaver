@@ -207,6 +207,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [太陽系儀](https://yohhoy.github.io/vibe-screensaver/orrery.html)
+
+[<img src="docs/images/orrery.jpg" width="480" alt="太陽系儀">](https://yohhoy.github.io/vibe-screensaver/orrery.html)
+
+蝋燭が 1 本だけ灯る仄暗い書斎。古い木の机の上で、真鍮の太陽系儀（オーラリー）が歯車に回され、惑星がゆっくり巡ります。蝋燭の光で、腕や惑星の影が机の上をゆっくり動きます。
+
+シーン切替: なし / 強度: 公転の速さ
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
