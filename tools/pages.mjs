@@ -38,6 +38,7 @@ export const HIDDEN = {
   waterfall: 'startCarp',
   infcastle: 'startHiddenRoom',
   bubbles: 'startHeart',
+  orrery: 'startComet',
 };
 
 // kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）

@@ -28,7 +28,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 長さの単位は m。机の天板の上面が y = 0、オーラリーの軸が原点を通る。+z が手前（カメラ側）
@@ -223,9 +223,34 @@ const MODERN_SCOPE = { tube: 0xa8a9a7, metalness: 0.45, roughness: 0.55 };   // 
 const TABLET = { size: [0.245, 0.172], thickness: 0.0065, corner: 0.014, glow: 0.7 };   // corner: 角の丸みの半径（m）
 // LED の時代に敷くデスクマット（透明度の高い PVC。少し白く濁る）。オーラリーとタブレットはこの上に載る。透過（transmission）は使わず、
 // 薄い半透明と艶で描く（太陽のガラスと同じ理由）。x・z: 左右・前後の範囲、thickness: 厚み、corner: 角の丸みの半径（m）、
-// color・opacity: 上の面の色と不透明度（少し白く濁る）、edgeColor・edgeOpacity: 縁の色と不透明度（厚みの分だけ白く、わずかに青緑がかる）、roughness: 表面の粗さ（小さいほど艶が出る）
+// color・opacity: 上の面の色と不透明度（少し白く濁る）、edgeColor・edgeOpacity: 縁の色と不透明度（厚みの分だけ白く、わずかに青緑がかる）、roughness: 上の面の粗さ（小さいほど艶が出る）、
+// edgeRoughness: 縁の粗さ（丸めた縁が電灯を鋭く映して光らないよう、上の面より粗くする）
 const DESK_MAT = { x: [-0.52, 0.48], z: [-0.205, 0.38], thickness: 0.0033, corner: 0.02, color: 0xf6f8f8, opacity: 0.18,
-  edgeColor: 0xd2e8e2, edgeOpacity: 0.65, roughness: 0.1 };
+  edgeColor: 0xd2e8e2, edgeOpacity: 0.65, roughness: 0.1, edgeRoughness: 0.6 };
+
+// 彗星（隠し要素）。太陽を焦点とする細長い楕円軌道で、画面の外から来て太陽のすぐそばを回り込み、また画面の外へ去る。
+// interval: 現れる間隔 [指数分布の平均, 下限, 上限]（秒。丸めたあとの実際の平均は約 200 秒）、perihelion: 太陽にいちばん近づく距離（m。太陽の球と水星の軌道のあいだ）、
+// eccentricity: 離心率、far: 飛び始める・飛び終える所の太陽からの距離（m。画面のすぐ外。遠いほど、呼び出してから見えるまで待たされる）、
+// duration: 飛び始めてから飛び終えるまでの秒数（強度に関わらない。far を変えるときは、太陽のそばの速さが変わらないよう合わせる）、
+// fade: 飛び始め・飛び終わりに、頭と尾を薄れさせる秒数、
+// ease: 太陽のそばを遅くする度合い（0 で実際の彗星と同じ（ケプラーの法則）。実際のままだと一瞬で回り込んで見えないため。
+// 1 を超えると、太陽のそばを遠い所より遅く進む）、
+// elevation: 来る向きの、水平からの角度（度。カメラから見て左右のどちらかの、上のほうから来る）、
+// tilt: 軌道の面を、手前の脚が低く奥の脚が高くなるように傾ける角度（度。奥の脚は、ろうそくや電灯の上を越える）、
+// swing: 来る向きを、カメラの向きからずらして試す角度の候補（度。順に試し、太陽・惑星・腕と clearance（m）以上離れて通れる最初のものにする。
+// 惑星には月の軌道と土星の輪を含める）
+const COMET = { interval: [180, 120, 600], perihelion: 0.036, eccentricity: 0.97, far: 0.7, duration: 15, fade: 1, ease: 1.1,
+  elevation: 12, tilt: 30, swing: [0, 10, -10, 20, -20, 30, -30, 40, -40], clearance: 0.012 };
+// 彗星の活動（尾と光）。太陽に近づくほど強くする。active: 活動が始まる距離と最大になる距離（m）、
+// head: 頭の光の板の大きさ（m）と色（光の強さそのまま。BLOOM.threshold を超えて滲む）、dim: 活動していない遠い所での明るさ（割合）、
+// tail: 尾（ガス状の帯）。step: 尾の帯の点の、出た時刻の間隔（秒）、life: 点が消えるまでの秒数（尾の長さが決まる）、
+// speed: 点が太陽と反対の向きへ流れる速さ（m/秒）、width: 帯の幅（m。頭の側、先の側。頭の側は頭の光と同じくらいにする）、
+// falloff: 先へ行くほど薄れる速さ（点の年齢の割合の何乗で薄れるか。大きいほど頭の近くだけが明るい）、
+// color: 頭の側の色（線形の値で、加算する。少し青紫がかった色）、
+// light: 頭の点光源（影は落とさない）
+const COMET_GLOW = { active: [0.6, 0.12], head: { size: 0.014, color: [2.2, 2.5, 3], dim: 0.4 },
+  tail: { step: 1 / 60, life: 1.4, speed: 0.13, width: [0.012, 0.075], falloff: 2.5, color: [0.9, 0.8, 1.5] },
+  light: { color: 0xcfe0ff, intensity: 0.004 } };
 
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
@@ -1594,9 +1619,9 @@ function buildLed() {
     // 縁は、厚みの分だけ白く、わずかに青緑がかって見える。影は受けない（すぐ下の天板が受ける）。奥を隠さないよう、深度は書かない
     const [x0, x1] = DESK_MAT.x, [z0, z1] = DESK_MAT.z;
     // 縁は両面を描く（奥と左の縁は、透けた上の面越しに内側から見える）
-    const pvc = (opacity, color, side) => new THREE.MeshStandardMaterial({ color, roughness: DESK_MAT.roughness, transparent: true, opacity, depthWrite: false, side });
+    const pvc = (opacity, color, roughness, side) => new THREE.MeshStandardMaterial({ color, roughness, transparent: true, opacity, depthWrite: false, side });
     const mat = new THREE.Mesh(roundedSlab(x1 - x0, z1 - z0, DESK_MAT.thickness, DESK_MAT.corner, 0.0012),
-      [pvc(DESK_MAT.opacity, DESK_MAT.color, THREE.FrontSide), pvc(DESK_MAT.edgeOpacity, DESK_MAT.edgeColor, THREE.DoubleSide)]);
+      [pvc(DESK_MAT.opacity, DESK_MAT.color, DESK_MAT.roughness, THREE.FrontSide), pvc(DESK_MAT.edgeOpacity, DESK_MAT.edgeColor, DESK_MAT.edgeRoughness, THREE.DoubleSide)]);
     mat.position.set((x0 + x1) / 2, 0, (z0 + z1) / 2);
     place(objects, mat);
   }
@@ -1736,6 +1761,257 @@ function buildLed() {
   return objects;
 }
 
+// ---- 彗星（隠し要素） ----
+// 太陽を焦点とする細長い楕円軌道の、遠い所から太陽のすぐそばを回り込んでまた遠くへ去るまでの一部を進む。軌道の面は、カメラから見て
+// 左右のどちらかの上のほうから来て、手前の脚が低く奥の脚が高くなるように置き、惑星と逆の向き（上から見て時計回り。ハレー彗星と同じ逆行）に回る。
+// 太陽のそばでは惑星の面を横切るので、現れるときに、通る間の惑星の位置を先読みして、惑星や腕に当たらない向きを選ぶ。
+// 物はオーラリーに付ける（座標はオーラリーの中のもの。LED のデスクマットの分も一緒に上がる）。
+// 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。現れたときは、種を Math.random から取り直す。
+// three.js も物を作るときに Math.random を引くので、物は最初に現れるときに作る
+const cometRandom = (() => {
+  let s = Date.now() >>> 0;   // mulberry32
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
+  return next;
+})();
+const cometInterval = ([mean, min, max]) => clamp(-Math.log(1 - cometRandom()) * mean, min, max);
+
+const COMET_A = COMET.perihelion / (1 - COMET.eccentricity);                   // 長半径
+const COMET_B = COMET_A * Math.sqrt(1 - COMET.eccentricity ** 2);              // 短半径
+const COMET_TABLE_RATE = 120;     // 下の表の、1 秒あたりの刻みの数
+const SUN_CENTER = new THREE.Vector3(0, PLANE_Y, 0);
+
+// 離心近点角 E の、時刻ごとの表。実際の彗星は dE/dt ∝ (r/a)^-1（ケプラーの法則）で、ここでは (r/a)^(ease-1) にして太陽のそばを遅くする。
+// 毎回同じ道を同じ速さで進むので、起動時に 1 度だけ求める（描く間隔に関わらず同じ動きになり、出る前の先読みにも使える）
+const cometTable = (() => {
+  const e = COMET.eccentricity;
+  const end = Math.acos((1 - COMET.far / COMET_A) / e);   // 太陽から far 離れた所の E
+  const pace = (E) => (1 - e * Math.cos(E)) ** (COMET.ease - 1);
+  // 端から端までにかかる時間を求め、duration に合うよう速さを決める
+  const steps = 4000, dE = 2 * end / steps;
+  let span = 0;
+  for (let i = 0; i < steps; i++) span += dE / pace(-end + (i + 0.5) * dE);
+  const k = span / COMET.duration;
+  const f = (E) => k * pace(E);
+  const table = new Float64Array(Math.ceil(COMET.duration * COMET_TABLE_RATE) + 1);
+  const sub = 8, h = 1 / COMET_TABLE_RATE / sub;
+  let E = -end;
+  for (let i = 0; i < table.length; i++) {
+    table[i] = Math.min(E, end);
+    for (let j = 0; j < sub; j++) {   // ルンゲ・クッタ法
+      const k1 = f(E), k2 = f(E + h * k1 / 2), k3 = f(E + h * k2 / 2), k4 = f(E + h * k3);
+      E += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6;
+    }
+  }
+  return table;
+})();
+
+// 時刻 t（秒）の彗星の位置を out に入れる。orbit: { toward（近日点の向き）, across（近日点で進む向き） }
+function cometPosition(t, { toward, across }, out) {
+  const u = clamp(t, 0, COMET.duration) * COMET_TABLE_RATE;
+  const i = Math.min(Math.floor(u), cometTable.length - 2);
+  const E = cometTable[i] + (cometTable[i + 1] - cometTable[i]) * (u - i);
+  return out.copy(SUN_CENTER)
+    .addScaledVector(toward, COMET_A * (Math.cos(E) - COMET.eccentricity))
+    .addScaledVector(across, COMET_B * Math.sin(E));
+}
+
+// 軌道の向き。azimuth: カメラの向き（rad）、side: カメラから見て右（1）と左（-1）のどちらから来るか
+function cometOrbit(azimuth, side) {
+  const elevation = COMET.elevation * DEG, tilt = COMET.tilt * DEG;
+  const from = new THREE.Vector3(side * Math.cos(azimuth) * Math.cos(elevation), Math.sin(elevation), -side * Math.sin(azimuth) * Math.cos(elevation));
+  const lift = new THREE.Vector3(0, 1, 0).addScaledVector(from, -from.y).normalize();   // 軌道の面の中で、上へ向かう向き
+  const across = new THREE.Vector3(Math.sin(azimuth), 0, Math.cos(azimuth)).multiplyScalar(Math.cos(tilt)).addScaledVector(lift, -Math.sin(tilt));
+  const toward = from.negate();
+  if (new THREE.Vector3().crossVectors(toward, across).y > 0) across.negate();   // 上から見て時計回り（逆行）にする
+  return { toward, across };
+}
+
+// 軌道 orbit を通るときの、太陽・惑星（月の軌道と土星の輪を含む）・腕との最も近い間隔（m）。
+// 強度はいまのまま変わらないものとして、惑星の位置を先読みする。1/30 秒おきに調べる
+function cometClearance(orbit) {
+  const p = new THREE.Vector3();
+  let min = Infinity;
+  for (let t = 0; t <= COMET.duration; t += 1 / 30) {
+    cometPosition(t, orbit, p);
+    const fromSun = p.distanceTo(SUN_CENTER);
+    if (fromSun > PLANETS.at(-1).orbit + SATURN_RING.outer + COMET.clearance) continue;   // オーラリーから離れている
+    min = Math.min(min, fromSun - SUN_RADIUS);
+    const angle = earthAngle + speed * TAU / EARTH_PERIOD * t;
+    planets.forEach((planet, j) => {
+      const { orbit: r, radius, name } = PLANETS[j];
+      const theta = angle * planet.ratio + planet.phase + planet.armAngle;
+      const ux = Math.cos(theta), uz = -Math.sin(theta);
+      const armY = ARM_TOP_Y - j * ARM_PITCH_Y;
+      const reach = name === 'Earth' ? MOON.orbit + MOON.radius : name === 'Saturn' ? SATURN_RING.outer : radius;
+      const along = clamp(p.x * ux + p.z * uz, 0, r);   // 腕（軸から水平に伸びる）の上で、いちばん近い所
+      const side = Math.hypot(p.x - r * ux, p.z - r * uz);
+      min = Math.min(min,
+        Math.hypot(side, p.y - PLANE_Y) - reach,                                          // 球
+        Math.hypot(side, Math.max(0, armY - p.y, p.y - PLANE_Y)) - ARM_RADIUS,             // 球を支える柱
+        Math.hypot(p.x - along * ux, p.y - armY, p.z - along * uz) - ARM_RADIUS);          // 腕
+    });
+  }
+  return min;
+}
+
+let comet = null;            // 出ている彗星 { t（経過秒）, orbit（軌道の向き） }。いなければ null
+let cometWait = cometInterval(COMET.interval);   // 次に現れるまでの秒数
+let cometParts = null;       // 頭の光の板、尾の帯、頭の点光源 { head, tail, light }。最初に現れるときに作る
+const COMET_TAIL_NODES = Math.ceil(COMET_GLOW.tail.life / COMET_GLOW.tail.step) + 2;   // 尾の帯の点の数の上限（頭の位置の点を含む）
+// 尾の帯の、幅の向きの濃さ [中心からの位置（-1〜1。1 が縁）, 濃さ]。ガウス分布に近い形で、縁で 0 にする
+const COMET_TAIL_PROFILE = [-1, -0.75, -0.5, -0.3, -0.15, 0, 0.15, 0.3, 0.5, 0.75, 1]
+  .map((x) => [x, Math.exp(-((x / 0.45) ** 2)) * (1 - x * x)]);
+
+function createCometParts() {
+  const { head: headLook, light: lightLook } = COMET_GLOW;
+  const additive = { blending: THREE.AdditiveBlending, transparent: true, depthWrite: false };
+  const glow = canvasTexture(64, 64, (g, w) => {
+    const c = w / 2, fade = g.createRadialGradient(c, c, 0, c, c, c);
+    fade.addColorStop(0, 'rgba(255,255,255,1)');
+    fade.addColorStop(0.2, 'rgba(255,255,255,0.45)');
+    fade.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = fade;
+    g.fillRect(0, 0, w, w);
+  });
+  const head = new THREE.Sprite(new THREE.SpriteMaterial({ ...additive, map: glow }));
+  head.scale.setScalar(headLook.size);
+  // 尾は、尾の点をつないだ帯。点ごとに幅の向きへ頂点を並べ（COMET_TAIL_PROFILE）、頂点の色で中心から外へなだらかに薄れさせて、ガスのように見せる
+  const geometry = new THREE.BufferGeometry();
+  const n = COMET_TAIL_NODES, m = COMET_TAIL_PROFILE.length;
+  for (const name of ['position', 'color']) {
+    geometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(n * m * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  }
+  const index = [];
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = 0; j < m - 1; j++) {
+      const a = i * m + j, b = a + m;
+      index.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  geometry.setIndex(index);
+  geometry.setDrawRange(0, 0);
+  const tail = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ ...additive, vertexColors: true, side: THREE.DoubleSide }));
+  tail.frustumCulled = false;   // 帯が動くので、囲む球を求め直さない
+  // 影は落とさない（影の描画を増やさないため）。一度置いたら外さない（光の数が変わると、three.js が素材を作り直して止まるため）
+  const light = new THREE.PointLight(lightLook.color, 0, 0, 2);
+  orrery.add(head, tail, light);
+  return { head, tail, light };
+}
+
+function startComet() {
+  if (comet || isFading()) return;
+  cometRandom.reseed();
+  cometParts ??= createCometParts();
+  const side = cometRandom() < 0.5 ? -1 : 1;
+  const azimuth = CAM_SWAY * DEG * Math.sin(time * TAU / CAM_SWAY_PERIOD);   // いまのカメラの向き
+  let orbit = null, best = -Infinity;
+  for (const swing of COMET.swing) {
+    const candidate = cometOrbit(azimuth + swing * DEG, side);
+    const clearance = cometClearance(candidate);
+    if (clearance > best) [orbit, best] = [candidate, clearance];
+    if (clearance >= COMET.clearance) break;
+  }
+  comet = { t: 0, orbit };
+  cometWait = cometInterval(COMET.interval);
+}
+
+// 時刻 te（秒）に頭が pos にいるときの、彗星の活動（0〜1）。太陽に近いほど強く、飛び始め・飛び終わり（画面の外）で薄れる
+const cometEdge = (te) => smooth(0, COMET.fade, Math.min(te, COMET.duration - te));
+const cometActivity = (te, pos) => smooth(...COMET_GLOW.active, pos.distanceTo(SUN_CENTER)) * cometEdge(te);
+
+// 尾の帯の点。時刻 te に頭から出たガスが、時刻 t にいる所。出た時の頭の速さを引き継いだうえで、太陽と反対の向きへ流れる
+// （頭から見て、いつも太陽と反対へ伸びる。引き継がないと、太陽から去るときに尾が頭の後ろ（太陽の側）へ引きずられる）。
+// 点は前のコマから持ち越さず、頭の道から毎回求める。コマごとに頭の速さで動かすと、同じコマに出た点が 1 か所に集まり、
+// 帯がコマの間で行き来して折れ重なり、尾の中に筋が見えるため
+const cometTailPoints = Array.from({ length: COMET_TAIL_NODES }, () => ({ x: 0, y: 0, z: 0, age: 0, glow: 0 }));
+const cometFrom = new THREE.Vector3();
+const cometBefore = new THREE.Vector3();
+const cometAfter = new THREE.Vector3();
+function cometTailPoint(out, te, t, orbit) {
+  const h = 1 / COMET_TABLE_RATE;
+  cometPosition(te, orbit, cometFrom);
+  cometPosition(te - h, orbit, cometBefore);
+  cometPosition(te + h, orbit, cometAfter);
+  const age = t - te, speed = COMET_GLOW.tail.speed;
+  const ax = cometFrom.x - SUN_CENTER.x, ay = cometFrom.y - SUN_CENTER.y, az = cometFrom.z - SUN_CENTER.z;
+  const away = speed / Math.hypot(ax, ay, az);
+  const k = age / (2 * h);
+  out.x = cometFrom.x + (cometAfter.x - cometBefore.x) * k + ax * away * age;
+  out.y = cometFrom.y + (cometAfter.y - cometBefore.y) * k + ay * away * age;
+  out.z = cometFrom.z + (cometAfter.z - cometBefore.z) * k + az * away * age;
+  out.age = age;
+  out.glow = cometActivity(te, cometFrom);
+}
+
+const cometHead = new THREE.Vector3();
+const cometView = new THREE.Vector3();     // カメラの位置（オーラリーの中の座標）
+const cometAlong = new THREE.Vector3();    // 尾の帯の、点での向き
+const cometSide = new THREE.Vector3();     // 尾の帯の、点での幅の向き
+const cometToView = new THREE.Vector3();
+function updateComet(dt) {
+  if (!comet) {
+    cometWait -= dt;
+    if (cometWait <= 0) startComet();   // 暗転している間は出さない（startComet が何もせず、次のコマにまた試す）
+    return;
+  }
+  comet.t += dt;
+  const { head, tail, light } = cometParts;
+  const { head: headLook, tail: tailLook, light: lightLook } = COMET_GLOW;
+  const t = comet.t, flying = t < COMET.duration;
+  head.visible = flying;
+  light.intensity = 0;
+  if (flying) {
+    cometPosition(t, comet.orbit, cometHead);
+    const active = cometActivity(t, cometHead);
+    head.position.copy(cometHead);
+    head.material.color.setRGB(...headLook.color).multiplyScalar(cometEdge(t) * (headLook.dim + (1 - headLook.dim) * active));
+    light.position.copy(cometHead);
+    light.intensity = lightLook.intensity * active;
+  }
+  // 尾の点を、いちばん新しい所（飛んでいる間は頭）から step 秒おきに、life 秒前まで並べる。出た時刻を step の刻みに揃え、コマが進んでも点がずれないようにする
+  // （刻みは整数の番号で数える。時刻から割り算で戻すと、誤差で同じ刻みに留まり、尾の長さが 0 になって消えるコマがあるため）
+  const newest = Math.min(t, COMET.duration);
+  let n = 0;
+  cometTailPoint(cometTailPoints[n++], newest, t, comet.orbit);
+  for (let k = Math.ceil(newest / tailLook.step) - 1; k >= 0 && n < COMET_TAIL_NODES; k--) {
+    const te = k * tailLook.step;
+    if (te >= newest) continue;
+    if (t - te >= tailLook.life) break;
+    cometTailPoint(cometTailPoints[n++], te, t, comet.orbit);
+  }
+  // 点をつないで帯にする。幅の向きは、帯の向きとカメラへの向きの両方に直交させ、帯がいつもカメラに面を向けるようにする
+  const position = tail.geometry.attributes.position, color = tail.geometry.attributes.color;
+  cometView.copy(camera.position).sub(orrery.position);
+  for (let i = 0; i < n; i++) {
+    const p = cometTailPoints[i], prev = cometTailPoints[Math.max(i - 1, 0)], next = cometTailPoints[Math.min(i + 1, n - 1)];
+    cometAlong.set(next.x - prev.x, next.y - prev.y, next.z - prev.z);
+    cometToView.set(cometView.x - p.x, cometView.y - p.y, cometView.z - p.z);
+    const side = cometAlong.cross(cometToView);
+    if (side.lengthSq() > 1e-16) {   // 点が重なって向きが決まらないときは、前の点の向きのまま
+      side.normalize();
+      if (i > 0 && side.dot(cometSide) < 0) side.negate();   // 前の点と向きを揃え、帯がねじれないようにする
+      cometSide.copy(side);
+    }
+    const u = Math.min(p.age / tailLook.life, 1);
+    const half = (tailLook.width[0] + (tailLook.width[1] - tailLook.width[0]) * u) / 2;
+    const f = (1 - u) ** tailLook.falloff * p.glow;
+    COMET_TAIL_PROFILE.forEach(([x, w], j) => {
+      const k = i * COMET_TAIL_PROFILE.length + j, d = x * half;
+      position.setXYZ(k, p.x + cometSide.x * d, p.y + cometSide.y * d, p.z + cometSide.z * d);
+      color.setXYZ(k, tailLook.color[0] * f * w, tailLook.color[1] * f * w, tailLook.color[2] * f * w);
+    });
+  }
+  tail.geometry.setDrawRange(0, Math.max(n - 1, 0) * (COMET_TAIL_PROFILE.length - 1) * 6);
+  position.needsUpdate = color.needsUpdate = true;
+  if (t - COMET.duration >= tailLook.life) comet = null;
+}
+
 // ---- カメラ ----
 function updateCamera() {
   const azimuth = CAM_SWAY * DEG * Math.sin(time * TAU / CAM_SWAY_PERIOD);
@@ -1787,6 +2063,7 @@ function step(dt) {
   updateOrrery();
   updateFlame(dt);
   updateCamera();
+  updateComet(dt);   // 尾の帯をカメラに向けるので、カメラを動かしたあとに
 }
 
 let last = performance.now();
@@ -1816,6 +2093,7 @@ setupControls({
     down: () => setSpeed(speed / SPEED_STEP),
     level: () => logPosition(speed, MIN_SPEED, MAX_SPEED),   // ゲージの位置（0..1）
   },
+  keys: { KeyC: startComet },   // 隠し要素の彗星（操作ガイドには表示しない）
   onResize() {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
