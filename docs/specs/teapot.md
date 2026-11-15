@@ -68,7 +68,7 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 - `Phong Shading (1973)` は Phong の学位論文の年（論文誌は 1975 年）。
 - `Path Tracing (1986)` は Kajiya のレンダリング方程式の年。
 - `Non-Photorealistic Rendering (1990)` は、輪郭線などで形を描き分ける Saito と Takahashi [10] の年。
-- 年の出典: Solid Texture は Perlin と Peachey、Displacement Mapping は Reyes（Cook ほか）、Fur は Kajiya–Kay、Subsurface Scattering は Jensen ほか、Physically Based Shading は Disney の BRDF（Burley）。
+- 年の出典: Wireframe と Hidden Line は Roberts の学位論文 [2]、Gouraud Shading は Gouraud [11]、Bump Mapping は Blinn [12]、Shadows は Williams（シャドウマップ）[13]、Ray Tracing は Whitted [14]、Radiosity は Goral ほか [15]。Solid Texture は Perlin と Peachey、Displacement Mapping は Reyes（Cook ほか）、Fur は Kajiya–Kay、Subsurface Scattering は Jensen ほか、Physically Based Shading は Disney の BRDF（Burley）。
 
 ### 史実に合わせている見た目
 
@@ -182,3 +182,8 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 8. J. T. Kajiya, T. L. Kay, "Rendering Fur with Three Dimensional Textures", SIGGRAPH 1989. https://history.siggraph.org/?p=119378 。テディベアの作例は T. L. Kay の学位論文（Caltech, 1992）にもある。https://thesis.library.caltech.edu/3028
 9. J. Lengyel, E. Praun, A. Finkelstein, H. Hoppe, "Real-Time Fur over Arbitrary Surfaces", I3D 2001. https://hhoppe.com/proj/fur/
 10. T. Saito, T. Takahashi, "Comprehensible Rendering of 3-D Shapes", SIGGRAPH 1990. https://history.siggraph.org/?p=122063
+11. H. Gouraud, "Continuous Shading of Curved Surfaces", IEEE Transactions on Computers C-20(6), 1971. https://doi.org/10.1109/T-C.1971.223313
+12. J. F. Blinn, "Simulation of Wrinkled Surfaces", SIGGRAPH 1978. https://history.siggraph.org/?p=103267
+13. L. Williams, "Casting Curved Shadows on Curved Surfaces", SIGGRAPH 1978. https://history.siggraph.org/?p=120268
+14. T. Whitted, "An Improved Illumination Model for Shaded Display", Communications of the ACM 23(6), 1980. https://history.siggraph.org/?p=104559
+15. C. M. Goral, K. E. Torrance, D. P. Greenberg, B. Battaile, "Modeling the Interaction of Light between Diffuse Surfaces", SIGGRAPH 1984. https://history.siggraph.org/?p=107463
