@@ -35,7 +35,7 @@ const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, logPosition, setupContr
 // カメラ（オーラリーの正面を中心に、左右へゆっくり往復する）
 const CAM_FOV = 35;
 const CAM_DIST = 0.84;            // 見る点からの距離（横長の画面）
-const CAM_FRAME_WIDTH = 0.72;     // 縦長の画面でも、見る点の位置でこの幅が画面に収まるまで離す
+const CAM_FRAME_WIDTH = 0.57;     // 縦長の画面では、見る点の位置でこの幅（m）が画面に収まるまで離す（オーラリーの幅の 9 割ほどが収まる）
 const CAM_TARGET_Y = 0.15;        // 見る点の高さ（上げるほど、画面の中身が下へずれる）
 const CAM_ELEVATION = 27;         // 見下ろす角度（度）
 const CAM_ELEVATION_SWAY = 3;     // 見下ろす角度の揺れ（±度）
@@ -1135,7 +1135,7 @@ function updateFlame(dt) {
 function updateCamera() {
   const azimuth = CAM_SWAY * DEG * Math.sin(time * TAU / CAM_SWAY_PERIOD);
   const elevation = (CAM_ELEVATION + CAM_ELEVATION_SWAY * Math.sin(time * TAU / CAM_ELEVATION_PERIOD)) * DEG;
-  // 縦長の画面では、オーラリーの幅が収まるまで離す
+  // 縦長の画面では、オーラリーの幅の 9 割ほどが収まるまで離す
   const dist = Math.max(CAM_DIST, CAM_FRAME_WIDTH / (2 * Math.tan(CAM_FOV * DEG / 2) * camera.aspect));
   const flat = dist * Math.cos(elevation);
   camera.position.set(Math.sin(azimuth) * flat, CAM_TARGET_Y + dist * Math.sin(elevation), Math.cos(azimuth) * flat);
