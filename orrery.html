@@ -115,16 +115,39 @@ const EBONY = 0x17100b;           // 台の木
 const BACKGROUND = 0x030201;
 
 // 机と部屋
-const DESK = { width: 3.2, depth: 1.7, centerZ: 0.2, thickness: 0.06, roughness: 0.78, bumpScale: 4 };   // centerZ: 天板の中心の z、bumpScale: 木目の凹凸の強さ
-// 天板の板。ほぼ等幅の板を、前後方向に並べる。width: 板の幅の範囲、gap: 板のすき間、thickness: 板の厚み、step: 板ごとの高さの違いの最大（m）、
-// variants: 描く木目の種類の数（板ごとに選ぶ）
-const PLANKS = { width: [0.175, 0.185], gap: 0.005, thickness: 0.028, step: 0.001, edge: 0.006, trim: 0.09, trimRaise: 0.003, variants: 6 };   // edge: 縁の丸まった幅、trim: 奥の縁取りの木の幅、trimRaise: 縁取りを天板の板より高くする分（m）
-// 木目。淡い色の木が、年月で落ち着いた色になったもの。early: 年輪の明るい部分（春材）、late: 暗い部分（秋材）の色（RGB）、rings: 年輪の数（1m あたり）、
-// pith: 年輪の中心（丸太の芯）の、板の表面からの深さの範囲（m。浅いほど山形の木目が詰まる）
-const WOOD = { early: [134, 104, 68], late: [106, 79, 50], rings: 90, pith: [0.03, 0.12], aging: 0.1 };   // aging: 年月で色が沈着した、ゆるく大きなむらの強さ
+const DESK = { left: -1.24, right: 1.6, depth: 1.7, centerZ: 0.2, thickness: 0.06, plank: 0.028 };   // left・right: 天板の左右の端の x、centerZ: 天板の中心の z、plank: 天板の板の厚み（m）
+// 時代ごとの机（オーラリーだけが受け継がれ、机は時代の物に替わる）。天板は、板を前後方向に並べ、奥と左の辺に縁取りの木を置く。
+// width: 板の幅の範囲、gap: 板のすき間、step: 板ごとの高さの違いの最大、edge: 縁の丸まった幅、trim: 縁取りの木の幅（0 で作らない）、
+// trimRaise: 縁取りを天板の板より高くする分（m）、tint: 板ごとの明るさの違いの範囲、variants: 描く木目の種類の数（板ごとに選ぶ）、
+// roughness: 塗装の粗さ（小さいほど艶が出る）、bumpScale: 木目の凹凸の強さ、side: 板の側面の色。
+// wood は木目。early: 年輪の明るい部分（春材）、late: 暗い部分（秋材）の色（RGB）、rings: 年輪の数（1m あたり）、
+// pith: 年輪の中心（丸太の芯）の、板の表面からの深さの範囲（m。浅いほど山形の木目が詰まる）、aging: 年月で色が沈着した、ゆるく大きなむらの強さ、knots: 板 1 枚の節の最大数
+const DESK_STYLES = [
+  {   // Candle: 無骨な普段使いの机。幅広の無垢板を、すき間を空けて並べる。無塗装で、淡い色の木が年月で落ち着いた色になったもの
+    width: [0.175, 0.185], gap: 0.005, step: 0.001, edge: 0.006, trim: 0.09, trimRaise: 0.003, tint: [0.88, 1.08], variants: 6,
+    roughness: 0.78, bumpScale: 4, side: 0x2a1a0e,
+    wood: { early: [134, 104, 68], late: [106, 79, 50], rings: 90, pith: [0.03, 0.12], aging: 0.1, knots: 2 },
+  },
+  {   // Filament: 中ほどの茶色のニス塗りの書斎机（色味と明るさは、Candle と LED の机の中間）。さらに幅の広い板を細いすき間で継ぎ、艶がある。節の無いまっすぐな木目
+    width: [0.27, 0.29], gap: 0.0015, step: 0.0002, edge: 0.003, trim: 0.07, trimRaise: 0.004, tint: [0.94, 1.05], variants: 6,
+    roughness: 0.42, bumpScale: 1, side: 0x1a0e08,
+    wood: { early: [146, 110, 76], late: [116, 84, 56], rings: 110, pith: [0.06, 0.2], aging: 0.04, knots: 0 },
+  },
+  {   // LED: 明るい木の色の集成材の机。約 10cm 幅の板をすき間なく寄せ、木目の濃淡は小さい。艶は無く、縁は角ばり、縁取りは無い
+    width: [0.095, 0.105], gap: 0.0008, step: 0, edge: 0.0015, trim: 0, trimRaise: 0, tint: [0.95, 1.04], variants: 6,
+    roughness: 0.72, bumpScale: 1.5, side: 0x6a5238,
+    wood: { early: [170, 138, 103], late: [158, 126, 92], rings: 140, pith: [0.08, 0.3], aging: 0.03, knots: 0 },
+  },
+];
 const WOOD_TEXTURE = IS_TOUCH ? [128, 1024] : [192, 1536];   // 木目 1 種類の画素数（板の幅、長さ）
 const TEXTURE_ANISOTROPY = 8;     // 斜めから見たテクスチャをぼかさないための異方性フィルタの強さ
 const WALL_Z = -1.1;              // 奥の壁
+// 奥の壁に明かりが落とす光だまり。明かりの真後ろの壁を中心に、点光源が平らな壁を照らすときの形で外へ薄れる。
+// spread: 中心から明るさが半分ほどに落ちるまでの半径（m）。色・強さ・広さは時代ごとに SCENES の wallGlow で決める
+const WALL_GLOW_EXTENT = 3.5;     // 光だまりの板の半径（spread に対する倍率。ここで 0 になる）
+// 壁紙。黒に近い藍色の地に、星だけを控えめに刷る（宇宙の雰囲気）（オーラリーより目を引かないように）。光だまりの中だけで見える。
+// tile: 柄の繰り返しの一辺（m）、base: 地の色、ink: 柄の色、inkAlpha: 柄の濃さ、seed: 柄の乱数の種（配置の乱数とは別）
+const WALLPAPER = { tile: 0.6, base: '#161b3c', ink: '#d8c99c', inkAlpha: 0.3, seed: 11 };
 
 // 小物の位置（x, z）と向き（rad）
 const CANDLE = { x: 0.35, z: -0.21, handleAngle: -0.64 };   // handleAngle: 燭台の持ち手の向き（rad。オーラリーの逆側より少し手前、右下に向ける）
@@ -162,9 +185,12 @@ const SHADOW_MAP_SIZE = 1024;
 // ambient: 環境光の色と強さ、room: 映り込み用の部屋の壁と天井の明るさ（ENV_ROOM に対する倍率）、
 // envDesk: 映り込み用の部屋の、明かりに照らされた机の色（RGB）
 const SCENES = [
-  { name: 'Candle', light: null, ambient: [0xb89a84, 0.33], room: 1, envDesk: [0.3, 0.19, 0.1] },   // ろうそく、望遠鏡、羊皮紙の星図
-  { name: 'Filament', light: { color: 0xf9cfae, intensity: 1.01 }, ambient: [0xaea097, 0.8], room: 1.4, envDesk: [0.34, 0.26, 0.18] },   // 白熱電球のランプ、天体望遠鏡、星座早見盤
-  { name: 'LED', light: { color: 0xf3f5ff, intensity: 1.0 }, ambient: [0xa5a7ab, 1.3], room: 1.8, envDesk: [0.38, 0.33, 0.26] },   // LED の電灯、白い望遠鏡、タブレット
+  { name: 'Candle', light: null, ambient: [0xb89a84, 0.33], room: 1, envDesk: [0.3, 0.19, 0.1],
+    wallGlow: { color: 0xff9a50, intensity: 1.16, spread: 0.45 } },   // ろうそく、望遠鏡、羊皮紙の星図
+  { name: 'Filament', light: { color: 0xf9cfae, intensity: 1.1 }, ambient: [0xaea097, 1.25], room: 1.6, envDesk: [0.36, 0.26, 0.17],
+    wallGlow: { color: 0xf9cfae, intensity: 1.49, spread: 0.6 } },   // 白熱電球のランプ、天体望遠鏡、星座早見盤
+  { name: 'LED', light: { color: 0xf3f5ff, intensity: 0.9 }, ambient: [0xa5a7ab, 1.0], room: 1.7, envDesk: [0.44, 0.35, 0.25],
+    wallGlow: { color: 0xf3f5ff, intensity: 0.85, spread: 0.8 } },   // LED の電灯、白い望遠鏡、タブレット
 ];
 const ENV_ROOM = [0.085, 0.062, 0.045];   // 映り込み用の部屋の壁と天井（Candle）
 
@@ -174,12 +200,13 @@ const ENV_ROOM = [0.085, 0.062, 0.045];   // 映り込み用の部屋の壁と�
 // angle: 光の広がり（軸からの角度、rad）、target: 光の軸が向かう点、
 // shadowFocus: 影を描く範囲（光の広がりに対する割合。オーラリーと机の上の小物が収まる範囲に絞り、影の解像度を保つ）
 const LAMP_LIGHT = { height: 0.28, azimuth: -40, angle: 1.3, penumbra: 0.5, target: [0, 0.1, 0], shadowFocus: 0.6, shadowMapSize: 2048 };
-// Filament の電灯。真鍮の丸い台から、首の曲がる管（グースネック）が立ち、先の浅い笠をオーラリーの側へ傾ける。
+// Filament の電灯。黒い塗装の丸い台から、首の曲がる管（グースネック）が立ち、先の浅い笠をオーラリーの側へ傾ける。
 // 笠の縁から透明な電球がのぞき、中のフィラメントが光る。shade: 笠の縁の半径と深さ（m）、tilt: 笠の傾き（rad）、
-// bulb: 電球の半径（m）、filament: フィラメントの光の強さ（BLOOM.threshold を超えて滲む）、paint: 笠の外側の塗装（落ち着いた濃い緑）
-const FILAMENT_LAMP = { shade: [0.052, 0.055], tilt: 0.9, paint: 0x1e3a2a, bulb: 0.017, filament: [3.2, 1.7, 0.6] };
-// LED の電灯。丸い台から細い柱が立ち、関節から斜めに上がる平たい棒の頭の下面が光る。color: 白い塗装（電灯の光は自分に当たらず環境光だけで見えるので、暗い色だと闇に沈む）
-const LED_LAMP = { color: 0xd6d6d2, headLength: 0.27, tilt: 0.42, standX: -0.11 };   // tilt: 頭をオーラリーの側へ上げる傾き（rad。柱と鈍角をなす）、standX: 柱を光の出る所から後ろへ離す距離（m。負。近いほど関節が高く、柱が長い）
+// bulb: 電球の半径（m）、filament: フィラメントの光の強さ（BLOOM.threshold を超えて滲む）、paint: 笠の外側の塗装（落ち着いた濃い緑）、
+// stand: 台と首の、黒に近い焼付塗装（真鍮にすると、オーラリーの真鍮と張り合うため。真鍮は笠の付け根の口金にだけ残す）
+const FILAMENT_LAMP = { shade: [0.052, 0.055], tilt: 0.9, paint: 0x1e3a2a, stand: 0x181614, bulb: 0.017, filament: [3.2, 1.7, 0.6] };
+// LED の電灯。丸い台から細い柱が立ち、関節から斜めに上がる平たい棒の頭の下面が光る。color・metalness・roughness: 艶を抑えた銀色のアルミ（電灯の光は自分に当たらず、環境光と映り込みだけで見えるので、暗い色だと闇に沈む）
+const LED_LAMP = { color: 0xb2b4b6, metalness: 0.5, roughness: 0.6, headLength: 0.27, tilt: 0.42, standX: -0.11 };   // tilt: 頭をオーラリーの側へ上げる傾き（rad。柱と鈍角をなす）、standX: 柱を光の出る所から後ろへ離す距離（m。負。近いほど関節が高く、柱が長い）
 // Filament の左奥。黒い塗装の天体望遠鏡（机に寝かせて置く）。先に夜露よけのフード、上に照準用の小さな望遠鏡（ファインダー）が載る。
 // tube: 鏡筒の色、fittings: 金具のニッケルの色
 const ASTRO_SCOPE = { tube: 0x151413, fittings: 0x8c8a84 };
@@ -191,9 +218,14 @@ const PLANISPHERE = {
   card: '#1f3058', ink: '#d6dbe0', paper: '#d2dae6', sky: '#17295c',
 };
 // LED の左奥。白い鏡筒の小さな屈折望遠鏡（tube: 鏡筒の色）
-const MODERN_SCOPE = { tube: 0xcfcfcb };
+const MODERN_SCOPE = { tube: 0xa8a9a7, metalness: 0.45, roughness: 0.55 };   // 鏡筒。白をわずかに灰色に寄せた、艶を抑えた金属の塗装
 // LED の左手前。星図のアプリを映したタブレット（size: 幅と奥行き（m）、glow: 画面の明るさ）
-const TABLET = { size: [0.245, 0.172], thickness: 0.0065, glow: 0.7 };
+const TABLET = { size: [0.245, 0.172], thickness: 0.0065, corner: 0.014, glow: 0.7 };   // corner: 角の丸みの半径（m）
+// LED の時代に敷くデスクマット（透明度の高い PVC。少し白く濁る）。オーラリーとタブレットはこの上に載る。透過（transmission）は使わず、
+// 薄い半透明と艶で描く（太陽のガラスと同じ理由）。x・z: 左右・前後の範囲、thickness: 厚み、corner: 角の丸みの半径（m）、
+// color・opacity: 上の面の色と不透明度（少し白く濁る）、edgeColor・edgeOpacity: 縁の色と不透明度（厚みの分だけ白く、わずかに青緑がかる）、roughness: 表面の粗さ（小さいほど艶が出る）
+const DESK_MAT = { x: [-0.52, 0.48], z: [-0.205, 0.38], thickness: 0.0033, corner: 0.02, color: 0xf6f8f8, opacity: 0.18,
+  edgeColor: 0xd2e8e2, edgeOpacity: 0.65, roughness: 0.1 };
 
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
@@ -217,6 +249,31 @@ function canvasTexture(width, height, draw) {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = TEXTURE_ANISOTROPY;
   return texture;
+}
+
+// 角の丸い長方形（中心が原点、幅 w・高さ h、角の半径 radius）
+function roundedRect(w, h, radius) {
+  const shape = new THREE.Shape(), x = w / 2, y = h / 2, c = radius;
+  shape.moveTo(-x + c, -y);
+  shape.lineTo(x - c, -y);
+  shape.quadraticCurveTo(x, -y, x, -y + c);
+  shape.lineTo(x, y - c);
+  shape.quadraticCurveTo(x, y, x - c, y);
+  shape.lineTo(-x + c, y);
+  shape.quadraticCurveTo(-x, y, -x, y - c);
+  shape.lineTo(-x, -y + c);
+  shape.quadraticCurveTo(-x, -y, -x + c, -y);
+  return shape;
+}
+
+// 角の丸い板（机に寝かせた向き。中心が原点、幅 w（x）・奥行き d（z）、高さ 0〜height）。縁を bevel だけ丸める。
+// 面のグループは 0 が上下の面、1 が縁
+function roundedSlab(w, d, height, radius, bevel) {
+  const geometry = new THREE.ExtrudeGeometry(roundedRect(w, d, radius),
+    { depth: height - 2 * bevel, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 6 });
+  geometry.rotateX(Math.PI / 2);   // 形の y を z に寝かせ、押し出しを下向きにする
+  geometry.translate(0, height - bevel, 0);
+  return geometry;
 }
 
 // 縦の円柱（y0〜y1）
@@ -374,8 +431,9 @@ const brassAged = metal(BRASS_AGED, BRASS_ROUGHNESS.aged);
 
 // 天板の木目。丸太から切り出した板の表面に出る年輪の断面を、1 画素ずつ求める。年輪の中心（芯）から外れた所を通る年輪が、
 // 板目の山形の模様になる。色（map）と凹凸（bumpMap）を同時に描く（荒い仕上げなので、柔らかい明るい部分がへこむ）
-// plankWidth・length: 貼る板の幅と長さ（m。年輪の間隔と縁の丸まり、節の形を、板の大きさによらず揃えるため）
-function plankTextures(plankWidth, length) {
+// style: 机（DESK_STYLES の 1 つ）、plankWidth・length: 貼る板の幅と長さ（m。年輪の間隔と縁の丸まり、節の形を、板の大きさによらず揃えるため）
+function plankTextures(style, plankWidth, length) {
+  const WOOD = style.wood;
   const [W, H] = WOOD_TEXTURE;
   const g = document.createElement('canvas').getContext('2d'), b = document.createElement('canvas').getContext('2d');
   g.canvas.width = b.canvas.width = W;
@@ -384,7 +442,7 @@ function plankTextures(plankWidth, length) {
   const depth = rand(...WOOD.pith), center = rand(-0.6, 0.6) * plankWidth;   // 芯の深さと、板の幅の中での位置
   const p = Array.from({ length: 5 }, () => rand(0, TAU));
   const pores = Float32Array.from({ length: W }, () => rand(-1, 1));   // 導管の細い筋（板の長さに沿う）
-  const knots = Array.from({ length: randInt(3) }, () => ({ x: rand(-0.4, 0.4) * plankWidth, z: rand(0.1, 0.9) * length, r: rand(0.004, 0.01) }));
+  const knots = Array.from({ length: randInt(WOOD.knots + 1) }, () => ({ x: rand(-0.4, 0.4) * plankWidth, z: rand(0.1, 0.9) * length, r: rand(0.004, 0.01) }));
   for (let y = 0; y < H; y++) {
     const z = y / H * length;
     const axis = center + 0.005 * Math.sin(z * 1.7 + p[0]) + 0.0015 * Math.sin(z * 5.3 + p[1]);   // 芯は長さに沿ってゆるく曲がる
@@ -399,7 +457,7 @@ function plankTextures(plankWidth, length) {
       }
       const t = (r * WOOD.rings) % 1;
       const late = smooth(0.68, 0.88, t) * (1 - smooth(0.94, 1, t));   // 年輪の暗い部分（秋材）。明るい側からゆるく濃くなり、境目ではっきり切り替わる
-      const edge = 1 - smooth(0, PLANKS.edge, Math.min(x, W - 1 - x) / W * plankWidth);   // 長い辺の縁（使い込んで丸まる）で 1
+      const edge = 1 - smooth(0, style.edge, Math.min(x, W - 1 - x) / W * plankWidth);   // 長い辺の縁（使い込んで丸まる）で 1
       const aging = WOOD.aging * (0.5 + 0.5 * Math.sin(z * 1.3 + p[4] * 2) * Math.sin(X * 17 + p[0]));   // 沈着した色のむら
       const shade = 1 + 0.05 * pores[x] + 0.04 * Math.sin(z * 2.3 + p[4]) - 0.45 * dark - 0.4 * edge - aging;
       const i = (y * W + x) * 4;
@@ -415,8 +473,13 @@ function plankTextures(plankWidth, length) {
   map.anisotropy = bumpMap.anisotropy = TEXTURE_ANISOTROPY;
   return { map, bumpMap };
 }
-const plankWoods = Array.from({ length: PLANKS.variants }, () => plankTextures((PLANKS.width[0] + PLANKS.width[1]) / 2, DESK.depth - PLANKS.trim));
-const trimWood = plankTextures(PLANKS.trim, DESK.width);
+// 机 1 つ分の木目（天板の板の木目を variants 通りと、奥と左の縁取りの木目）
+function deskTextures(style) {
+  const planks = Array.from({ length: style.variants }, () => plankTextures(style, (style.width[0] + style.width[1]) / 2, DESK.depth - style.trim));
+  if (!style.trim) return { planks };
+  return { planks, trim: plankTextures(style, style.trim, DESK.right - DESK.left - style.trim), sideTrim: plankTextures(style, style.trim, DESK.depth) };
+}
+const candleDeskTextures = deskTextures(DESK_STYLES[0]);   // Candle の机は、木目を描く順を変えないよう、ここで描く
 
 // ---- 歯車 ----
 // 歯数 teeth の平歯車（軸は y、厚みの中心が y = 0）。歯の 1 つが +x を向く。大きい歯車は扇形に肉抜きする
@@ -818,51 +881,125 @@ function updateOrrery() {
 }
 
 // ---- 机と部屋 ----
-{
-  // 天板。ほぼ等幅の板を、すき間を空けて前後方向に並べ、奥の長い辺に沿って幅の狭い縁取りの木を置く
-  // （手前の辺は、縦長の画面でもカメラの後ろなので、縁取りを作らない）。
-  // 板ごとに木目を選んで向きを変え、色味と高さをわずかに違える。すき間の奥には暗い下地が見える。
-  // 板の側面と端は暗くする（木目を貼ると、すき間の中が明るく見えて継ぎ目が立たない）
-  const plankSide = new THREE.MeshStandardMaterial({ color: 0x2a1a0e, roughness: 0.9 });
-  const board = (width, length, wood = pick(plankWoods)) => {   // 長さの方向が z の板。上面だけに木目を貼る（箱の面の順は +x、-x、+y、-y、+z、-z）
-    const tint = rand(0.88, 1.08);
-    const top = new THREE.MeshStandardMaterial({ ...wood, color: new THREE.Color(tint, tint * rand(0.97, 1.02), tint), bumpScale: DESK.bumpScale, roughness: DESK.roughness });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width - PLANKS.gap, PLANKS.thickness, length - PLANKS.gap),
+// 時代ごとの机・小物・明かり。Candle の物は起動時に作り、ほかの時代の物は初めてその時代にしたときに作る
+// （起動時に作ると、three.js が物ごとに Math.random で ID を振るので、配置の乱数の列がずれるため）
+const candleEra = [];
+
+// 天板を作り、list に足す。ほぼ等幅の板を、すき間を空けて前後方向に並べ、奥の長い辺と左の短い辺に沿って幅の狭い縁取りの木を置く
+// （手前の辺は、縦長の画面でもカメラの後ろなので、縁取りを作らない。右の辺は画面に写らない）。
+// 板ごとに木目を選んで向きを変え、色味と高さをわずかに違える。すき間の奥には暗い下地が見える。
+// 板の側面と端は暗くする（木目を貼ると、すき間の中が明るく見えて継ぎ目が立たない）
+function buildDesk(list, style, textures) {
+  const plankSide = new THREE.MeshStandardMaterial({ color: style.side, roughness: 0.9 });
+  const board = (width, length, wood = pick(textures.planks)) => {   // 長さの方向が z の板。上面だけに木目を貼る（箱の面の順は +x、-x、+y、-y、+z、-z）
+    const tint = rand(...style.tint);
+    const top = new THREE.MeshStandardMaterial({ ...wood, color: new THREE.Color(tint, tint * rand(0.97, 1.02), tint), bumpScale: style.bumpScale, roughness: style.roughness });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width - style.gap, DESK.plank, length - style.gap),
       [plankSide, plankSide, top, plankSide, plankSide, plankSide]);
-    mesh.position.y = -PLANKS.thickness / 2 - rand(0, PLANKS.step);
+    mesh.position.y = -DESK.plank / 2 - rand(0, style.step);
     if (randInt(2)) mesh.rotation.y = Math.PI;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+    place(list, mesh);
     return mesh;
   };
   const back = DESK.centerZ - DESK.depth / 2;   // 机の奥の辺の z
-  for (let x = -DESK.width / 2; x < DESK.width / 2;) {
-    const width = rand(...PLANKS.width);
-    const plank = board(width, DESK.depth - PLANKS.trim);
+  for (let x = DESK.left + style.trim; x < DESK.right;) {
+    const width = rand(...style.width);
+    const plank = board(width, DESK.depth - style.trim);
     plank.position.x = x + width / 2;
-    plank.position.z = back + PLANKS.trim + (DESK.depth - PLANKS.trim) / 2;
+    plank.position.z = back + style.trim + (DESK.depth - style.trim) / 2;
     x += width;
   }
-  const trim = board(PLANKS.trim, DESK.width, trimWood);   // 縁取りは、長さの方向を x に向ける
+  if (!style.trim) return;
+  // 縁取りは天板の板より少し高くして、段差を付ける。左の縁取りは奥の端まで通して左奥の角に来るようにし、奥の縁取りはその右から始める
+  const trim = board(style.trim, DESK.right - DESK.left - style.trim, textures.trim);   // 奥の縁取りは、長さの方向を x に向ける
   trim.rotation.y += Math.PI / 2;
-  trim.position.z = back + PLANKS.trim / 2;
-  trim.position.y += PLANKS.trimRaise;   // 天板の板より少し高くして、段差を付ける
-  const under = new THREE.Mesh(new THREE.BoxGeometry(DESK.width, DESK.thickness - PLANKS.thickness, DESK.depth),
+  trim.position.set((DESK.left + style.trim + DESK.right) / 2, trim.position.y + style.trimRaise, back + style.trim / 2);
+  const sideTrim = board(style.trim, DESK.depth, textures.sideTrim);
+  sideTrim.position.set(DESK.left + style.trim / 2, sideTrim.position.y + style.trimRaise, DESK.centerZ);
+}
+
+{
+  buildDesk(candleEra, DESK_STYLES[0], candleDeskTextures);
+  // 天板の下地（どの時代も共通。板のすき間の奥に見える）
+  const under = new THREE.Mesh(new THREE.BoxGeometry(DESK.right - DESK.left, DESK.thickness - DESK.plank, DESK.depth),
     new THREE.MeshStandardMaterial({ color: 0x120b06, roughness: 0.9 }));
-  under.position.set(0, -PLANKS.thickness - (DESK.thickness - PLANKS.thickness) / 2, DESK.centerZ);
+  under.position.set((DESK.left + DESK.right) / 2, -DESK.plank - (DESK.thickness - DESK.plank) / 2, DESK.centerZ);
   scene.add(under);
 
-  // 奥の壁。ろうそくの光がわずかに届くだけで、ほぼ闇に沈む
+  // 奥の壁。明かりがわずかに届くだけで、ほぼ闇に沈む（壁紙の柄は、手前に重ねる光だまりの板に貼る）
   const darkWood = new THREE.MeshStandardMaterial({ color: 0x1d130c, roughness: 0.75 });
   const wall = new THREE.Mesh(new THREE.PlaneGeometry(8, 3), darkWood);
   wall.position.set(0, 0.5, WALL_Z);
   scene.add(wall);
 }
 
-// ---- 小物 ----
-// 時代ごとの小物と明かり。Candle の物は起動時に作り、ほかの時代の物は初めてその時代にしたときに作る
-// （起動時に作ると、three.js が物ごとに Math.random で ID を振るので、配置の乱数の列がずれるため）
-const candleEra = [];
+// 壁紙の柄（1 枚分。上下左右につながる）。星（4 つの尖りの形と、小さな点）だけを、間を広く空けて散らす
+function drawWallpaper(g, w, h) {
+  const random = seededRandom(WALLPAPER.seed);
+  g.fillStyle = WALLPAPER.base;
+  g.fillRect(0, 0, w, h);
+  // 紙のむら（ごく弱い）
+  const image = g.getImageData(0, 0, w, h);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const n = (random() - 0.5) * 6;
+    for (let c = 0; c < 3; c++) image.data[i + c] += n;
+  }
+  g.putImageData(image, 0, 0);
+  g.globalAlpha = WALLPAPER.inkAlpha;
+  g.fillStyle = WALLPAPER.ink;
+  // 柄を、縁をまたいでも反対側につながるように、9 か所にずらして描く
+  const stamp = (x, y, draw) => {
+    for (const dx of [-w, 0, w]) for (const dy of [-h, 0, h]) {
+      g.save();
+      g.translate(x + dx, y + dy);
+      draw();
+      g.restore();
+    }
+  };
+  const sparkle = (r) => {   // 4 つの尖りの星
+    g.beginPath();
+    for (let k = 0; k < 8; k++) {
+      const a = k * Math.PI / 4, d = k % 2 ? r * 0.22 : r;
+      g.lineTo(Math.cos(a) * d, Math.sin(a) * d);
+    }
+    g.fill();
+  };
+  const dot = (r) => { g.beginPath(); g.arc(0, 0, r, 0, TAU); g.fill(); };
+  const at = () => [random() * w, random() * h];
+  for (let k = 0; k < 50; k++) { const r = w * (0.003 + 0.004 * random()); stamp(...at(), () => dot(r)); }
+  for (let k = 0; k < 11; k++) { const r = w * (0.02 + 0.025 * random()), a = random(); stamp(...at(), () => { g.rotate(a); sparkle(r); }); }
+}
+
+// 奥の壁の光だまり。壁のすぐ手前に、壁紙を貼った板を加算で重ね、中心から外へ薄れさせる（明かりの光は、壁まで遠くてほとんど届かないため）。
+// 明るさは、点光源が平らな壁を照らすときの形（中心からの距離 r で (1 + r²)^-1.5）にし、板の縁で 0 に落とす。
+// 暗い所の段差が目立たないよう、sRGB で書く。位置・色・強さ・広さは時代を替えるときに決め、壁紙は板が動いても壁に留まるよう、繰り返しをずらす
+const wallpaper = canvasTexture(512, 512, drawWallpaper);
+wallpaper.wrapS = wallpaper.wrapT = THREE.RepeatWrapping;
+const wallGlow = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({
+  map: wallpaper,
+  alphaMap: canvasTexture(256, 256, (g, w, h) => {
+    const image = g.createImageData(w, h), edge = (1 + WALL_GLOW_EXTENT ** 2) ** -1.5;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const r = Math.hypot(x + 0.5 - w / 2, y + 0.5 - h / 2) / (w / 2) * WALL_GLOW_EXTENT;
+      const v = Math.max(0, ((1 + r * r) ** -1.5 - edge) / (1 - edge)) ** (1 / 2.2) * 255;
+      const i = (y * w + x) * 4;
+      image.data.set([v, v, v, 255], i);
+    }
+    g.putImageData(image, 0, 0);
+  }),
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+}));
+wallGlow.position.z = WALL_Z + 0.002;
+scene.add(wallGlow);
+// 光だまりを置く。x・y: 中心の位置、size: 板の一辺の半分（m）
+function placeWallGlow(x, y, size) {
+  wallGlow.position.x = x;
+  wallGlow.position.y = y;
+  wallGlow.scale.setScalar(size);
+  wallpaper.repeat.setScalar(size * 2 / WALLPAPER.tile);
+  wallpaper.offset.set((x - size) / WALLPAPER.tile, (y - size) / WALLPAPER.tile);
+}
 
 // ---- Candle の小物 ----
 // ろうそく（真鍮の燭台、蝋、芯、炎）。炎の位置に点光源を置き、これが主な明かりになる
@@ -1228,19 +1365,21 @@ function lampStand() {
 // ---- Filament の小物 ----
 function buildFilament() {
   const objects = [];
+  buildDesk(objects, DESK_STYLES[1], deskTextures(DESK_STYLES[1]));
   const lightY = LIGHT_POSITION[1];
-  // 電灯。真鍮の丸い台から首の曲がる管が立ち上がり、先の浅い笠をオーラリーの側へ傾ける。
+  // 電灯。黒い塗装の丸い台から首の曲がる管が立ち上がり、先の浅い笠をオーラリーの側へ傾ける。
   // 笠の外側は濃い緑の塗装、内側は白い琺瑯。電球は光の出る所にあり、笠の縁からのぞく
   const stand = lampStand();
   const standX = -0.12;   // 台は、光の出る所から後ろへ離して置く（首が後ろから笠へ回り込む）
-  const base = lathe([[0, 0], [0.07, 0], [0.072, 0.004], [0.068, 0.011], [0.05, 0.017], [0.016, 0.021], [0.009, 0.03], [0, 0.03]], brass, 48);
+  const standPaint = new THREE.MeshStandardMaterial({ color: FILAMENT_LAMP.stand, metalness: 0.3, roughness: 0.4 });
+  const base = lathe([[0, 0], [0.07, 0], [0.072, 0.004], [0.068, 0.011], [0.05, 0.017], [0.016, 0.021], [0.009, 0.03], [0, 0.03]], standPaint, 48);
   base.position.x = standX;
   const [rimRadius, depth] = FILAMENT_LAMP.shade, tilt = FILAMENT_LAMP.tilt;
   // 笠の頂（首の先が付く所）。笠の軸は、光の出る所から傾けた向きの逆（上）へ伸びる
   const top = new THREE.Vector3(-Math.sin(tilt), Math.cos(tilt), 0).multiplyScalar(depth + 0.01).add(new THREE.Vector3(0, lightY, 0));
   const neckPoints = [[standX, 0.028], [standX, 0.1], [standX + 0.002, 0.17], [standX + 0.012, top.y + 0.02], [top.x - 0.03, top.y + 0.03], [top.x, top.y]]
     .map(([x, y]) => new THREE.Vector3(x, y, 0));
-  const neck = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(neckPoints), 48, 0.0045, 10, false), brassAged);
+  const neck = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(neckPoints), 48, 0.0045, 10, false), standPaint);
   stand.add(shadowed(base), shadowed(neck));
   const shade = new THREE.Group();   // 原点が光の出る所。y が笠の軸（上が頂）
   const enamel = new THREE.MeshStandardMaterial({ color: 0xf0eadc, roughness: 0.5, emissive: 0xffd8a0, emissiveIntensity: 0.35, side: THREE.BackSide });   // 電球の光で明るい
@@ -1449,10 +1588,22 @@ function buildFilament() {
 // ---- LED の小物 ----
 function buildLed() {
   const objects = [];
+  buildDesk(objects, DESK_STYLES[2], deskTextures(DESK_STYLES[2]));
+  {
+    // デスクマット。角の丸い薄い透明な板で、縁をわずかに丸める。上の面は木目が透けるが、少し白く濁る。
+    // 縁は、厚みの分だけ白く、わずかに青緑がかって見える。影は受けない（すぐ下の天板が受ける）。奥を隠さないよう、深度は書かない
+    const [x0, x1] = DESK_MAT.x, [z0, z1] = DESK_MAT.z;
+    // 縁は両面を描く（奥と左の縁は、透けた上の面越しに内側から見える）
+    const pvc = (opacity, color, side) => new THREE.MeshStandardMaterial({ color, roughness: DESK_MAT.roughness, transparent: true, opacity, depthWrite: false, side });
+    const mat = new THREE.Mesh(roundedSlab(x1 - x0, z1 - z0, DESK_MAT.thickness, DESK_MAT.corner, 0.0012),
+      [pvc(DESK_MAT.opacity, DESK_MAT.color, THREE.FrontSide), pvc(DESK_MAT.edgeOpacity, DESK_MAT.edgeColor, THREE.DoubleSide)]);
+    mat.position.set((x0 + x1) / 2, 0, (z0 + z1) / 2);
+    place(objects, mat);
+  }
   const lightY = LIGHT_POSITION[1];
   // 電灯。丸い台から細い柱が立ち、上の関節から平たい棒の頭がオーラリーの側へ斜めに上がる（柱と鈍角をなす）。頭の下面が光る
   const stand = lampStand();
-  const aluminum = new THREE.MeshStandardMaterial({ color: LED_LAMP.color, roughness: 0.5 });
+  const aluminum = new THREE.MeshStandardMaterial({ color: LED_LAMP.color, metalness: LED_LAMP.metalness, roughness: LED_LAMP.roughness });
   const standX = LED_LAMP.standX;
   const base = lathe([[0, 0], [0.065, 0], [0.066, 0.008], [0.062, 0.012], [0, 0.012]], aluminum, 48);
   base.position.x = standX;
@@ -1477,11 +1628,11 @@ function buildLed() {
   stand.add(head);
   place(objects, stand);
 
-  // 白い鏡筒の小さな屈折望遠鏡（机に寝かせて置く）。断面は対物側（y = 0）から接眼側へ
+  // 白い鏡筒（わずかに灰色の、艶を抑えた金属の塗装）の小さな屈折望遠鏡（机に寝かせて置く）。断面は対物側（y = 0）から接眼側へ
   {
     const scope = new THREE.Group();
     const black = new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.55 });
-    const white = new THREE.MeshStandardMaterial({ color: MODERN_SCOPE.tube, roughness: 0.4 });
+    const white = new THREE.MeshStandardMaterial({ color: MODERN_SCOPE.tube, metalness: MODERN_SCOPE.metalness, roughness: MODERN_SCOPE.roughness });
     scope.add(lathe([[0.036, 0], [0.042, 0], [0.042, 0.09], [0.038, 0.092], [0, 0.092]], black, 40));   // フード
     scope.add(lathe([[0.037, 0.092], [0.037, 0.33], [0.022, 0.335], [0, 0.335]], white, 40));   // 鏡筒
     scope.add(lathe([[0.022, 0.335], [0.022, 0.39], [0.015, 0.392], [0.015, 0.43], [0.008, 0.432], [0, 0.432]], black, 32));   // 接眼部
@@ -1516,25 +1667,40 @@ function buildLed() {
         const t = rand(0, 1);
         g.fillRect(t * w, h * 0.8 - t * h * 0.7 + rand(-60, 60), rand(3, 10), rand(3, 10));
       }
-      const stars = Array.from({ length: 520 }, () => [rand(0, w), rand(0, h * 0.86), rand(0, 1) ** 3]);
-      for (const [x, y, m] of stars) {
+      const star = (x, y, m) => {   // m: 明るさ（0〜1）
         g.fillStyle = `rgba(235,240,255,${0.35 + 0.65 * m})`;
         g.beginPath();
         g.arc(x, y, 0.8 + 2.4 * m, 0, TAU);
         g.fill();
+      };
+      for (let i = 0; i < 520; i++) star(rand(0, w), rand(0, h * 0.86), rand(0, 1) ** 3);
+      // 星座。明るめの星を 4〜7 個まとめて置き、近い星どうしを、輪にならないようにつなぐ（最小全域木。枝分かれした星座の形になる）
+      const centers = [];
+      for (let tries = 0; centers.length < 8 && tries < 300; tries++) {   // 重ならないよう離して置く（置けなければ、置けた数だけにする）
+        const c = [rand(100, w - 100), rand(100, h * 0.74)];
+        if (centers.every(([x, y]) => Math.hypot(x - c[0], y - c[1]) > 170)) centers.push(c);
       }
-      g.strokeStyle = 'rgba(110,160,230,0.4)';   // 星座の線
-      g.lineWidth = 1.5;
-      for (let i = 0; i < 9; i++) {
-        let [x, y] = [rand(80, w - 80), rand(60, h * 0.7)];
+      g.strokeStyle = 'rgba(120,170,235,0.7)';
+      g.lineWidth = 3;
+      for (const [cx, cy] of centers) {
+        const points = Array.from({ length: randInt(4) + 4 }, () => [cx + rand(-95, 95), cy + rand(-70, 70), rand(0.4, 1)]);
+        const linked = [points[0]];
         g.beginPath();
-        g.moveTo(x, y);
-        for (let k = randInt(3) + 3; k > 0; k--) {
-          x += rand(-70, 70);
-          y += rand(-55, 55);
-          g.lineTo(x, y);
+        while (linked.length < points.length) {
+          let best = null;
+          for (const p of points) {
+            if (linked.includes(p)) continue;
+            for (const q of linked) {
+              const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+              if (!best || d < best.d) best = { p, q, d };
+            }
+          }
+          g.moveTo(best.q[0], best.q[1]);
+          g.lineTo(best.p[0], best.p[1]);
+          linked.push(best.p);
         }
         g.stroke();
+        for (const [x, y, m] of points) star(x, y, m);
       }
       g.fillStyle = '#060a08';   // 地平線と、手前の地面
       g.beginPath();
@@ -1551,15 +1717,19 @@ function buildLed() {
     const body = new THREE.MeshStandardMaterial({ color: 0x4a4b4f, metalness: 0.7, roughness: 0.35 });
     const bezel = new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.08 });
     const tablet = new THREE.Group();
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(tw, TABLET.thickness, th), [body, body, bezel, body, body, body]);
-    slab.position.y = TABLET.thickness / 2;
-    const glass = new THREE.Mesh(new THREE.PlaneGeometry(tw - 0.014, th - 0.014),
+    // 本体は角の丸い板で、上の面が黒い縁（ベゼル）、側面が金属。画面も角を丸める
+    const slab = new THREE.Mesh(roundedSlab(tw, th, TABLET.thickness, TABLET.corner, 0.0015), [bezel, body]);
+    const [gw, gh] = [tw - 0.014, th - 0.014];
+    const glassGeometry = new THREE.ShapeGeometry(roundedRect(gw, gh, TABLET.corner - 0.007), 6);
+    const uv = glassGeometry.attributes.uv;   // 形の座標（m）のままなので、画面の画像に合わせて 0〜1 にする
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / gw + 0.5, uv.getY(i) / gh + 0.5);
+    const glass = new THREE.Mesh(glassGeometry,
       new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.06, emissive: 0xffffff, emissiveMap: screen, emissiveIntensity: TABLET.glow }));
     glass.rotation.x = -Math.PI / 2;
     glass.position.y = TABLET.thickness + 0.0002;
     tablet.add(shadowed(slab), glass);
     glass.receiveShadow = true;
-    tablet.position.set(CHART.x + 0.01, 0, CHART.z + 0.01);
+    tablet.position.set(CHART.x + 0.01, DESK_MAT.thickness, CHART.z + 0.01);
     tablet.rotation.y = CHART.angle - 0.15;
     place(objects, tablet);
   }
@@ -1596,6 +1766,10 @@ function setScene(index) {
   if (lampLight) lampLight.visible = !!s.light;
   ambientLight.color.set(s.ambient[0]);
   ambientLight.intensity = s.ambient[1];
+  const [glowX, glowY] = s.light ? LIGHT_POSITION : [CANDLE.x, FLAME_LIGHT_Y];   // 明かりの真後ろの壁
+  placeWallGlow(glowX, glowY, s.wallGlow.spread * WALL_GLOW_EXTENT);
+  wallGlow.material.color.set(s.wallGlow.color).multiplyScalar(s.wallGlow.intensity);
+  orrery.position.y = s.name === 'LED' ? DESK_MAT.thickness : 0;   // LED では、デスクマットの上に載せる
   buildEnvironment(s);
   sceneNameEl.textContent = s.name;
 }
