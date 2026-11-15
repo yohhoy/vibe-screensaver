@@ -89,9 +89,10 @@ const PLANET_LOOKS = {
 const PLANET_SEED = 7;            // 模様の乱数の種（配置の乱数とは別）
 const PLANE_Y = 0.215;            // 太陽と惑星の球の中心の高さ
 const SUN_RADIUS = 0.028;
-// 太陽は橙色のガラス玉。少し光を通し、奥ほど深い色に沈む（光らせない）。
-// transmission: 光を通す割合（0〜1。小さいほど不透明）、depth: 奥の色、depthDistance: その色に染まる深さ（m。小さいほど濃い）
-const SUN_GLASS = { color: 0xd8701e, depth: 0x7a3008, depthDistance: 0.025, transmission: 0.45, roughness: 0.04, ior: 1.52 };
+// 太陽は深い赤橙のガラス玉（光らせない）。光を通す描き方（transmission）は不透明な物を全部もう 1 回描いて重いので、
+// 光を通さない深い赤の地に、磨いたガラスの艶の層（clearcoat）を重ねてガラスに見せる（地が明るいと陶器のように見える）。
+// roughness: 地の粗さ（照り返しは艶の層に任せるので粗め）、gloss: 艶の層の粗さ
+const SUN_GLASS = { color: 0x8a3212, roughness: 0.3, gloss: 0.03 };
 const ARM_TOP_Y = 0.175;          // いちばん内側（水星）の腕の高さ。外側ほど下に付く
 const ARM_PITCH_Y = 0.012;        // 腕の段の間隔
 const ARM_RADIUS = 0.002;         // 腕の太さ（半径）
@@ -162,6 +163,7 @@ const ENV = {
 };
 
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
 const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
 const BLOOM = { strength: 0.45, radius: 0.8, threshold: 1.3, scale: 0.5, sigma: 0.4 };   // scale: ブルームを描く解像度の倍率、sigma: ぼかしの標準偏差（ぼかしの半径に対する割合）
 const VIGNETTE = 0.55;            // 周辺減光の強さ（画面の隅で暗くする割合）
@@ -312,7 +314,7 @@ const brassAged = metal(BRASS_AGED, BRASS_ROUGHNESS.aged);
 // 天板の木目。丸太から切り出した板の表面に出る年輪の断面を、1 画素ずつ求める。年輪の中心（芯）から外れた所を通る年輪が、
 // 板目の山形の模様になる。色（map）と凹凸（bumpMap）を同時に描く（荒い仕上げなので、柔らかい明るい部分がへこむ）
 // plankWidth・length: 貼る板の幅と長さ（m。年輪の間隔と縁の丸まり、節の形を、板の大きさによらず揃えるため）
-function plankTextures(plankWidth, length = DESK.depth) {
+function plankTextures(plankWidth, length) {
   const [W, H] = WOOD_TEXTURE;
   const g = document.createElement('canvas').getContext('2d'), b = document.createElement('canvas').getContext('2d');
   g.canvas.width = b.canvas.width = W;
@@ -352,7 +354,7 @@ function plankTextures(plankWidth, length = DESK.depth) {
   map.anisotropy = bumpMap.anisotropy = TEXTURE_ANISOTROPY;
   return { map, bumpMap };
 }
-const plankWoods = Array.from({ length: PLANKS.variants }, () => plankTextures((PLANKS.width[0] + PLANKS.width[1]) / 2));
+const plankWoods = Array.from({ length: PLANKS.variants }, () => plankTextures((PLANKS.width[0] + PLANKS.width[1]) / 2, DESK.depth - PLANKS.trim));
 const trimWood = plankTextures(PLANKS.trim, DESK.width);
 
 // ---- 歯車 ----
@@ -629,9 +631,8 @@ const dialMaterial = Object.assign(metal(0xffffff, BRASS_ROUGHNESS.dial), { map:
 orrery.add(column(0.0022, PLATE_Y, PLANE_Y, brass, 12));
 {
   const sun = ball(SUN_RADIUS, new THREE.MeshPhysicalMaterial({
-    color: SUN_GLASS.color, metalness: 0, roughness: SUN_GLASS.roughness, ior: SUN_GLASS.ior,
-    transmission: SUN_GLASS.transmission, thickness: SUN_RADIUS * 2,
-    attenuationColor: new THREE.Color(SUN_GLASS.depth), attenuationDistance: SUN_GLASS.depthDistance,
+    color: SUN_GLASS.color, metalness: 0, roughness: SUN_GLASS.roughness,
+    clearcoat: 1, clearcoatRoughness: SUN_GLASS.gloss,
   }));
   sun.position.y = PLANE_Y;
   orrery.add(sun);
@@ -657,21 +658,21 @@ orrery.add(layshaft);
 // 惑星ごとの部品。主軸の歯車・筒・腕・球をまとめて回す（group.rotation.y = earthAngle × ratio + phase）
 const planetBalls = [];   // 惑星と月の球
 const planets = PLANETS.map((planet, i) => {
-  const shaftTeeth = GEAR_TEETH_SUM - planet.teeth;
-  const ratio = shaftTeeth / planet.teeth;
+  const layshaftTeeth = GEAR_TEETH_SUM - planet.teeth;
+  const ratio = layshaftTeeth / planet.teeth;
   const gearY = GEAR_BASE_Y + i * GEAR_PITCH_Y;
   const armY = ARM_TOP_Y - i * ARM_PITCH_Y;
   const tubeRadius = 0.0035 + i * 0.0015;
 
   // 副軸の歯車は、どれも歯の 1 つが +x を向いたまま副軸に固定する。主軸の歯が副軸を向くとき、
   // 副軸の歯車の谷が主軸を向くように、主軸の歯車の最初の角度を決める
-  const shaftGear = new THREE.Mesh(gearGeometry(shaftTeeth), brassAged);
-  shaftGear.position.y = gearY;
-  layshaft.add(shaftGear);
+  const layshaftGear = new THREE.Mesh(gearGeometry(layshaftTeeth), brassAged);
+  layshaftGear.position.y = gearY;
+  layshaft.add(layshaftGear);
   if (!HUBLESS.layshaft.includes(planet.name)) {
     layshaft.add(column(0.003 + GEAR_HUB.radius, gearY - GEAR_HUB.height / 2, gearY + GEAR_HUB.height / 2, brassAged));
   }
-  const phase = (layshaftAngle + Math.PI - 0.5 * TAU / shaftTeeth) * ratio + layshaftAngle;
+  const phase = (layshaftAngle + Math.PI - 0.5 * TAU / layshaftTeeth) * ratio + layshaftAngle;
 
   const group = new THREE.Group();
   const gear = new THREE.Mesh(gearGeometry(planet.teeth), brass);
@@ -782,7 +783,7 @@ function updateOrrery() {
     x += width;
   }
   const trim = board(PLANKS.trim, DESK.width, trimWood);   // 縁取りは、長さの方向を x に向ける
-  trim.rotation.y = Math.PI / 2;
+  trim.rotation.y += Math.PI / 2;
   trim.position.z = back + PLANKS.trim / 2;
   trim.position.y += PLANKS.trimRaise;   // 天板の板より少し高くして、段差を付ける
   const under = new THREE.Mesh(new THREE.BoxGeometry(DESK.width, DESK.thickness - PLANKS.thickness, DESK.depth),
@@ -1156,7 +1157,11 @@ function step(dt) {
 }
 
 let last = performance.now();
+let nextDraw = 0;            // 次に描いてよい時刻 (ms)
 function tick(now) {
+  // MAX_FPS より速くは描かない。描いてよい時刻は一定の間隔で進め、画面の更新の間隔の揺れで 1 回飛ばさないよう少し余裕を持たせる
+  if (now < nextDraw - 2) return;
+  nextDraw = Math.max(nextDraw + 1000 / MAX_FPS, now);
   // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
