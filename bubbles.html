@@ -47,6 +47,7 @@ const FOREGROUND_TREES = [
   { edge: -1, x: 0.0, y: -0.25, angle: -0.1, len: 0.55, limb: 0.36, w: 0.085, depth: 4, scale: 1 },   // 左の木。幹は画面の端で見切れる
 ];
 const TREE_MAX_WIDTH = 0.42;         // 木（幹・枝・葉・木漏れ日）が画面の端から占める幅の上限（画面の幅に対する割合）。はみ出す分は横に詰める
+const TREE_PORTRAIT_WIDTH = 0.85;    // 縦長の画面で、木が画面の端から占める幅（画面の幅に対する割合）。横に詰めると細い柱のようになるので、詰めずに木を画面の外へずらし、幹を隠して枝と葉だけをのぞかせる
 const BRANCH_SEGMENTS = 7;           // 枝 1 本を分ける節の数（節ごとに向きを少し変えて曲げる）
 const BRANCH_BEND = 0.45;            // 枝 1 本の曲がりの大きさ（根もとと先の向きの差の最大, rad）
 const BRANCH_KINK = 0.02;            // 節ごとの向きの不規則なずれ（rad）
@@ -1387,10 +1388,13 @@ const MOTIONS = {
     draw(st, t) {
       // 手前の木: 木陰・枝・樹皮に落ちる木漏れ日・葉の房の地・小枝・葉・木漏れ日の順に描く。
       // 根もとから遠いものほど風で大きく揺れる。小枝は葉と同じだけ揺らし、葉が小枝から離れないようにする
-      // 木が画面の幅の TREE_MAX_WIDTH に収まるよう、はみ出す分は端からの距離を詰める（大きさは変えない。枝は、詰めた後の向きと長さに直す）
+      // 木が画面の幅の TREE_MAX_WIDTH に収まるよう、はみ出す分は端からの距離を詰める（大きさは変えない。枝は、詰めた後の向きと長さに直す）。
+      // 縦長の画面では詰めずに、TREE_PORTRAIT_WIDTH からはみ出す分だけ木を画面の外へずらす（幹は見切れ、上の角から枝と葉が張り出す）
       const half = screenHalfWidth();
-      const fit = Math.min(1, TREE_MAX_WIDTH * 2 * half / st.extent);
-      const px = (p) => p.edge * half + p.x * fit;
+      const portrait = half < 0.5;
+      const fit = portrait ? 1 : Math.min(1, TREE_MAX_WIDTH * 2 * half / st.extent);
+      const out = portrait ? Math.max(0, st.extent - TREE_PORTRAIT_WIDTH * 2 * half) : 0;
+      const px = (p) => p.edge * (half + out) + p.x * fit;
       const [swayRate, flutterRate] = TREE_SWAY_RATE;
       const sway = (p, gain) => TREE_SWAY * gain * p.reach * Math.sin(swayRate * t + p.ph);
       // 枝・小枝を 1 節描く。gain は揺れの大きさの倍率、lit は日の当たる側を明るくする割合
