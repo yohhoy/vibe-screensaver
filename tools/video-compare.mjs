@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // 2 つの版の作品を同じ条件で撮り、並べた比較動画と確認用の画像を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-compare.mjs <作品名> [--base HEAD] [--case "名前:式"]... [--scenes 0,1,2] [--presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
+//   node tools/video-compare.mjs <作品名> --keep
+//   node tools/video-compare.mjs <作品名> [--base HEAD|kept] [--case "名前:式"]... [--scenes 0,1,2] [--presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
 //
 // 撮影は video-export.mjs に任せる。作品の HTML も作業ツリーも変更しない。依存は video-export.mjs と同じで、加えて git と tar。
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -14,6 +16,7 @@ import { pagesWith } from './pages.mjs';
 // ---- 設定 ----
 const EXPORTER = path.join(ROOT, 'tools', 'video-export.mjs');
 const EXPORTER_FILES = ['video-export.mjs', 'common.mjs', 'pages.mjs'];   // 比べる版にも写す、撮影の処理のファイル（tools の下）
+const KEPT_DIR = path.join(ROOT, '.kept');   // --keep で変更前の版を控える場所（Git の管理外）
 const VIDEO_WIDTH = 1920;         // 比較動画の幅（px）。列が 1 つのときは半分にする
 const SHEET_MAX = 1536;           // 確認用の画像の長辺の上限（px）。これより大きいと、読むときに縮小され、トークンも増える
 const X264_CRF = 20;              // 比較動画の画質（小さいほど高画質。0..51）
@@ -22,7 +25,8 @@ const CAPTURE_TRIES = 3;          // 読み込みの失敗（net::ERR_）で撮�
 const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプション]
 
 上の段に --base の版、下の段に作業ツリーの版を並べる。
-  --base 版       比べる版。git のコミットか、作品の HTML のパス（既定 HEAD）
+  --keep          作業ツリーの作品の HTML を、変更前の版として .kept/ に控えて終わる（撮影はしない）
+  --base 版       比べる版。git のコミット、作品の HTML のパス、kept（--keep で控えた版）のどれか（既定 HEAD）
   --case "名前:式" 列を 1 つ足す。収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
   --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）
   --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。--scenes と同時に指定すると、シーン × 配色の場面を撮る
@@ -49,9 +53,12 @@ function parseOptions() {
       seed: { type: 'string', default: '1' },
       out: { type: 'string' },
       open: { type: 'boolean', default: false },
+      keep: { type: 'boolean', default: false },
     },
   });
   if (positionals.length !== 1) throw new Error(USAGE);
+  const kept = path.join(KEPT_DIR, `${positionals[0]}.html`);
+  if (values.base === 'kept' && !existsSync(kept)) throw new Error(`控えた版が無い。先に --keep で控える: ${kept}`);
   const cases = values.case.map((spec) => {
     const m = spec.match(/^([^:]+):(.+)$/s);
     if (!m) throw new Error(`--case は「名前:式」で書く: ${spec}`);
@@ -59,6 +66,8 @@ function parseOptions() {
   });
   return {
     ...values,
+    base: values.base === 'kept' ? kept : values.base,
+    kept,
     page: positionals[0],
     cases: cases.length ? cases : [{ label: 'そのまま', code: null }],
     // 場面の数は、シーンと配色の組み合わせの数（video-export と同じ）
@@ -138,6 +147,12 @@ function makeSheet(video, size, frames, sceneCount, out) {
 async function main() {
   const options = parseOptions();
   const { page, cases, base, sceneCount, out } = options;
+  if (options.keep) {
+    await mkdir(KEPT_DIR, { recursive: true });
+    await copyFile(path.join(ROOT, `${page}.html`), options.kept);
+    console.log(`控えた: .kept/${page}.html（--base kept で比べる）`);
+    return;
+  }
   const thumbs = `${out.replace(/\.mp4$/, '')}.thumbs.jpg`;
   const dir = await mkdtemp(path.join(tmpdir(), 'video-compare-'));
   try {

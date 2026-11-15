@@ -3,3 +3,7 @@
 # 投稿用などに書き出した動画
 *.mp4
 *.thumbs.jpg
+*.sheet.jpg
+
+# video-compare --keep で控えた変更前の版
+.kept/

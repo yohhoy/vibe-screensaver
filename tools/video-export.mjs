@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 作品を 1 コマずつ描き出して、投稿用の動画（H.264）か静止画（PNG）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--out 出力先.mp4|出力先.png]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--shots 0,1.5,3] [--out 出力先.mp4|出力先.png]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
@@ -42,8 +42,9 @@ const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプショ�
                   秒の並び（例 2,8.5）は自然には出さず、動画のその時刻に呼び出す
   --at "秒:式"    動画の時刻に式を実行する。作品のスクリプトの変数を使える。複数指定できる
   --size WxH      静止画の大きさ（既定 1280x720。.png のときだけ）
-  --out PATH      出力先（既定 <作品名>.mp4）。.png なら、各場面の最後のコマを PNG にする（場面が複数なら <名前>-1.png のように番号を付ける）。
-                  動画では確認用の画像を <出力先>.thumbs.jpg に作る`;
+  --shots 0,1.5   静止画を撮る時刻（収録を始めてからの秒）。場面ごとに各時刻のコマを撮る（.png のときだけ。--seconds の代わり）
+  --out PATH      出力先（既定 <作品名>.mp4）。.png なら、各場面の最後のコマを PNG にする（2 枚以上なら <名前>-1.png のように番号を付け、
+                  並べた確認用の画像を <名前>.sheet.jpg に作る）。動画では確認用の画像を <出力先>.thumbs.jpg に作る`;
 
 // ---- ページに差し込む処理 ----
 // <body> の直後に置く。common.js のあと、作品のモジュールの前に実行される
@@ -84,12 +85,16 @@ ${SEEDED_RANDOM}
     const probe = Object.assign(document.createElement('canvas'), { width: 32, height: 18 });
     const probeCtx = probe.getContext('2d', { willReadFrequently: true });
     // 描いた直後に写す。あとの task になると WebGL の canvas は空になっていることがある
+    // mean: 輝度の平均、max: 最も明るい値（どちらも 0..255）
     const brightness = () => {
       probeCtx.drawImage(source, 0, 0, probe.width, probe.height);
       const { data } = probeCtx.getImageData(0, 0, probe.width, probe.height);
-      let max = 0;
-      for (let i = 0; i < data.length; i += 4) max = Math.max(max, data[i], data[i + 1], data[i + 2]);
-      return max;
+      let max = 0, sum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        max = Math.max(max, data[i], data[i + 1], data[i + 2]);
+        sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      }
+      return { mean: Math.round(sum / (data.length / 4)), max };
     };
 
     const results = [];
@@ -111,12 +116,15 @@ ${SEEDED_RANDOM}
         if (i % 300 === 299) await post('/__alive');                 // 長い準備の間も、止まっていないと伝える
       }
       let level = 0;
+      const shots = [];
       for (let i = 0; i < plan.sceneFrames; i++, frame++) {
         for (const at of plan.at) if (at.frame === frame) evaluate(at.code);
         for (const f of plan.summonFrames) if (f === frame) summon();
         advance();
-        if (i === plan.sceneFrames >> 1) level = brightness();
-        if (plan.still && i < plan.sceneFrames - 1) continue;   // 静止画は最後のコマだけ撮る
+        if (i === plan.sceneFrames >> 1) level = brightness().max;
+        const shot = plan.still ? plan.shotFrames.indexOf(i) : -1;
+        if (plan.still && shot < 0) continue;   // 静止画は --shots の時刻（既定は最後）のコマだけ撮る
+        if (plan.still) shots.push(brightness());
         const fade = plan.fadeFrames ? Math.min(1, i / plan.fadeFrames, (plan.sceneFrames - 1 - i) / plan.fadeFrames) : 1;
         ctx.globalAlpha = 1;
         ctx.fillStyle = '#000';
@@ -124,9 +132,9 @@ ${SEEDED_RANDOM}
         ctx.globalAlpha = fade;
         ctx.drawImage(source, 0, 0);
         const blob = await new Promise((resolve) => canvas.toBlob(resolve, plan.still ? 'image/png' : 'image/jpeg', plan.jpegQuality));
-        await post(plan.still ? '/__still?n=' + sceneIndex : '/__frame?n=' + frame, blob);
+        await post(plan.still ? '/__still?n=' + (sceneIndex * plan.shotFrames.length + shot) : '/__frame?n=' + frame, blob);
       }
-      results.push({ name: names.length ? names.join(' / ') : null, level });
+      results.push({ name: names.length ? names.join(' / ') : null, level, shots });
     }
     await post('/__done', JSON.stringify(results));
   };
@@ -189,6 +197,16 @@ function makeThumbs(file, thumbs, frames) {
   ]);
 }
 
+// 静止画を縮小して 1 枚に並べる。時刻が複数なら 1 行に 1 場面の各時刻、そうでなければ THUMBS_COLS 枚ずつ並べる
+function makeSheet(pattern, sheet, count, shotCount) {
+  const cols = shotCount > 1 ? shotCount : Math.min(THUMBS_COLS, count);
+  return run('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y', '-start_number', '1', '-i', pattern,
+    '-vf', `scale=${THUMB_WIDTH}:-2,tile=${cols}x${Math.ceil(count / cols)}`,
+    '-frames:v', '1', '-q:v', '4', sheet,
+  ]);
+}
+
 // ---- Chrome ----
 // ページのタブにつなぐ。ページのエラーが起きたら onError に渡す
 async function connectPage(wsUrl, onError) {
@@ -206,6 +224,7 @@ function parseOptions() {
       seconds: { type: 'string' },
       warmup: { type: 'string', default: '3' },
       size: { type: 'string' },
+      shots: { type: 'string' },
       fade: { type: 'string', default: '0.5' },
       seed: { type: 'string', default: '1' },
       hidden: { type: 'string', default: 'auto' },
@@ -226,7 +245,11 @@ function parseOptions() {
   const size = values.size?.match(/^(\d+)x(\d+)$/);
   if (values.size && !(size && Number(size[1]) >= 16 && Number(size[2]) >= 16)) throw new Error(`--size は「幅x高さ」で書く（例 1920x1080）: ${values.size}`);
 
-  const seconds = Number(values.seconds ?? (still ? 0 : 5));
+  if (values.shots && !still) throw new Error('--shots は静止画（.png）だけで使える');
+  if (values.shots && values.seconds) throw new Error('--shots と --seconds は同時に使えない（--shots の最後の時刻まで収録する）');
+  const shots = values.shots?.split(',').map(Number);
+  if (shots && !shots.every((t, i) => t >= 0 && (i === 0 || t > shots[i - 1]))) throw new Error(`--shots は増えていく秒の並びで書く（例 0,1.5,3）: ${values.shots}`);
+  const seconds = shots ? shots.at(-1) : Number(values.seconds ?? (still ? 0 : 5));
   const fade = still ? 0 : Number(values.fade);
   const warmup = Number(values.warmup);
   if (!(seconds >= 0) || (!still && !(seconds > 0)) || !(warmup >= 0) || !(fade >= 0)) throw new Error(USAGE);
@@ -239,7 +262,9 @@ function parseOptions() {
     return n;
   }) ?? [null];
   const scenes = numbers('scenes').flatMap((sceneNo) => numbers('presets').map((preset) => ({ scenes: sceneNo, presets: preset })));
-  const sceneFrames = Math.max(1, Math.round(seconds * FPS));   // 静止画は 0 秒でも 1 コマ撮る
+  const shotFrames = shots ? shots.map((t) => Math.round(t * FPS)) : null;
+  // 静止画は 0 秒でも 1 コマ撮る。--shots なら最後の時刻のコマまで
+  const sceneFrames = shotFrames ? shotFrames.at(-1) + 1 : Math.max(1, Math.round(seconds * FPS));
   const totalFrames = scenes.length * sceneFrames;
   // 隠し要素: auto（作品に任せる）・off（出さない）・秒の並び（その時刻に呼び出す）
   const hiddenTimes = ['auto', 'off'].includes(values.hidden) ? [] : values.hidden.split(',').map(Number);
@@ -259,6 +284,8 @@ function parseOptions() {
     plan: {
       width: size ? Number(size[1]) : WIDTH, height: size ? Number(size[2]) : HEIGHT, fps: FPS, jpegQuality: JPEG_QUALITY,
       still,
+      shotFrames: shotFrames ?? [sceneFrames - 1],
+      shots: shots ?? [seconds],
       scenes, sceneFrames, at,
       summonFrames: hiddenTimes.map((t) => Math.round(t * FPS)),
       warmupFrames: Math.round(warmup * FPS),
@@ -351,13 +378,20 @@ async function main() {
     const shown = (file) => { const r = path.relative(process.cwd(), file); return r.startsWith('..') ? file : r; };
     const names = results.map((r) => r.name).filter(Boolean).join(' / ');
     if (plan.still) {
-      // 場面が複数なら <名前>-1.png のように番号を付ける
-      const files = results.map((_, i) => (results.length === 1 ? out : out.replace(/\.png$/i, `-${i + 1}.png`)));
+      // 2 枚以上なら <名前>-1.png のように、場面ごと・時刻の順に番号を付ける
+      const shots = results.flatMap((r) => r.shots.map((b, k) => ({ ...b, name: r.name, time: plan.shots[k] })));
+      const files = shots.map((_, i) => (shots.length === 1 ? out : out.replace(/\.png$/i, `-${i + 1}.png`)));
       for (const [i, file] of files.entries()) {
-        if (!stills.has(i)) throw new Error(`場面 ${i + 1} の静止画が届かなかった`);
+        if (!stills.has(i)) throw new Error(`${i + 1} 枚目の静止画が届かなかった`);
         await writeFile(file, stills.get(i));
         const { size } = await stat(file);
-        console.log(`${shown(file)}: ${plan.width}x${plan.height} PNG ${(size / 1e6).toFixed(1)}MB${results[i].name ? ` [${results[i].name}]` : ''}`);
+        const { name, time, mean, max } = shots[i];
+        console.log(`${shown(file)}: ${plan.width}x${plan.height} PNG ${(size / 1e6).toFixed(1)}MB ${time}秒 明るさ 平均 ${mean}・最大 ${max}${name ? ` [${name}]` : ''}`);
+      }
+      if (files.length > 1) {
+        const sheet = out.replace(/\.png$/i, '.sheet.jpg');
+        await makeSheet(out.replace(/\.png$/i, '-%d.png'), sheet, files.length, plan.shots.length);
+        console.log(`確認用の画像: ${shown(sheet)}（1 行に ${plan.shots.length > 1 ? '1 場面の各時刻' : `${Math.min(THUMBS_COLS, files.length)} 枚`}）`);
       }
     } else {
       encoder.stdin.end();

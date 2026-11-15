@@ -18,9 +18,12 @@ node tools/video-export.mjs sandpicture --presets 0 --hidden off --warmup 190 --
 
 - `--warmup` が準備の長さ（絵を進める秒数）で、そのあとに `--seconds`（既定 0）だけ進めた最後のコマを撮る。砂が積もりきるまで待つ作品などは、`--warmup` を長くする。
 - `--size 幅x高さ` で大きさを決める（既定 1280x720）。動画は 1280x720 に固定で、`--size` は使えない。
-- 場面が複数なら、`desert-1.png`・`desert-2.png` のように番号を付ける。
+- `--shots 0,1.5,3` で、場面ごとに複数の時刻（収録を始めてからの秒）のコマを撮る。`--seconds` の代わりに使い、Chrome の起動は 1 回で済む。時刻ごとに撮り直さない。
+- 2 枚以上なら、`desert-1.png`・`desert-2.png` のように場面ごと・時刻の順に番号を付け、縮小して並べた確認用の画像 `desert.sheet.jpg` も作る（時刻が複数なら 1 行に 1 場面の各時刻、そうでなければ 1 行に 4 枚）。
+- 標準出力に、1 枚ごとの明るさ（輝度の平均と最大。0〜255）が出る。明るさの調整は、画像を開かずにこの数値で判断する。ffmpeg で数値を取り直さない。
 - `--fade` は使わない。`--scenes`・`--presets`・`--hidden`・`--at`・`--seed` は動画と同じに使える。
-- 動画の確認用の画像（`.thumbs.jpg`）は作らない。画像を開くときは、縮小した 1〜2 枚にする。
+- ページのエラー（`Uncaught` など）が起きると、撮影はエラーで止まる。起動の確認や縦長の画面（`--size 720x1280`）の確認にも、ヘッドレス Chrome を直接呼ばずにこれを使う。
+- 画像を開くときは、PNG を 1 枚ずつ開かず、まず `.sheet.jpg` を 1 枚だけ開く。
 
 ## 場面の指定
 
@@ -73,11 +76,20 @@ node tools/video-export.mjs aurora --seconds 15 --warmup 0 --hidden 1 --out sant
 node tools/video-compare.mjs waterfall --scenes 0,2 --case "少ない:setWater(0.13)" --case "標準:setWater(1)" --open
 ```
 
-- `--base` で比べる版を選ぶ。git のコミット（既定は `HEAD`）か、控えておいた作品の HTML のパスを渡す。HTML のパスなら、`common.js` などは `HEAD` のものを使う。撮影の処理（video-export.mjs・common.mjs・pages.mjs）は、どちらの版にも作業ツリーのものを使う。
+- `--base` で比べる版を選ぶ。git のコミット（既定は `HEAD`）か、控えておいた作品の HTML のパスか、`kept` を渡す。HTML のパスなら、`common.js` などは `HEAD` のものを使う。撮影の処理（video-export.mjs・common.mjs・pages.mjs）は、どちらの版にも作業ツリーのものを使う。
 - `--scenes`・`--presets` は video-export と同じ。比べる版にその一覧（`SCENES`・`COLOR_PRESETS`）が無いと、撮影がエラーで止まる。
 - `--case "名前:式"` で列を足す。収録の最初に式を実行するので、強度などの条件を作品ごとの式で渡せる（式は `--at` と同じく作品のスクリプトの中で評価する）。省くと 1 列だけ撮る。
 - フェードは入れない。読み込みの失敗（`net::ERR_`）で撮影が止まったら、自動で撮り直す。
 - 動画は横 1920px までに収める。
+
+コミットせずに何度か調整を重ねるときは、調整を始める前に `--keep` で変更前の版を控え、比べるときは `--base kept` を使う。控えた版は `.kept/<作品名>.html`（Git の管理外）に置き、次に `--keep` するまで残る。一時フォルダに手で写さない。
+
+```sh
+node tools/video-compare.mjs bubbles --keep
+node tools/video-compare.mjs bubbles --base kept --scenes 2 --seconds 2
+```
+
+撮影は 1 場面ずつ、版と列の数だけ繰り返すので、場面と列が多いと数分かかる。調整の途中は、変えたシーンだけを短い `--seconds`（1〜2 秒）で比べる。全シーンを比べるのは、リファクタリングの確かめや仕上げのときに 1 回だけにする。
 
 中身の確認は、まず `<出力先>.thumbs.jpg` を見る。各場面の最後のコマを 1 枚に並べた画像で、`--case` の式で変えた状態が落ち着いたころのコマになる。動画や静止画を何枚も開くより、確認にかかるトークンが少ない。
 
