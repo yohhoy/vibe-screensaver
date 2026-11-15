@@ -15,8 +15,9 @@
 </head>
 <body>
 <div id="hud">
-  <span class="pc-only">F・ダブルクリック: 全画面 / ↑↓: 速度</span>
-  <span class="touch-only">上下スワイプ: 速度</span>
+  Scene: <span id="scene-name"></span><br>
+  <span class="pc-only">Space: 次の時代 / F・ダブルクリック: 全画面 / ↑↓: 速度</span>
+  <span class="touch-only">左右スワイプ: 次の時代 / 上下スワイプ: 速度</span>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -27,7 +28,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 長さの単位は m。机の天板の上面が y = 0、オーラリーの軸が原点を通る。+z が手前（カメラ側）
@@ -145,6 +146,7 @@ const CANDLESTICK = { color: 0x4a3818, metalness: 0.8, roughness: 0.6 };
 const FLAME_HEIGHT = 0.04;
 const FLAME_WIDTH = 0.0072;       // 炎のいちばん太い所の半径
 const FLAME_BASE_Y = CANDLE_TOP_Y + 0.004;   // 炎の下端の高さ（芯の途中から立つ）
+const FLAME_LIGHT_Y = FLAME_BASE_Y + FLAME_HEIGHT * 0.5;   // 炎の光（点光源）の高さ
 const FLAME_COLORS = { base: [0.1, 0.2, 0.9], body: [3.4, 2.2, 0.7], tip: [2.6, 1.1, 0.25] };   // 光の強さそのまま（BLOOM.threshold を超える所がブルームで光る）
 // 炎のまわりの滲み。中心から外へ薄れる光の板（常にカメラを向く）。width・height: 大きさ（m）、color: 中心の光の強さ
 const FLAME_HALO = { width: 0.045, height: 0.07, color: [0.8, 0.45, 0.16] };
@@ -153,14 +155,45 @@ const FLAME_LIGHT = { color: 0xffa95c, intensity: 1.19, flicker: 0.035 };   // f
 const FLAME_RATES = [7.3, 2.9, 4.1, 11.7];   // 炎の揺れの速さ（rad/秒）。揃わない 4 つの波を重ねる
 const SHADOW_MAP_SIZE = 1024;
 
-// 月明かり（画面の外の窓から。影は付けない）と、映り込み用の部屋の明るさ
-const MOONLIGHT = { color: 0x8fa8dc, intensity: 0.22, dir: [-1.6, 1.3, -0.3] };
-const AMBIENT = { color: 0xb89a84, intensity: 0.3 };   // 部屋全体をぼんやり明るくする環境光
-const ENV = {
-  room: [0.085, 0.062, 0.045],    // 壁と天井
-  desk: [0.3, 0.19, 0.1],         // ろうそくに照らされた机
-  window: [0.5, 0.68, 1.1],       // 窓
+// 時代（シーン）。オーラリー・机・カメラは同じで、右奥の明かりと左の 2 つの小物、部屋の色が替わる。
+// light: 電灯の光（ろうそくの時代は null。intensity は炎と同じ距離に置いたときの強さで、遠ざけた分は自動で上げる）。
+// 仄暗いのは Candle だけで、現代に近づくほど部屋全体を明るくする（部屋のほかの明かりや、壁に回る光が増える）。
+// 明るくするのは主に環境光にする。電灯の光を強くすると、真鍮の照り返しが白く飛ぶ（環境光は金属の真鍮にほとんど効かない）。
+// ambient: 環境光の色と強さ、room: 映り込み用の部屋の壁と天井の明るさ（ENV_ROOM に対する倍率）、
+// envDesk: 映り込み用の部屋の、明かりに照らされた机の色（RGB）
+const SCENES = [
+  { name: 'Candle', light: null, ambient: [0xb89a84, 0.33], room: 1, envDesk: [0.3, 0.19, 0.1] },   // ろうそく、望遠鏡、羊皮紙の星図
+  { name: 'Filament', light: { color: 0xf9cfae, intensity: 1.01 }, ambient: [0xaea097, 0.8], room: 1.4, envDesk: [0.34, 0.26, 0.18] },   // 白熱電球のランプ、天体望遠鏡、星座早見盤
+  { name: 'LED', light: { color: 0xf3f5ff, intensity: 1.0 }, ambient: [0xa5a7ab, 1.3], room: 1.8, envDesk: [0.38, 0.33, 0.26] },   // LED の電灯、白い望遠鏡、タブレット
+];
+const ENV_ROOM = [0.085, 0.062, 0.045];   // 映り込み用の部屋の壁と天井（Candle）
+
+// 電灯の光（スポットライト）。電灯は炎より背が高いので、光を炎より高く（height: m）置き、オーラリーの中心から見た仰角は炎と同じ（約 32°）に
+// 保つ所まで遠ざける（影の長さと惑星の照らされ方を揃えるため）。高くするほど画面の上へずれるので、少しだけ上げ、向き（azimuth: 度。
+// オーラリーから見た向きで、0 が +x、負が奥）を炎より少し奥へ回して、画面の上での位置を炎に近づける。
+// angle: 光の広がり（軸からの角度、rad）、target: 光の軸が向かう点、
+// shadowFocus: 影を描く範囲（光の広がりに対する割合。オーラリーと机の上の小物が収まる範囲に絞り、影の解像度を保つ）
+const LAMP_LIGHT = { height: 0.28, azimuth: -40, angle: 1.3, penumbra: 0.5, target: [0, 0.1, 0], shadowFocus: 0.6, shadowMapSize: 2048 };
+// Filament の電灯。真鍮の丸い台から、首の曲がる管（グースネック）が立ち、先の浅い笠をオーラリーの側へ傾ける。
+// 笠の縁から透明な電球がのぞき、中のフィラメントが光る。shade: 笠の縁の半径と深さ（m）、tilt: 笠の傾き（rad）、
+// bulb: 電球の半径（m）、filament: フィラメントの光の強さ（BLOOM.threshold を超えて滲む）、paint: 笠の外側の塗装（落ち着いた濃い緑）
+const FILAMENT_LAMP = { shade: [0.052, 0.055], tilt: 0.9, paint: 0x1e3a2a, bulb: 0.017, filament: [3.2, 1.7, 0.6] };
+// LED の電灯。丸い台から細い柱が立ち、関節から斜めに上がる平たい棒の頭の下面が光る。color: 白い塗装（電灯の光は自分に当たらず環境光だけで見えるので、暗い色だと闇に沈む）
+const LED_LAMP = { color: 0xd6d6d2, headLength: 0.27, tilt: 0.42, standX: -0.11 };   // tilt: 頭をオーラリーの側へ上げる傾き（rad。柱と鈍角をなす）、standX: 柱を光の出る所から後ろへ離す距離（m。負。近いほど関節が高く、柱が長い）
+// Filament の左奥。黒い塗装の天体望遠鏡（机に寝かせて置く）。先に夜露よけのフード、上に照準用の小さな望遠鏡（ファインダー）が載る。
+// tube: 鏡筒の色、fittings: 金具のニッケルの色
+const ASTRO_SCOPE = { tube: 0x151413, fittings: 0x8c8a84 };
+// Filament の左手前。星座早見盤（印刷した厚紙）。size: 外枠の一辺（m）、disk: 星図の円盤の半径（m。外枠の辺から少しはみ出して、月日の目盛りがのぞく）、
+// window: 星空がのぞく楕円の窓の半径（横、縦。m）、windowOffset: 窓の中心の、軸からの南へのずれ（m）、turn: 外枠に対する円盤の回り（rad。観測する日時）、
+// angle: 置く向き（CHART.angle からさらに回す、rad）。色（card: 外枠、ink: 刷り、paper: 円盤の縁の紙、sky: 星図）は、ほのかに青い色味に寄せる
+const PLANISPHERE = {
+  size: 0.27, disk: 0.142, window: [0.105, 0.088], windowOffset: 0.022, turn: 2.3, angle: 0.25,
+  card: '#1f3058', ink: '#d6dbe0', paper: '#d2dae6', sky: '#17295c',
 };
+// LED の左奥。白い鏡筒の小さな屈折望遠鏡（tube: 鏡筒の色）
+const MODERN_SCOPE = { tube: 0xcfcfcb };
+// LED の左手前。星図のアプリを映したタブレット（size: 幅と奥行き（m）、glow: 画面の明るさ）
+const TABLET = { size: [0.245, 0.172], thickness: 0.0065, glow: 0.7 };
 
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
@@ -200,6 +233,36 @@ function lathe(profile, material, segments = 48) {
 
 function ball(radius, material) {
   return new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 20), material);
+}
+
+// 物を場面に加え、時代ごとの物の一覧にも入れる（時代を替えるときに、一覧ごと見せる・隠す）
+function place(list, ...objects) {
+  for (const o of objects) {
+    scene.add(o);
+    list.push(o);
+  }
+}
+
+// 物を寝かせて置く（y が長さの軸の物を、x の向きへ倒す）。radius: 机から軸までの高さ
+function layDown(object, x, z, angle, radius) {
+  object.rotation.z = Math.PI / 2;
+  const holder = new THREE.Group();
+  holder.add(object);
+  holder.position.set(x, radius, z);
+  holder.rotation.y = angle;
+  return holder;
+}
+
+// 紙の上の、細かな染みとむら（canvas に描く。rgb: 染みの色の 'r,g,b'）
+function paperBlots(g, w, h, count, rgb) {
+  for (let i = 0; i < count; i++) {
+    const x = rand(0, w), y = rand(0, h), r = rand(20, 120);
+    const blot = g.createRadialGradient(x, y, 0, x, y, r);
+    blot.addColorStop(0, `rgba(${rgb},${rand(0.03, 0.1)})`);
+    blot.addColorStop(1, `rgba(${rgb},0)`);
+    g.fillStyle = blot;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
 }
 
 // 影を落とし、影を受けるようにする
@@ -271,28 +334,26 @@ composer.addPass(new OutputPass());
 // ゆっくり動くとちらつく。トーンマッピングのあとの絵で、もう一度縁をならす
 composer.addPass(new SMAAPass(innerWidth, innerHeight));
 
-// 金属に映り込む部屋。暗い壁と天井、ろうそくに照らされた机、青い窓だけの簡単な部屋を撮り、粗さに応じてぼかす（PMREM）
-{
+// 金属に映り込む部屋。暗い壁と天井、明かりに照らされた机だけの簡単な部屋を撮り、粗さに応じてぼかす（PMREM）。
+// 時代を替えるたびに、机の色を替えて撮り直す
+function buildEnvironment({ room, envDesk: deskRgb }) {
   const env = new THREE.Scene();
   const flat = (rgb) => new THREE.MeshBasicMaterial({ color: new THREE.Color(...rgb), side: THREE.DoubleSide });
-  env.add(new THREE.Mesh(new THREE.BoxGeometry(6, 4, 6), flat(ENV.room)));
-  const desk = new THREE.Mesh(new THREE.CircleGeometry(1.1, 32), flat(ENV.desk));
+  env.add(new THREE.Mesh(new THREE.BoxGeometry(6, 4, 6), flat(ENV_ROOM.map((c) => c * room))));
+  const desk = new THREE.Mesh(new THREE.CircleGeometry(1.1, 32), flat(deskRgb));
   desk.rotation.x = -Math.PI / 2;
   desk.position.y = -0.2;
   env.add(desk);
-  const windowPane = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.4), flat(ENV.window));
-  windowPane.position.set(-2.9, 0.8, -0.6);
-  windowPane.rotation.y = Math.PI / 2;
-  env.add(windowPane);
   const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment?.dispose();
   scene.environment = pmrem.fromScene(env, 0.03).texture;
   pmrem.dispose();
+  env.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
 }
+buildEnvironment(SCENES[0]);
 
-const moonlight = new THREE.DirectionalLight(MOONLIGHT.color, MOONLIGHT.intensity);
-moonlight.position.set(...MOONLIGHT.dir);
-scene.add(moonlight);
-scene.add(new THREE.AmbientLight(AMBIENT.color, AMBIENT.intensity));
+const ambientLight = new THREE.AmbientLight(...SCENES[0].ambient);
+scene.add(ambientLight);
 
 // ---- 状態 ----
 let time = 0;                // 経過秒（カメラ用）
@@ -799,6 +860,11 @@ function updateOrrery() {
 }
 
 // ---- 小物 ----
+// 時代ごとの小物と明かり。Candle の物は起動時に作り、ほかの時代の物は初めてその時代にしたときに作る
+// （起動時に作ると、three.js が物ごとに Math.random で ID を振るので、配置の乱数の列がずれるため）
+const candleEra = [];
+
+// ---- Candle の小物 ----
 // ろうそく（真鍮の燭台、蝋、芯、炎）。炎の位置に点光源を置き、これが主な明かりになる
 const flame = new THREE.Group();
 const flameLight = new THREE.PointLight(FLAME_LIGHT.color, FLAME_LIGHT.intensity, 0, 2);
@@ -911,15 +977,14 @@ const flameLight = new THREE.PointLight(FLAME_LIGHT.color, FLAME_LIGHT.intensity
   candle.add(flame);
 
   // 点光源の影は 6 方向に描く。影を落とすのはオーラリーと小物だけ（机と壁は落とさない）
-  flameLight.position.set(CANDLE.x, FLAME_BASE_Y + FLAME_HEIGHT * 0.5, CANDLE.z);
+  flameLight.position.set(CANDLE.x, FLAME_LIGHT_Y, CANDLE.z);
   flameLight.castShadow = true;
   flameLight.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
   flameLight.shadow.camera.near = 0.02;
   flameLight.shadow.camera.far = 4;
   flameLight.shadow.bias = -0.0015;
   flameLight.shadow.radius = 2.5;
-  scene.add(flameLight);
-  scene.add(candle);
+  place(candleEra, flameLight, candle);
 }
 
 // 炎はほとんど揺れない（風の無い部屋）。わずかに伸び縮みし、明かりも少しだけ明滅する
@@ -965,12 +1030,7 @@ function updateFlame(dt) {
   telescope.add(lens);
   for (const o of telescope.children) o.position.y -= length / 2;
   telescope.scale.set(TELESCOPE.thickness, 1, TELESCOPE.thickness);   // 太さだけを変える（y が長さの軸）
-  telescope.rotation.z = Math.PI / 2;   // 寝かせる
-  const holder = new THREE.Group();
-  holder.add(telescope);
-  holder.position.set(TELESCOPE.x, radius * TELESCOPE.thickness, TELESCOPE.z);
-  holder.rotation.y = TELESCOPE.angle;
-  scene.add(shadowed(holder));
+  place(candleEra, shadowed(layDown(telescope, TELESCOPE.x, TELESCOPE.z, TELESCOPE.angle, radius * TELESCOPE.thickness)));
 }
 
 // 星図（羊皮紙。片方の端が巻き上がっている）と、その上のディバイダ
@@ -1105,7 +1165,7 @@ function updateFlame(dt) {
     chart.castShadow = true;
     // 裏（巻き上がった所だけ見える）は影を受けない。巻いた面に自分の影がギザギザに乗るため
     chart.receiveShadow = material.side === THREE.FrontSide;
-    scene.add(chart);
+    place(candleEra, chart);
   }
 
   // ディバイダ（2 本の脚を蝶番でつなぎ、少し開いてある）
@@ -1128,7 +1188,382 @@ function updateFlame(dt) {
   dividers.add(handle);
   dividers.position.set(CHART.x - 0.03, 0.0042 + CHART.wave * 2, CHART.z + 0.02);   // 紙の波打ちに食い込まないよう持ち上げる
   dividers.rotation.y = CHART.angle + 0.9;
-  scene.add(shadowed(dividers));
+  place(candleEra, shadowed(dividers));
+}
+
+// ---- 電灯 ----
+// Filament・LED の明かり。炎と同じ仰角の、少し高く遠い所に置くスポットライトで、オーラリーへ向ける。影は 1 方向だけ描けばよい
+const LIGHT_POSITION = (() => {
+  const distance = Math.hypot(CANDLE.x, CANDLE.z) * LAMP_LIGHT.height / FLAME_LIGHT_Y;   // 炎と同じ仰角になる水平の距離
+  const a = LAMP_LIGHT.azimuth * DEG;
+  return [distance * Math.cos(a), LAMP_LIGHT.height, distance * Math.sin(a)];
+})();
+// 炎より遠ざけた分だけ、光を強くする（距離の 2 乗に比例）
+const LAMP_DISTANCE_GAIN = (Math.hypot(...LIGHT_POSITION) / Math.hypot(CANDLE.x, FLAME_LIGHT_Y, CANDLE.z)) ** 2;
+let lampLight = null;
+function getLampLight() {
+  if (lampLight) return lampLight;
+  lampLight = new THREE.SpotLight(0xffffff, 1, 0, LAMP_LIGHT.angle, LAMP_LIGHT.penumbra, 2);
+  lampLight.position.set(...LIGHT_POSITION);
+  lampLight.target.position.set(...LAMP_LIGHT.target);
+  lampLight.castShadow = true;
+  lampLight.shadow.mapSize.set(LAMP_LIGHT.shadowMapSize, LAMP_LIGHT.shadowMapSize);
+  lampLight.shadow.camera.near = 0.02;
+  lampLight.shadow.camera.far = 4;
+  lampLight.shadow.focus = LAMP_LIGHT.shadowFocus;
+  lampLight.shadow.bias = -0.0008;
+  scene.add(lampLight, lampLight.target);
+  return lampLight;
+}
+
+// 電灯の台を置く向き。台の +x をオーラリーへ向ける（光は台の原点の真上から出る）
+function lampStand() {
+  const [x, , z] = LIGHT_POSITION;
+  const stand = new THREE.Group();
+  stand.position.set(x, 0, z);
+  stand.rotation.y = Math.atan2(z, -x);
+  return stand;
+}
+
+// ---- Filament の小物 ----
+function buildFilament() {
+  const objects = [];
+  const lightY = LIGHT_POSITION[1];
+  // 電灯。真鍮の丸い台から首の曲がる管が立ち上がり、先の浅い笠をオーラリーの側へ傾ける。
+  // 笠の外側は濃い緑の塗装、内側は白い琺瑯。電球は光の出る所にあり、笠の縁からのぞく
+  const stand = lampStand();
+  const standX = -0.12;   // 台は、光の出る所から後ろへ離して置く（首が後ろから笠へ回り込む）
+  const base = lathe([[0, 0], [0.07, 0], [0.072, 0.004], [0.068, 0.011], [0.05, 0.017], [0.016, 0.021], [0.009, 0.03], [0, 0.03]], brass, 48);
+  base.position.x = standX;
+  const [rimRadius, depth] = FILAMENT_LAMP.shade, tilt = FILAMENT_LAMP.tilt;
+  // 笠の頂（首の先が付く所）。笠の軸は、光の出る所から傾けた向きの逆（上）へ伸びる
+  const top = new THREE.Vector3(-Math.sin(tilt), Math.cos(tilt), 0).multiplyScalar(depth + 0.01).add(new THREE.Vector3(0, lightY, 0));
+  const neckPoints = [[standX, 0.028], [standX, 0.1], [standX + 0.002, 0.17], [standX + 0.012, top.y + 0.02], [top.x - 0.03, top.y + 0.03], [top.x, top.y]]
+    .map(([x, y]) => new THREE.Vector3(x, y, 0));
+  const neck = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(neckPoints), 48, 0.0045, 10, false), brassAged);
+  stand.add(shadowed(base), shadowed(neck));
+  const shade = new THREE.Group();   // 原点が光の出る所。y が笠の軸（上が頂）
+  const enamel = new THREE.MeshStandardMaterial({ color: 0xf0eadc, roughness: 0.5, emissive: 0xffd8a0, emissiveIntensity: 0.35, side: THREE.BackSide });   // 電球の光で明るい
+  const profile = [[rimRadius, -0.004], [rimRadius - 0.004, 0.006], [rimRadius * 0.62, depth * 0.6], [0.016, depth], [0.012, depth + 0.01], [0, depth + 0.01]];
+  const paint = new THREE.MeshStandardMaterial({ color: FILAMENT_LAMP.paint, metalness: 0.3, roughness: 0.45 });
+  const outer = lathe(profile, paint, 48), inner = lathe(profile, enamel, 48);
+  outer.castShadow = true;   // 上へ向かう光を遮る。影は受けない（内側から照らされるので）
+  shade.add(outer, inner);
+  // 電球。透明なガラス（透けさせるだけで、奥は映さない）と、中で光るフィラメント、まわりの淡い光
+  const R = FILAMENT_LAMP.bulb;
+  const bulbGeometry = new THREE.SphereGeometry(R, 24, 16);
+  bulbGeometry.scale(1, 1.25, 1);
+  const bulb = new THREE.Mesh(bulbGeometry, new THREE.MeshStandardMaterial({ color: 0xfff4e0, roughness: 0.05, transparent: true, opacity: 0.22,
+    emissive: 0xffc070, emissiveIntensity: 0.25, depthWrite: false }));
+  const filamentPoints = [];
+  for (let i = 0; i <= 16; i++) {   // 支えの線に掛けた、上が開いた輪のフィラメント
+    const a = Math.PI * 0.15 + Math.PI * 1.7 * i / 16;
+    filamentPoints.push(new THREE.Vector3(R * 0.45 * Math.sin(a), -R * 0.35 * Math.cos(a), 0));
+  }
+  const filament = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(filamentPoints), 32, 0.0006, 5, false),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(...FILAMENT_LAMP.filament) }));
+  const glow = canvasTexture(64, 64, (g, w) => {
+    const grad = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+    grad.addColorStop(0, 'rgba(255,255,255,0.8)');
+    grad.addColorStop(0.35, 'rgba(255,255,255,0.18)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, w);
+  });
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, color: new THREE.Color(0.9, 0.55, 0.25), blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.scale.set(R * 4.5, R * 4.5, 1);
+  const socket = column(0.011, R * 1.1, depth, brassAged, 20);   // 口金と受け口
+  shade.add(socket, filament, bulb, halo);
+  shade.position.y = lightY;
+  shade.rotation.z = tilt;   // 縁をオーラリーの側へ向ける
+  stand.add(shade);
+  place(objects, stand);
+
+  // 黒い天体望遠鏡。断面は対物側（y = 0）から接眼側へ。寝かせると +x が上になるので、ファインダーは +x の側に載せる
+  {
+    const scope = new THREE.Group();
+    const enamel = new THREE.MeshStandardMaterial({ color: ASTRO_SCOPE.tube, roughness: 0.35, metalness: 0.3 });
+    const nickel = metal(ASTRO_SCOPE.fittings, 0.35);
+    scope.add(lathe([[0.03, 0], [0.034, 0], [0.034, 0.075], [0.031, 0.078], [0, 0.078]], enamel, 40));   // フード
+    scope.add(lathe([[0.029, 0.078], [0.029, 0.4], [0.017, 0.405], [0, 0.405]], enamel, 40));   // 鏡筒
+    for (const y of [0.078, 0.395]) scope.add(column(0.0305, y, y + 0.008, nickel, 40));   // 鏡筒の両端の金具
+    scope.add(lathe([[0.016, 0.405], [0.016, 0.455], [0.013, 0.457], [0.013, 0.49], [0.007, 0.492], [0, 0.492]], brassAged, 32));   // 引き出し筒と接眼レンズ
+    const rack = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.03, 0.022), nickel);   // ピントを合わせるつまみの箱
+    rack.position.set(-0.018, 0.42, 0);
+    scope.add(rack);
+    // ファインダー（鏡筒に 2 つの脚で留める）
+    const finderX = 0.029 + 0.014;
+    const finder = lathe([[0.008, 0.26], [0.0095, 0.26], [0.0095, 0.37], [0.005, 0.372], [0.005, 0.385], [0, 0.385]], enamel, 20);
+    finder.position.x = finderX;
+    scope.add(finder);
+    for (const y of [0.285, 0.35]) {
+      const foot = column(0.003, 0, 0.016, nickel, 8);
+      foot.rotation.z = Math.PI / 2;   // 鏡筒からファインダーへ
+      foot.position.set(0.029 + 0.006, y, 0);
+      scope.add(foot);
+      const band = column(0.011, y - 0.003, y + 0.003, nickel, 20);
+      band.position.x = finderX;
+      scope.add(band);
+    }
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.028, 32), new THREE.MeshStandardMaterial({ color: 0x06080c, roughness: 0.05 }));
+    lens.rotation.x = Math.PI / 2;   // 対物側（-y）を向く
+    lens.position.y = 0.03;
+    scope.add(lens);
+    for (const o of scope.children) o.position.y -= 0.492 / 2;
+    place(objects, shadowed(layDown(scope, TELESCOPE.x, TELESCOPE.z, TELESCOPE.angle, 0.034)));
+  }
+
+  // 星座早見盤。星図を刷った円盤を、楕円の窓の開いた外枠に、天の北極の軸で留める。円盤を回すと、窓に見える星空が日時に合う。
+  // 外枠の窓のまわりに時刻の目盛り、円盤の縁に月日の目盛りを刷る
+  {
+    const { size, disk: R } = PLANISPHERE;
+    const [wx, wy] = PLANISPHERE.window, offset = PLANISPHERE.windowOffset;
+    const N = 1024, px = N / (2 * R);   // 円盤の画素数と、1m あたりの画素数
+    const diskTexture = canvasTexture(N, N, (g, w) => {
+      const c = w / 2;
+      g.fillStyle = PLANISPHERE.paper;   // 縁の、月日の目盛りの帯（地の紙の色）
+      g.fillRect(0, 0, w, w);
+      paperBlots(g, w, w, 20, '50,70,110');
+      const sky = R * 0.84 * px;   // 星図の半径
+      g.fillStyle = PLANISPHERE.sky;
+      g.beginPath();
+      g.arc(c, c, sky, 0, TAU);
+      g.fill();
+      g.strokeStyle = 'rgba(200,210,235,0.25)';   // 赤緯の円と赤経の線
+      g.lineWidth = 1.5;
+      for (const f of [0.25, 0.5, 0.75]) { g.beginPath(); g.arc(c, c, sky * f, 0, TAU); g.stroke(); }
+      for (let i = 0; i < 12; i++) {
+        const a = i * TAU / 12;
+        g.beginPath();
+        g.moveTo(c, c);
+        g.lineTo(c + Math.cos(a) * sky, c + Math.sin(a) * sky);
+        g.stroke();
+      }
+      const star = () => { const a = rand(0, TAU), r = sky * Math.sqrt(rand(0.002, 0.95)); return [c + Math.cos(a) * r, c + Math.sin(a) * r]; };
+      g.fillStyle = '#eef2f8';
+      for (let i = 0; i < 380; i++) {
+        const [x, y] = star();
+        g.beginPath();
+        g.arc(x, y, 0.8 + 3 * rand(0, 1) ** 4, 0, TAU);
+        g.fill();
+      }
+      g.strokeStyle = 'rgba(205,220,245,0.55)';   // 星座の線
+      g.lineWidth = 1.6;
+      for (let i = 0; i < 16; i++) {
+        let [x, y] = star();
+        g.beginPath();
+        g.moveTo(x, y);
+        for (let k = randInt(3) + 2; k > 0; k--) {
+          x += rand(-45, 45);
+          y += rand(-45, 45);
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+      g.strokeStyle = g.fillStyle = '#1e2638';   // 縁の月日の目盛りと、月の名前
+      g.lineWidth = 1.2;
+      for (let i = 0; i < 365; i++) {
+        const a = i * TAU / 365, long = i % 30 === 0 ? 22 : i % 5 === 0 ? 14 : 8;
+        g.beginPath();
+        g.moveTo(c + Math.cos(a) * (sky + 4), c + Math.sin(a) * (sky + 4));
+        g.lineTo(c + Math.cos(a) * (sky + 4 + long), c + Math.sin(a) * (sky + 4 + long));
+        g.stroke();
+      }
+      g.font = 'bold 26px serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'].forEach((m, i) => {
+        const a = (i + 0.5) * TAU / 12;
+        g.save();
+        g.translate(c + Math.cos(a) * (w / 2 - 34), c + Math.sin(a) * (w / 2 - 34));
+        g.rotate(a + Math.PI / 2);
+        g.fillText(m, 0, 0);
+        g.restore();
+      });
+    });
+    const diskGeometry = new THREE.CircleGeometry(R, 96);
+    diskGeometry.rotateX(-Math.PI / 2);
+    const diskMesh = new THREE.Mesh(diskGeometry, new THREE.MeshStandardMaterial({ map: diskTexture, roughness: 0.8 }));
+    diskMesh.rotation.y = PLANISPHERE.turn;
+    diskMesh.position.y = 0.0004;
+    // 外枠。角の丸い正方形の厚紙に、楕円の窓を開ける（天の北極の軸が原点。窓は南、+y の逆へずれる）
+    const half = size / 2, round = 0.012;
+    const shape = new THREE.Shape();
+    shape.moveTo(-half + round, -half);
+    shape.lineTo(half - round, -half);
+    shape.quadraticCurveTo(half, -half, half, -half + round);
+    shape.lineTo(half, half - round);
+    shape.quadraticCurveTo(half, half, half - round, half);
+    shape.lineTo(-half + round, half);
+    shape.quadraticCurveTo(-half, half, -half, half - round);
+    shape.lineTo(-half, -half + round);
+    shape.quadraticCurveTo(-half, -half, -half + round, -half);
+    const hole = new THREE.Path();
+    hole.absellipse(0, -offset, wx, wy, 0, TAU, true);
+    shape.holes.push(hole);
+    const cardTexture = canvasTexture(1024, 1024, (g, w) => {
+      const s = w / size, c = w / 2;   // 外枠の中心（軸）が画像の中心。画像の上が +y
+      g.fillStyle = PLANISPHERE.card;
+      g.fillRect(0, 0, w, w);
+      paperBlots(g, w, w, 30, '0,0,0');
+      g.strokeStyle = g.fillStyle = PLANISPHERE.ink;   // 窓のまわりの時刻の目盛りと数字
+      g.lineWidth = 2;
+      const cy = c + offset * s;
+      g.beginPath();
+      g.ellipse(c, cy, wx * s + 6, wy * s + 6, 0, 0, TAU);
+      g.stroke();
+      g.font = 'bold 30px serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      for (let h = 0; h < 24; h++) {
+        const a = h * TAU / 24;
+        const [x, y] = [c + Math.cos(a) * (wx * s + 6), cy + Math.sin(a) * (wy * s + 6)];
+        const [ox, oy] = [Math.cos(a), Math.sin(a) * wx / wy];
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x + ox * 16, y + oy * 16);
+        g.stroke();
+        if (h % 2 === 0) g.fillText(String((h + 18) % 24), x + ox * 36, y + oy * 36);
+      }
+      g.lineWidth = 3;
+      g.strokeRect(14, 14, w - 28, w - 28);
+    });
+    cardTexture.repeat.set(1 / size, 1 / size);   // 形の座標（m）をそのまま UV に使うので、外枠の大きさで割る
+    cardTexture.offset.set(0.5, 0.5);
+    const cardGeometry = new THREE.ExtrudeGeometry(shape, { depth: 0.0015, bevelEnabled: false, curveSegments: 48 });
+    cardGeometry.rotateX(-Math.PI / 2);
+    const card = new THREE.Mesh(cardGeometry, [new THREE.MeshStandardMaterial({ map: cardTexture, roughness: 0.75 }),
+      new THREE.MeshStandardMaterial({ color: 0x0e1528, roughness: 0.9 })]);   // 表と、切り口
+    card.position.y = 0.0008;
+    const pin = column(0.004, 0, 0.0035, brassAged, 16);   // 天の北極の軸の鋲
+    const planisphere = new THREE.Group();
+    planisphere.add(diskMesh, card, pin);
+    shadowed(planisphere);
+    planisphere.position.set(CHART.x, 0, CHART.z);
+    planisphere.rotation.y = CHART.angle + PLANISPHERE.angle;
+    place(objects, planisphere);
+  }
+  return objects;
+}
+
+// ---- LED の小物 ----
+function buildLed() {
+  const objects = [];
+  const lightY = LIGHT_POSITION[1];
+  // 電灯。丸い台から細い柱が立ち、上の関節から平たい棒の頭がオーラリーの側へ斜めに上がる（柱と鈍角をなす）。頭の下面が光る
+  const stand = lampStand();
+  const aluminum = new THREE.MeshStandardMaterial({ color: LED_LAMP.color, roughness: 0.5 });
+  const standX = LED_LAMP.standX;
+  const base = lathe([[0, 0], [0.065, 0], [0.066, 0.008], [0.062, 0.012], [0, 0.012]], aluminum, 48);
+  base.position.x = standX;
+  // 頭は、光の出る所の真上を通るように傾ける（関節の高さを、傾きから決める）
+  const jointY = lightY + 0.012 + standX * Math.tan(LED_LAMP.tilt);
+  const pole = column(0.006, 0.012, jointY, aluminum);
+  pole.position.x = standX;
+  const joint = column(0.009, -0.02, 0.02, aluminum);
+  joint.rotation.x = Math.PI / 2;
+  joint.position.set(standX, jointY, 0);
+  stand.add(shadowed(base), shadowed(pole), shadowed(joint));
+  const headLength = LED_LAMP.headLength;
+  const head = new THREE.Group();   // 原点が関節
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(headLength, 0.01, 0.034), aluminum);   // 影は落とさない（光の出る所のすぐ上なので）
+  bar.position.x = headLength / 2;
+  const strip = new THREE.Mesh(new THREE.PlaneGeometry(headLength - 0.03, 0.02), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.33, 1.36, 1.42) }));
+  strip.rotation.x = Math.PI / 2;   // 下を向く
+  strip.position.set(headLength / 2, -0.0051, 0);
+  head.add(bar, strip);
+  head.position.set(standX, jointY, 0);
+  head.rotation.z = LED_LAMP.tilt;   // 先をオーラリーの側へ上げる
+  stand.add(head);
+  place(objects, stand);
+
+  // 白い鏡筒の小さな屈折望遠鏡（机に寝かせて置く）。断面は対物側（y = 0）から接眼側へ
+  {
+    const scope = new THREE.Group();
+    const black = new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.55 });
+    const white = new THREE.MeshStandardMaterial({ color: MODERN_SCOPE.tube, roughness: 0.4 });
+    scope.add(lathe([[0.036, 0], [0.042, 0], [0.042, 0.09], [0.038, 0.092], [0, 0.092]], black, 40));   // フード
+    scope.add(lathe([[0.037, 0.092], [0.037, 0.33], [0.022, 0.335], [0, 0.335]], white, 40));   // 鏡筒
+    scope.add(lathe([[0.022, 0.335], [0.022, 0.39], [0.015, 0.392], [0.015, 0.43], [0.008, 0.432], [0, 0.432]], black, 32));   // 接眼部
+    const ring = column(0.04, 0.2, 0.215, black, 40);   // 鏡筒を留める環
+    scope.add(ring);
+    // ファインダー（寝かせると +x が上）。黒い小さな筒を、台座 1 つで鏡筒に留める
+    const finderX = 0.037 + 0.016;
+    const finder = lathe([[0.009, 0.24], [0.011, 0.24], [0.011, 0.33], [0.0065, 0.333], [0.0065, 0.35], [0, 0.35]], black, 20);
+    finder.position.x = finderX;
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.05, 0.014), black);   // 台座
+    shoe.position.set(0.037 + 0.006, 0.29, 0);
+    scope.add(finder, shoe);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.036, 32), new THREE.MeshStandardMaterial({ color: 0x06080c, roughness: 0.05 }));
+    lens.rotation.x = Math.PI / 2;
+    lens.position.y = 0.012;
+    scope.add(lens);
+    for (const o of scope.children) o.position.y -= 0.432 / 2;
+    place(objects, shadowed(layDown(scope, TELESCOPE.x, TELESCOPE.z, TELESCOPE.angle, 0.042)));
+  }
+
+  // タブレット。星図のアプリを映した画面が、青白く弱く光る
+  {
+    const screen = canvasTexture(980, 672, (g, w, h) => {
+      const sky = g.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0, '#03060f');
+      sky.addColorStop(0.75, '#0b1630');
+      sky.addColorStop(1, '#15223c');
+      g.fillStyle = sky;
+      g.fillRect(0, 0, w, h);
+      g.fillStyle = 'rgba(150,170,210,0.05)';   // 天の川
+      for (let i = 0; i < 900; i++) {
+        const t = rand(0, 1);
+        g.fillRect(t * w, h * 0.8 - t * h * 0.7 + rand(-60, 60), rand(3, 10), rand(3, 10));
+      }
+      const stars = Array.from({ length: 520 }, () => [rand(0, w), rand(0, h * 0.86), rand(0, 1) ** 3]);
+      for (const [x, y, m] of stars) {
+        g.fillStyle = `rgba(235,240,255,${0.35 + 0.65 * m})`;
+        g.beginPath();
+        g.arc(x, y, 0.8 + 2.4 * m, 0, TAU);
+        g.fill();
+      }
+      g.strokeStyle = 'rgba(110,160,230,0.4)';   // 星座の線
+      g.lineWidth = 1.5;
+      for (let i = 0; i < 9; i++) {
+        let [x, y] = [rand(80, w - 80), rand(60, h * 0.7)];
+        g.beginPath();
+        g.moveTo(x, y);
+        for (let k = randInt(3) + 3; k > 0; k--) {
+          x += rand(-70, 70);
+          y += rand(-55, 55);
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+      g.fillStyle = '#060a08';   // 地平線と、手前の地面
+      g.beginPath();
+      g.moveTo(0, h);
+      for (let x = 0; x <= w; x += 20) g.lineTo(x, h * 0.88 + 10 * Math.sin(x * 0.012) + rand(-2, 2));
+      g.lineTo(w, h);
+      g.fill();
+      g.fillStyle = 'rgba(200,215,240,0.18)';   // 上の操作の帯
+      g.fillRect(0, 0, w, 44);
+      g.fillStyle = 'rgba(220,230,250,0.6)';
+      for (const x of [24, 70, w - 110, w - 64]) g.fillRect(x, 14, 22, 16);
+    });
+    const [tw, th] = TABLET.size;
+    const body = new THREE.MeshStandardMaterial({ color: 0x4a4b4f, metalness: 0.7, roughness: 0.35 });
+    const bezel = new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.08 });
+    const tablet = new THREE.Group();
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(tw, TABLET.thickness, th), [body, body, bezel, body, body, body]);
+    slab.position.y = TABLET.thickness / 2;
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(tw - 0.014, th - 0.014),
+      new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.06, emissive: 0xffffff, emissiveMap: screen, emissiveIntensity: TABLET.glow }));
+    glass.rotation.x = -Math.PI / 2;
+    glass.position.y = TABLET.thickness + 0.0002;
+    tablet.add(shadowed(slab), glass);
+    glass.receiveShadow = true;
+    tablet.position.set(CHART.x + 0.01, 0, CHART.z + 0.01);
+    tablet.rotation.y = CHART.angle - 0.15;
+    place(objects, tablet);
+  }
+  return objects;
 }
 
 // ---- カメラ ----
@@ -1141,6 +1576,30 @@ function updateCamera() {
   camera.position.set(Math.sin(azimuth) * flat, CAM_TARGET_Y + dist * Math.sin(elevation), Math.cos(azimuth) * flat);
   camera.lookAt(0, CAM_TARGET_Y, 0);
 }
+
+// ---- シーン切替 ----
+// 時代を替える。オーラリーとカメラ、強度はそのまま続ける
+const sceneNameEl = document.getElementById('scene-name');
+const ERA_BUILDERS = [null, buildFilament, buildLed];   // Candle の物は起動時に作ってある
+const eraObjects = [candleEra, null, null];
+let sceneIndex = 0;
+function setScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  const s = SCENES[sceneIndex];
+  eraObjects[sceneIndex] ??= ERA_BUILDERS[sceneIndex]();
+  eraObjects.forEach((list, i) => list?.forEach((o) => { o.visible = i === sceneIndex; }));
+  if (s.light) {
+    const light = getLampLight();
+    light.color.set(s.light.color);
+    light.intensity = s.light.intensity * LAMP_DISTANCE_GAIN;
+  }
+  if (lampLight) lampLight.visible = !!s.light;
+  ambientLight.color.set(s.ambient[0]);
+  ambientLight.intensity = s.ambient[1];
+  buildEnvironment(s);
+  sceneNameEl.textContent = s.name;
+}
+const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
 
 // ---- 強度 ----
 function setSpeed(value) {
@@ -1175,8 +1634,8 @@ function tick(now) {
 // ---- 入力・UI ----
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
-  // シーン切替（Space・左右スワイプ）。場面が 1 つだけなので無い
-  changeScene: null,
+  // シーン切替（Space・左右スワイプ）。次の時代へ
+  changeScene: nextScene,
   // 強度（↑↓・上下スワイプ）。公転の速さ
   intensity: {
     up: () => setSpeed(speed * SPEED_STEP),
@@ -1195,6 +1654,7 @@ setupControls({
 // ---- 開始 ----
 // 起動のたびに、惑星の並びが違う所から始める
 earthAngle = rand(0, EARTH_ANGLE_WRAP);
+setScene(randInt(SCENES.length));   // 時代はランダムに選ぶ（ほかの乱数をすべて引いたあとに引く）
 renderer.setAnimationLoop(tick);
 </script>
 </body>

@@ -17,6 +17,7 @@ export const CHOICES = {
   waterfall: { scenes: SCENES },
   penguins: { scenes: SCENES },
   bubbles: { scenes: SCENES },
+  orrery: { scenes: SCENES },
   teapot: { scenes: SCENES, presets: PRESETS },   // 配色はポットの色。Wireframe に戻ると作品が選び直す
   tube: { presets: PRESETS },
   aurora: { presets: PRESETS },
