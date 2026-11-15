@@ -22,7 +22,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
@@ -92,8 +91,9 @@ const PLANE_Y = 0.215;            // 太陽と惑星の球の中心の高さ
 const SUN_RADIUS = 0.028;
 // 太陽は深い赤橙のガラス玉（光らせない）。光を通す描き方（transmission）は不透明な物を全部もう 1 回描いて重いので、
 // 光を通さない深い赤の地に、磨いたガラスの艶の層（clearcoat）を重ねてガラスに見せる（地が明るいと陶器のように見える）。
-// roughness: 地の粗さ（照り返しは艶の層に任せるので粗め）、gloss: 艶の層の粗さ
-const SUN_GLASS = { color: 0x8a3212, roughness: 0.3, gloss: 0.03 };
+// roughness: 地の粗さ（照り返しは艶の層に任せるので粗め）、gloss: 艶の層の粗さ（小さいほど照り返しが鋭く明るい。
+// 小さすぎると、明かりの照り返しが針で突いたような強い点になって目を引く）
+const SUN_GLASS = { color: 0x8a3212, roughness: 0.3, gloss: 0.08 };
 const ARM_TOP_Y = 0.175;          // いちばん内側（水星）の腕の高さ。外側ほど下に付く
 const ARM_PITCH_Y = 0.012;        // 腕の段の間隔
 const ARM_RADIUS = 0.002;         // 腕の太さ（半径）
@@ -256,6 +256,10 @@ const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限�
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
 const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
 const BLOOM = { strength: 0.45, radius: 0.8, threshold: 1.3, scale: 0.5, sigma: 0.4 };   // scale: ブルームを描く解像度の倍率、sigma: ぼかしの標準偏差（ぼかしの半径に対する割合）
+// シーンの明るさの上限（光の強さそのまま）。艶の鋭い照り返しは半精度の上限（約 65000）を超えることがあり、
+// Android などの GPU は無限大として書き込む。ブルームがそれをぼかすと、ぼかしの範囲いっぱいの四角い光になる。
+// 炎・フィラメント（3 前後）よりは十分大きくする
+const MAX_RADIANCE = 16;
 const VIGNETTE = 0.55;            // 周辺減光の強さ（画面の隅で暗くする割合）
 const EXPOSURE = 1.1;             // トーンマッピングの露出
 
@@ -354,6 +358,18 @@ function shadowed(object) {
 }
 
 // ---- シェーダー ----
+// シーンの描画先を composer へ写す。明るさを MAX_RADIANCE で抑える（無限大も抑えられる）
+const SCENE_COPY_SHADER = {
+  uniforms: { tScene: { value: null }, maxRadiance: { value: MAX_RADIANCE } },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: `
+    uniform sampler2D tScene;
+    uniform float maxRadiance;
+    varying vec2 vUv;
+    void main() {
+      gl_FragColor = vec4(min(texture2D(tScene, vUv).rgb, vec3(maxRadiance)), 1.0);
+    }`,
+};
 const VIGNETTE_SHADER = {
   uniforms: { tDiffuse: { value: null }, amount: { value: VIGNETTE } },
   vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
@@ -395,7 +411,9 @@ const composer = new EffectComposer(renderer,
   new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false }));
 composer.setPixelRatio(renderer.getPixelRatio());
 composer.setSize(innerWidth, innerHeight);
-const scenePass = new TexturePass(sceneTarget.texture);
+// 写すのは sceneTarget なので、前のパスの絵（tDiffuse）は受け取らない
+const scenePass = new ShaderPass(SCENE_COPY_SHADER, 'none');
+scenePass.uniforms.tScene.value = sceneTarget.texture;
 scenePass.material.blending = THREE.NoBlending;
 composer.addPass(scenePass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
