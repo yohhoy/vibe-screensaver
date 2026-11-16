@@ -127,7 +127,8 @@ const WHEEL_WAVE_SPEED = 1.5;        // 明るさの波の速さ（rad/秒）
 // 海辺（Beach）。位置は背景の座標
 const SEA_HORIZON_Y = 0.405;         // 水平線の高さ
 const SHORE_Y = 0.16;                // 波打ち際の高さ
-const SUN_X = 0.3;                   // 夕日の位置
+const SUN_X = 0.3;                   // 夕日の位置（画面が広いとき）
+const SUN_MAX_RATIO = 0.5;           // 夕日の位置の上限（画面の半幅に対する割合）。縦長の画面では中央寄りにして、見切れないようにする
 const WAVE_PERIOD = 7;               // 波が寄せて返す周期（秒）
 const WAVE_RUN = 0.06;               // 波が砂浜を駆け上がる距離（いちばん大きい波, 背景の座標）
 const WAVE_ADVANCE = 0.3;            // 1 周期のうち、波が駆け上がる時間の割合（残りでゆっくり引く）
@@ -136,7 +137,7 @@ const SHORE_BAND = [0.04, 0.36];     // 波打ち際を描く帯の高さ（背�
 const FOAM_COLOR = [1, 0.84, 0.72];  // 泡の色（夕日の色を受けて、白より少し暖かい）
 const SHEEN_COLOR = [1, 0.6, 0.38];  // 薄い水の膜と濡れた砂に映る夕日の色
 const GLITTER_COUNT = 110;           // 夕日の照り返しのきらめきの数
-const GLITTER_X = 0.3;               // きらめきの帯の中心（夕日の真下）
+const GLITTER_X = SUN_X;             // きらめきの帯の中心（夕日の真下。画面が広いとき）
 const GLITTER_WIDTH = [0.015, 0.14]; // きらめきの帯の幅（半分）。水平線の近くと、帯の手前の端
 const GLITTER_SIZE = 0.006;          // きらめきの玉ぼけの大きさ（半径）
 const GLITTER_BRIGHTNESS = 0.32;     // きらめきの最も明るいときの明るさ（加算の強さ）
@@ -151,6 +152,7 @@ const YACHT_PERSPECTIVE = 0.4;       // 遠近の強さ（1 で大きさと速�
 const YACHT_GAP = 0.25;              // ヨットどうしの見かけの間隔（中心どうし, 背景の座標）。これより近づく向きに進んでいたら向きを変え、重なりと並走を避ける
 const YACHT_HAZE = 0.5;              // いちばん遠いヨットの濃さ（近いものを 1 とする割合）。遠いほど霞んで淡くする
 const YACHT_AREA = 0.6;              // ヨットが行き来する範囲（画面の中央から、画面の幅の半分に対する割合）
+const YACHT_OFFSCREEN = 0.12;        // 縦長の画面で、ヨットが向きを変える位置の、画面の端からの外側への距離（背景の座標。帆が完全に見切れる値）
 const YACHT_TURN_RATE = 1 / 60;      // 範囲の端以外で向きを変える頻度（回/秒）
 const YACHT_TURN_TIME = 4;           // 向きを変えるのにかかる時間（秒）
 const YACHT_SPEED_CHANGE = [5, 15];  // 速さを選び直す間隔（秒）
@@ -297,10 +299,10 @@ const SCENES = [
       [0.395, [0.62, 0.36, 0.32]], [0.25, [0.36, 0.20, 0.24]], [SHORE_Y + 0.01, [0.42, 0.26, 0.27]],
       [SHORE_Y - 0.01, [0.60, 0.40, 0.33]], [0.08, [0.44, 0.28, 0.24]], [0.0, [0.24, 0.14, 0.14]]],
     blobs: [
-      { n: 1, x: [SUN_X, SUN_X], y: [0.43, 0.43], r: [0.5, 0.5], color: [1, 0.62, 0.32], a: [0.3, 0.3], add: true },   // 夕日の光
-      { n: 1, x: [SUN_X, SUN_X], y: [0.425, 0.425], r: [0.08, 0.08], color: [1, 0.92, 0.75], a: [0.5, 0.5], add: true },   // 夕日
-      { n: 4, x: [0.27, 0.33], y: [0.2, 0.37], r: [0.06, 0.1], color: [1, 0.6, 0.3], a: [0.15, 0.22], add: true, squash: 2.5 },   // 水面に映る夕日
-      { n: 2, x: [0.2, 0.4], y: [SHORE_Y - 0.03, SHORE_Y - 0.02], r: [0.15, 0.2], color: [1, 0.6, 0.35], a: [0.1, 0.14], add: true, squash: 0.25 },   // 濡れた砂に映る夕日
+      { sun: true, n: 1, x: [SUN_X, SUN_X], y: [0.43, 0.43], r: [0.5, 0.5], color: [1, 0.62, 0.32], a: [0.3, 0.3], add: true },   // 夕日の光
+      { sun: true, n: 1, x: [SUN_X, SUN_X], y: [0.425, 0.425], r: [0.08, 0.08], color: [1, 0.92, 0.75], a: [0.5, 0.5], add: true },   // 夕日
+      { sun: true, n: 4, x: [0.27, 0.33], y: [0.2, 0.37], r: [0.06, 0.1], color: [1, 0.6, 0.3], a: [0.15, 0.22], add: true, squash: 2.5 },   // 水面に映る夕日
+      { sun: true, n: 2, x: [0.2, 0.4], y: [SHORE_Y - 0.03, SHORE_Y - 0.02], r: [0.15, 0.2], color: [1, 0.6, 0.35], a: [0.1, 0.14], add: true, squash: 0.25 },   // 濡れた砂に映る夕日
       { n: 14, x: [-1.5, 1.5], y: [0.0, 0.12], r: [0.1, 0.2], color: [0.22, 0.12, 0.13], a: [0.1, 0.2], squash: 0.4 },   // 砂浜のむら
     ],
     // 雲。静止した部分より後に描くので、夕日にうっすらかかる（シャボン玉より目立たないよう、まぶしさを和らげる）
@@ -564,6 +566,7 @@ const FieldShader = {
 const ShoreShader = {
   uniforms: {
     uAspect: { value: 1 },
+    uSunX: { value: SUN_X },    // 夕日の位置（画面の幅で変わる）
     uWaveT: { value: 0 },       // 経過時間 / 周期。精度を保つため、JS で 64 で割った余りにしてから渡す
   },
   // 板は、波・泡・濡れた砂の届く高さの帯（SHORE_BAND）だけに縮める（何も無い所までシェーダーを通さない）
@@ -575,6 +578,7 @@ const ShoreShader = {
     }`,
   fragmentShader: /* glsl */`
     uniform float uAspect;
+    uniform float uSunX;
     uniform float uWaveT;
     varying vec2 vUv;
     const float ADV = ${WAVE_ADVANCE.toFixed(2)};
@@ -619,7 +623,7 @@ const ShoreShader = {
       float wiggle = (noise1(x * 12.0 + cyc * 13.0) - 0.5) * 0.004 + (noise1(x * 4.0 + cyc * 5.0) - 0.5) * 0.01;
       float front = shore - (reach - wiggle) * run;
       float advancing = 1.0 - smoothstep(ADV - 0.05, ADV + 0.25, p);
-      float sun = exp(-(x - ${SUN_X.toFixed(3)}) * (x - ${SUN_X.toFixed(3)}) * 6.0);   // 夕日の正面ほど照り返しが強い
+      float sun = exp(-(x - uSunX) * (x - uSunX) * 6.0);   // 夕日の正面ほど照り返しが強い
       vec3 foamColor = vec3(${FOAM_COLOR.join(', ')}) * (0.55 + 0.45 * sun);
       vec3 sheenColor = vec3(${SHEEN_COLOR.join(', ')});
       vec3 add = vec3(0.0);
@@ -630,7 +634,7 @@ const ShoreShader = {
       float cur = step(ADV, p) * (1.0 - 0.6 * (p - ADV) / (1.0 - ADV)) * smoothstep(shore - reach - 0.012, shore - reach + 0.012, y);
       float prev = 0.4 * (1.0 - p) * smoothstep(shore - prevReach - 0.012, shore - prevReach + 0.012, y);
       float wet = max(cur, prev) * smoothstep(0.006, -0.006, d) * smoothstep(shore + 0.015, shore - 0.01, y);
-      float streak = exp(-(x - ${SUN_X.toFixed(3)}) * (x - ${SUN_X.toFixed(3)}) * 60.0);
+      float streak = exp(-(x - uSunX) * (x - uSunX) * 60.0);
       dark += 0.35 * wet;
       add += sheenColor * wet * (0.05 + 0.25 * sun + 0.35 * streak);
 
@@ -1063,6 +1067,7 @@ function makeShapes(groups, kind, list = []) {
         y = randIn(grp.y);
       }
       list.push([x, y, r, r * sq, 0, kind, ...color, grp.add ? -a : a]);
+      if (grp.sun) list[list.length - 1].sun = true;   // 夕日に付く形（画面の幅に応じて夕日と一緒に動かす）
     }
   }
   return list;
@@ -1113,7 +1118,8 @@ function renderStatic() {
   const u = skyQuad.material.uniforms;
   s.sky.forEach(([y, color], i) => { u.uStopY.value[i] = y; u.uStopColor.value[i].fromArray(color); });
   u.uStops.value = s.sky.length;
-  for (const sp of staticSprites) pushSprite(...sp);
+  const shift = sunX() - SUN_X;
+  for (const sp of staticSprites) pushSprite(sp[0] + (sp.sun ? shift : 0), ...sp.slice(1));
   flushSprites();
   if (s.field) {
     const f = fieldQuad.material.uniforms;
@@ -1142,6 +1148,7 @@ function renderStatic() {
 
 // 画面の幅の半分（背景の座標）
 const screenHalfWidth = () => spriteMesh.material.uniforms.uAspect.value / 2;
+const sunX = () => Math.min(SUN_X, SUN_MAX_RATIO * screenHalfWidth());
 
 // 夕日の照り返しのきらめき（Beach）。夕日の真下に縦の帯として集まり、水平線に近いほど帯が細く、明るい。
 // 遠くの光なので、玉ぼけの大きさはほとんど変えない
@@ -1149,7 +1156,7 @@ function placeGlint(p) {
   const near = Math.random() ** 1.6;   // 0: 水平線, 1: 帯の手前の端。水平線の近くほど密にする
   const y = SEA_HORIZON_Y - 0.008 - near * (SEA_HORIZON_Y - SHORE_Y - 0.05);
   const gauss = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
-  p.x = GLITTER_X + gauss * (GLITTER_WIDTH[0] + near * (GLITTER_WIDTH[1] - GLITTER_WIDTH[0]));
+  p.x = sunX() + gauss * (GLITTER_WIDTH[0] + near * (GLITTER_WIDTH[1] - GLITTER_WIDTH[0]));
   p.y = y;
   p.r = GLITTER_SIZE * rand(0.8, 1.2);
   p.a = GLITTER_BRIGHTNESS * (1 - 0.6 * near) * (1 - 0.7 * Math.abs(gauss));   // 帯の中心と水平線の近くほど明るい
@@ -1157,18 +1164,21 @@ function placeGlint(p) {
   return p;
 }
 
-// ヨット（Beach）。画面の中央の範囲だけを、速さを不規則に変えながら行き来する。
+// ヨット（Beach）。横長の画面では、画面の中央の範囲だけを、速さを不規則に変えながら行き来する。
+// 縦長の画面（スマホの縦持ち）では、画面の外で向きを変え、見切れながら行き来する。
 // 互いに近づかないようにし、重なって見えたり、並んで走ったりしないようにする
 // ヨットの見かけの大きさと速さの倍率。遠近は控えめにし、遠い船も小さくなりすぎないようにする
 const yachtScale = (y) => 1 + YACHT_PERSPECTIVE * ((SEA_HORIZON_Y - y.y) / YACHT_REF_DEPTH - 1);
-const yachtGap = () => Math.min(YACHT_GAP, 2 * YACHT_AREA * screenHalfWidth() / (YACHT_COUNT + 1));   // 縦長の画面では範囲に収まるよう狭める
+// 向きを変える位置（中心からの距離）。縦長の画面では画面の外
+const yachtEdge = () => screenHalfWidth() < 0.5 ? screenHalfWidth() + YACHT_OFFSCREEN : YACHT_AREA * screenHalfWidth();
+const yachtGap = () => Math.min(YACHT_GAP, 2 * yachtEdge() / (YACHT_COUNT + 1));   // 範囲に収まるよう狭める
 function newYacht(others) {
   const dir = randSign();
   const speed = randIn(YACHT_SPEED);
   // 先に置いたヨットから離れた位置を選ぶ（見つからなければ最後の候補）
   let x;
   for (let n = 0; n < 20; n++) {
-    x = rand(-1, 1) * YACHT_AREA * screenHalfWidth();
+    x = rand(-1, 1) * Math.min(yachtEdge(), screenHalfWidth());   // 最初は画面の中
     if (others.every((o) => Math.abs(o.x - x) > yachtGap())) break;
   }
   return {
@@ -1189,7 +1199,7 @@ function yachtHides(y, p) {
 }
 function updateYacht(y, dt, others) {
   // たまに向きを変える。範囲の端では外へ向かっていれば必ず変える
-  const edge = YACHT_AREA * screenHalfWidth();
+  const edge = yachtEdge();
   if (Math.random() < YACHT_TURN_RATE * dt || y.x * y.dir > edge) y.dir = -y.dir;
   // 近くのヨットへ向かっていたら向きを変える（向かい合っていれば両方が、同じ向きなら後ろの方が変える）。
   // ただし、変えると範囲の外へ向かう端の近くでは変えない（端で向きが行ったり来たりしないように）
@@ -1814,6 +1824,7 @@ function resize() {
   bgTarget.setSize(w, h);
   spriteMesh.material.uniforms.uAspect.value = w / h;
   shoreQuad.material.uniforms.uAspect.value = w / h;
+  shoreQuad.material.uniforms.uSunX.value = sunX();
   dropUniforms.uScale.value = buf.y / (2 * halfHeightAt(1));
 }
 
