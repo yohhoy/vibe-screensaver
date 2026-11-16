@@ -208,10 +208,16 @@ function makeSheet(pattern, sheet, count, shotCount) {
 }
 
 // ---- Chrome ----
+// エラーの文面の要約。1 行目と、シェーダーのコンパイルの失敗なら GLSL のエラーの行（ERROR:）を残す
+function errorSummary(text) {
+  const [first, ...rest] = text.split('\n');
+  return [first, ...rest.filter((l) => l.includes('ERROR:')).slice(0, 3)].join('\n');
+}
+
 // ページのタブにつなぐ。ページのエラーが起きたら onError に渡す
 async function connectPage(wsUrl, onError) {
   const list = await (await fetch(`http://${new URL(wsUrl).host}/json/list`)).json();
-  return connectCdp(list.find((t) => t.type === 'page').webSocketDebuggerUrl, (text) => onError(new Error(`ページのエラー: ${text.split('\n')[0]}`)));
+  return connectCdp(list.find((t) => t.type === 'page').webSocketDebuggerUrl, (text) => onError(new Error(`ページのエラー: ${errorSummary(text)}`)));
 }
 
 // ---- 収録 ----

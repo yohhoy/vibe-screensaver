@@ -71,7 +71,7 @@ export async function launchChrome(name) {
   return { chrome, wsUrl, userDataDir };
 }
 
-// Chrome DevTools Protocol でつなぐ。ページのエラー（例外とエラーのログ）は errors に溜め、onError があれば渡す
+// Chrome DevTools Protocol でつなぐ。ページのエラー（例外・エラーのログ・console.error）は errors に溜め、onError があれば渡す
 export async function connectCdp(url, onError = null) {
   const ws = new WebSocket(url);
   await new Promise((resolve, reject) => {
@@ -94,6 +94,9 @@ export async function connectCdp(url, onError = null) {
       pageError(d.exception?.description ?? d.text);
     } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
       pageError(m.params.entry.text);
+    } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+      // three.js はシェーダーのコンパイルの失敗を例外にせず console.error で出すので、これも拾う
+      pageError(m.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
     }
   });
   return {

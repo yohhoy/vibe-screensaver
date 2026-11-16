@@ -147,7 +147,7 @@ setupControls({
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
 - 隠し要素を持たせるときは、出現の処理を作品のトップレベルの `function start○○()`（蜘蛛なら `startSpider`）にし、待ち時間が切れたときの自然な出現も、隠しキー（C）も、この関数を呼ぶ。状態は `spider`（出ていれば値、無ければ `null`）と `spiderWait`（次に出るまでの秒数）のように、節の中に置く。そのうえで `tools/pages.mjs` の `HIDDEN` に関数名を足す。`video-export.mjs` の `--hidden` は、この関数を差し替えて出現を止め、呼び出す時刻を決める（[docs/video.md](docs/video.md)）。作品の内側に閉じ込めた処理（クロージャの中の待ち時間など）では、外から止められない。
 - 見た目のための乱数を足すときは、既存の乱数を引く順番を変えない（既存の乱数を全部引いたあとに引くか、`Math.random` を使わない別の乱数にする）。`Math.random` を引く回数や順番が変わると、そのあとの乱数の列がすべてずれ、配置などが変わって、video-compare で同じ絵どうしを比べられなくなる。
-- 動作確認は `open <file>.html` でブラウザ表示して確認する。自動で確かめるときは、ヘッドレス Chrome を直接呼ばずに `node tools/video-export.mjs <作品名> --out <scratchpad>/check.png` で撮る。ページのエラー（`Uncaught`）が起きると、撮影がエラーで止まる。シェーダーのコンパイルの失敗（three.js の `console.error`）では止まらないので、GLSL に触れたときは、写った絵と明るさも見る。縦長の画面は `--size 720x1280` で確かめる。
+- 動作確認は `open <file>.html` でブラウザ表示して確認する。自動で確かめるときは、ヘッドレス Chrome を直接呼ばずに `node tools/video-export.mjs <作品名> --out <scratchpad>/check.png` で撮る。ページのエラー（`Uncaught`・`console.error`。シェーダーのコンパイルの失敗を含む）が起きると、撮影がエラーで止まる。シェーダーや隠し要素は、使う場面になって初めてコンパイルされることがあるので、変えたシーン（`--scenes`）や隠し要素（`--hidden`）を撮って確かめる。縦長の画面は `--size 720x1280` で確かめる。
 - 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
 - GPU の負荷を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
 
