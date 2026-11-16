@@ -31,6 +31,7 @@
 | tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
+| tools/img.mjs | 撮った静止画・動画から、切り出し・拡大・並べた確認用の画像を作るか、範囲の明るさを測るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
 | tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
@@ -141,12 +142,12 @@ setupControls({
 - 新作は既存ファイル（[pipes.html](pipes.html) など）を土台にし、`<head>`、`#hud`、節の順番を揃える。
 - [index.html](index.html) の作品一覧にリンクを追加・更新する。
 - README.md の作品ごとの節（1 行の概要・操作）を更新する。
-- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。ヘッドレス Chrome の `--screenshot` と `--virtual-time-budget` で撮れる。HUD は CSS で隠し、pipes は `updatePipes` を先に回してパイプを伸ばしてから撮る。隠し要素（sandpicture のラクダ、aurora のサンタなど）は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。作品の変数で出ないようにしてから撮る（`video-export.mjs` なら `--hidden off`）。
+- 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。`node tools/video-export.mjs <作品名> --hidden off --out <作品名>.png` で撮り（HUD は写らない。起動直後に絵が揃わない作品は `--warmup` を長くする）、`node tools/img.mjs grid <作品名>.png --max 640 --out docs/images/<作品名>.jpg` で 640×360 にする。隠し要素（sandpicture のラクダ、aurora のサンタなど）は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
 - 隠し要素を持たせるときは、出現の処理を作品のトップレベルの `function start○○()`（蜘蛛なら `startSpider`）にし、待ち時間が切れたときの自然な出現も、隠しキー（C）も、この関数を呼ぶ。状態は `spider`（出ていれば値、無ければ `null`）と `spiderWait`（次に出るまでの秒数）のように、節の中に置く。そのうえで `tools/pages.mjs` の `HIDDEN` に関数名を足す。`video-export.mjs` の `--hidden` は、この関数を差し替えて出現を止め、呼び出す時刻を決める（[docs/video.md](docs/video.md)）。作品の内側に閉じ込めた処理（クロージャの中の待ち時間など）では、外から止められない。
 - 見た目のための乱数を足すときは、既存の乱数を引く順番を変えない（既存の乱数を全部引いたあとに引くか、`Math.random` を使わない別の乱数にする）。`Math.random` を引く回数や順番が変わると、そのあとの乱数の列がすべてずれ、配置などが変わって、video-compare で同じ絵どうしを比べられなくなる。
-- 動作確認は `open <file>.html` でブラウザ表示して確認する。ヘッドレス Chrome で確かめるときは、ページを開くだけでなく、`--enable-logging=stderr` でコンソールのエラー（`Uncaught`）が出ていないかも見る。
+- 動作確認は `open <file>.html` でブラウザ表示して確認する。自動で確かめるときは、ヘッドレス Chrome を直接呼ばずに `node tools/video-export.mjs <作品名> --out <scratchpad>/check.png` で撮る。ページのエラー（`Uncaught`）が起きると、撮影がエラーで止まる。シェーダーのコンパイルの失敗（three.js の `console.error`）では止まらないので、GLSL に触れたときは、写った絵と明るさも見る。縦長の画面は `--size 720x1280` で確かめる。
 - 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
 - GPU の負荷を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
 

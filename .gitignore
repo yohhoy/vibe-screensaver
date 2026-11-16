@@ -4,6 +4,7 @@
 *.mp4
 *.thumbs.jpg
 *.sheet.jpg
+*.grid.jpg
 
 # video-compare --keep で控えた変更前の版
 .kept/

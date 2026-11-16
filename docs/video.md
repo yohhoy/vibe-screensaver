@@ -94,3 +94,25 @@ node tools/video-compare.mjs bubbles --base kept --scenes 2 --seconds 2
 中身の確認は、まず `<出力先>.thumbs.jpg` を見る。各場面の最後のコマを 1 枚に並べた画像で、`--case` の式で変えた状態が落ち着いたころのコマになる。動画や静止画を何枚も開くより、確認にかかるトークンが少ない。
 
 標準出力には列ごと・場面ごとの差（PSNR）が出る。同じ映像なら「全コマ一致」になる。動画を圧縮してから比べるので、丸め誤差ほどの違いでも 45〜50dB まで下がることがある。値だけで見た目の差を判断せず、画像も見る。
+
+## 画像の切り出し・並べ・明るさ
+
+撮った静止画や動画から確認用の画像を作るとき・明るさを測るときは、`tools/img.mjs` を使う。ffmpeg の `crop`・`hstack`・`tile`・`signalstats` などを手で組まない。
+
+```sh
+# 3 枚を並べて 1 枚にする（長辺 800px。既定の出力は <最初の入力>.grid.jpg）
+node tools/img.mjs grid a-1.png a-2.png a-3.png --out cmp.jpg
+# 変更前後を 2 列に並べる。--crop で同じ範囲を切り出す（px か %）
+node tools/img.mjs grid before.png after.png --crop 0,50%,100%,50% --out cmp.jpg
+# 小さい範囲を拡大する。--nearest で画素のまま拡大する
+node tools/img.mjs grid shot.png --crop 600,300,80,60 --nearest --out zoom.png
+# 動画から時刻を指定して取り出す。動画 1 本が 1 行になる
+node tools/img.mjs grid before.mp4 after.mp4 --at 1,2,3 --out frames.jpg
+# 範囲の明るさ（輝度 0..255）の平均・最大。--rows で上からの帯ごとの平均も出す
+node tools/img.mjs luma a-1.png a-2.png --crop 0,0,100%,20% --rows 4
+```
+
+- grid の出力は長辺 `--max`（既定 800px）に収まるので、`sips -Z` で縮小し直さなくてよい。コマの並び（何行目がどの入力か）は標準出力に出る。
+- コマの大きさは最初の入力（切り出し後）の縦横比で決める。縦長と横長を混ぜると、縦横比を保って黒で埋める。
+- 文字は描き込まない（この ffmpeg には `drawtext` が無い）。どのコマが何かは、標準出力の並びで判断する。
+- `*.grid.jpg` は Git の管理外（`.gitignore`）。出力は scratchpad の下を指す。
