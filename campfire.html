@@ -32,7 +32,7 @@ const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, gray,
 // 炎・火の粉の色は光の強さそのままの値（1 を超えるとブルームで光る）。ほかの色は画面に出る値 (0..1)
 
 // カメラ（焚き火のまわりをゆっくり回る）
-const CAM_DIST = 5.5;             // 焚き火からの距離（一定。回っても画面上の大きさが変わらない）
+const CAM_DIST = 5.5;             // 焚き火からの距離の基準（横長の画面での値。縦長の画面では fitCameraDist で引く。回っている間は一定）
 const CAM_HEIGHT = 1.3;           // 地面からの高さ
 const CAM_TARGET_Y = 1.22;        // 見る点の高さ（高いほど、焚き火が画面の下へ寄る。1.1 から 0.12 上げて、画面の高さの約 2.6% 下げた）
 const CAM_FOV = 45;
@@ -324,6 +324,13 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(srgb(HORIZON), FOG_DENSITY);
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.05, SKY_RADIUS * 1.5);
+
+// 焚き火からカメラまでの距離。横長の画面では CAM_DIST のまま。縦長の画面では、止まって投げるリス（焚き火の中心から stopDist の位置、幅は SQUIRREL.size）が見切れない距離まで引く
+function fitCameraDist() {
+  const halfWidthPerDist = Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2) * camera.aspect;   // 距離 1 あたりの、画面の左右の半分の幅
+  return Math.max(CAM_DIST, (SQUIRREL.stopDist + SQUIRREL.size / 2) / halfWidthPerDist);
+}
+let camDist = fitCameraDist();
 
 // 色の形式は compactHdrFormat（common.js）で選ぶ。不透明度は使わない
 const composer = new EffectComposer(renderer,
@@ -1187,7 +1194,7 @@ function drawSquirrel(pose, ph, armU, armBack = 0, look = 0) {
 }
 
 // カメラの右向き（水平面での単位ベクトル [x, z]）。画面の左右を、ワールドの向きで決めるのに使う
-const cameraRight = () => [camera.position.z / CAM_DIST, -camera.position.x / CAM_DIST];
+const cameraRight = () => [camera.position.z / camDist, -camera.position.x / camDist];
 
 // リスと光の板の表示を切り替える
 function showSquirrel(visible) {
@@ -1203,7 +1210,7 @@ function startSquirrel() {
   // 画面の左右どちらかの外から現れる。横長・縦長の画面に合わせ、画面の端より少し外から
   const side = randSign();
   const [rightX, rightZ] = cameraRight();
-  const edge = CAM_DIST * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2) * camera.aspect;
+  const edge = camDist * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2) * camera.aspect;
   const start = clamp(edge + SQUIRREL.size, 3, 12);
   squirrel = { phase: 'run', t: 0, dist: start, start, dir: new THREE.Vector3(rightX * side, 0, rightZ * side) };
   showSquirrel(true);
@@ -1375,7 +1382,7 @@ function updateFireworks(dt) {
 // ---- カメラ ----
 function updateCamera() {
   const a = time * TAU / ORBIT_PERIOD;
-  camera.position.set(Math.sin(a) * CAM_DIST, CAM_HEIGHT + 0.08 * Math.sin(time * 0.3), Math.cos(a) * CAM_DIST);
+  camera.position.set(Math.sin(a) * camDist, CAM_HEIGHT + 0.08 * Math.sin(time * 0.3), Math.cos(a) * camDist);
   camera.lookAt(0, CAM_TARGET_Y, 0);
   sky.position.copy(camera.position);
 }
@@ -1434,6 +1441,7 @@ setupControls({
   },
   onResize() {
     camera.aspect = innerWidth / innerHeight;
+    camDist = fitCameraDist();
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
     composer.setSize(innerWidth, innerHeight);
