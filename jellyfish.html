@@ -66,7 +66,7 @@ const ARM_SEGMENTS = 14;          // 口腕の節の数
 const GONAD_SEGMENTS = 16;        // 生殖腺の輪の分割数
 
 // クラゲの動き
-const BASE_SIZE = 0.46;           // 基準の傘の半径（拍動の速さ・クラゲの数をこの大きさのときの値で決める）
+const BASE_SIZE = 0.46;           // 基準の傘の半径（拍動の速さをこの大きさのときの値で決める）
 const PULSE_RATE = [0.4, 0.7];    // 傘が縮む回数（回/秒。傘の半径が BASE_SIZE のとき）
 const PULSE_SIZE_EXP = 1;         // 拍動の速さを (BASE_SIZE / 傘の半径) の何乗に比例させるか（大きい傘ほどゆっくり。足の長さには関係しない）
 const PULSE_SHARE = 0.35;         // 1 回のうち縮んでいる時間の割合（残りでゆっくり戻る）
@@ -134,9 +134,11 @@ const BACKGROUND = [0.0, 0.012, 0.035];   // 背景（画面に出る値）
 // 形の範囲。size: 傘の半径、flat: 傘の高さ / 半径、legs: 触手と口腕の長さの倍率
 const SHAPE_RANGE = { size: [0.3, 0.62], flat: [0.25, 1.0], legs: [0.4, 2.5] };
 const SHAPE_MIN_CHANGE = 0.25;    // 形のどの値も、いまの値から最低これだけ変える（範囲の幅に対する割合）
-// クラゲの数の範囲（傘の半径が BASE_SIZE のとき）。傘の面積に反比例させ、大きいクラゲほど少なくする
-const JELLY_COUNT_RANGE = [9, 18];
-const MAX_JELLIES = 24;
+// クラゲの数は、画面に見える面積に対する傘の面積の割合（占有率）で決める。傘の面積は π × 半径² とし、足は含めない。
+// 大きいクラゲほど少なく、横長の画面ほど多く、縦長の画面ほど少なくなる
+const OCCUPANCY_RANGE = [0.1, 0.21];   // 占有率の範囲（シーンごとに選ぶ。16:9 で傘の半径 0.46 なら 9〜18 匹ほど）
+const COUNT_ASPECT = [9 / 16, 16 / 9];   // 数の計算に使う縦横比（横 / 縦）の範囲。これより細長い・横長の画面は端の値で計算する
+const MAX_JELLIES = 24;           // クラゲの数の上限
 const HUE_MIN_CHANGE = 0.2;       // 色相を、いまの色相から最低これだけ変える（0..0.5）
 const PREWARM_TIME = 15;          // 起動・シーンの切り替えのとき、先に進めておく秒数（泡が水面まで届き、クラゲの間隔が落ち着くように）
 
@@ -196,6 +198,7 @@ const gonadColor = [0, 0, 0];
 // いまのクラゲの形（起動・シーン切替のときに選ぶ。全部のクラゲで共通）
 const shape = { size: 0, flat: 0, legs: 0 };
 let hueShift = 0;          // 色相のずらし量（起動・シーン切替のときに選ぶ。0..1）
+let occupancy = 0;         // 画面の面積に対する傘の面積の割合（起動・シーン切替のときに選ぶ）
 
 // ---- 線 ----
 // 線はすべて 1 つの LineSegments にまとめ、毎フレーム頂点を詰め直す。
@@ -605,10 +608,16 @@ class Jelly {
 
 const jellies = [];
 
-// クラゲを n 匹、新しく置き直す（いまの形で）
+// 占有率と画面の広さ（水槽の奥行きの中央で見える面積）から、クラゲの数を求める
+function jellyCount() {
+  const viewArea = (VIEW_TOP - VIEW_BOTTOM) ** 2 * clamp(camera.aspect, ...COUNT_ASPECT);
+  return clamp(Math.round(occupancy * viewArea / (Math.PI * shape.size ** 2)), 1, MAX_JELLIES);
+}
+
+// クラゲを n 匹にする。足りない分は（いまの形で）新しく置き、多い分は後ろから外す
 function spawnJellies(n) {
-  jellies.length = 0;
-  for (let i = 0; i < n; i++) jellies.push(new Jelly());
+  jellies.length = Math.min(jellies.length, n);
+  while (jellies.length < n) jellies.push(new Jelly());
 }
 
 // 近づきすぎたクラゲどうしを離す
@@ -745,8 +754,9 @@ function nextScene(first = false) {
     shape[key] = first ? randIn(SHAPE_RANGE[key]) : randomAway(SHAPE_RANGE[key], shape[key]);
   }
   hueShift = first ? Math.random() : (hueShift + rand(HUE_MIN_CHANGE, 1 - HUE_MIN_CHANGE)) % 1;
-  const area = (BASE_SIZE / shape.size) ** 2;
-  spawnJellies(clamp(Math.round(randIn(JELLY_COUNT_RANGE) * area), 1, MAX_JELLIES));
+  occupancy = randIn(OCCUPANCY_RANGE);
+  jellies.length = 0;   // 形が変わるので、全部置き直す
+  spawnJellies(jellyCount());
   replaceStreams();
   prewarm();
 }
@@ -830,6 +840,7 @@ setupControls({
     renderer.setSize(innerWidth, innerHeight);
     composer.setSize(innerWidth, innerHeight);
     layout();
+    spawnJellies(jellyCount());   // 縦横比が変わったら、数を増減する
   },
 });
 
