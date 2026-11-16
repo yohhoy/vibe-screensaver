@@ -35,6 +35,7 @@
 | tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
 | tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
+| .claude/skills/ | Claude Code 用の、作業ごとの手順（新作の追加 new-work、隠し要素の追加 add-hidden、リファクタリングと仕様の整合確認 tidy-work）。この文書の節名を参照しているので、節名を変えたら合わせる |
 
 各作品のスクリプトは、次の順番の節に分ける。（任意）の節は、その作品で要るときだけ置く。作品の本体は、作品ごとに分かりやすい節に分けてよい。
 
