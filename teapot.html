@@ -23,7 +23,8 @@
   /* 明るい壁の前でも読めるよう、ぼかしの小さい黒い影を重ねて縁取る */
   color: rgba(255,255,255,0.85); text-shadow: 0 0 1px rgba(0,0,0,0.6), 0 0 2px rgba(0,0,0,0.6), 0 1px 3px rgba(0,0,0,0.6);
 }
-#era.green { color: rgba(90,255,130,0.75); text-shadow: 0 0 3px #000, 0 0 3px #000; }
+/* Wireframe のラベルは線と同じ緑（WIRE_COLOR を sRGB にしたもの）。緑は白より暗いので不透明にし、ほかの時代の白と明るさを揃える */
+#era.green { color: rgb(137,255,179); text-shadow: 0 0 3px #000, 0 0 3px #000; }
 /* まだ打っていない文字。場所だけ取っておき、打ち出す間に文字列の位置が動かないようにする */
 #era .rest { visibility: hidden; }
 </style>
