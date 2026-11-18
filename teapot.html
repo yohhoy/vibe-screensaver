@@ -1384,7 +1384,13 @@ const SCENES = [
       const fur = furMaterial(FUR, linearColor(FUR.color));
       addShells(era, s.segments, FUR.shells, fur).castShadow = true;
       // 床の敷物も同じ殻の重ね方で描く。毛皮の材質は影を受けないので、毛先の上に影だけの板を重ねる
-      const rug = new THREE.InstancedMesh(rugGeometry, furMaterial(RUG, linearColor(RUG.color)), RUG.shells);
+      // 敷物の色は、巡回ごとの色と同じ色相にする（鮮やかさと明るさは RUG.color のまま）
+      const rugColor = linearColor(RUG.color);
+      const rugHsl = rugColor.getHSL({}, THREE.SRGBColorSpace);
+      era.setVariation = (v) => {
+        rugColor.setHSL(v.potColor.getHSL({}, THREE.SRGBColorSpace).h, rugHsl.s, rugHsl.l, THREE.SRGBColorSpace);
+      };
+      const rug = new THREE.InstancedMesh(rugGeometry, furMaterial(RUG, rugColor), RUG.shells);
       rug.position.y = 0.002;
       const shadow = new THREE.Mesh(rugGeometry, new THREE.ShadowMaterial({ opacity: 0.45 }));
       shadow.position.y = top;
