@@ -33,6 +33,7 @@
 - Gouraud は照明から離れるほど暗くする。
 - Path Tracing より後の時代は、周りの光（部屋を写した環境マップ）を足す。部屋が周りの光を受ける割合は下げる（そのままだと奥の壁が全面ほぼ白く均一に明るくなり、スポットライトの照らし方と影が見えず、ポットも背景に溶けるため）。
   - Path Tracing は面光源にし、環境光を置かず、部屋が周りの光を受ける割合をさらに下げ、その分照明を強くする（そうしないと影が周りの光に埋もれ、部屋全体が均一に明るい、Radiosity より陰影の乏しい絵になる）。
+  - Photon Mapping は、環境光と、部屋が周りの光を受ける割合を少し下げ、影を硬くする（影の中の光の集まりを際立たせる。照明が小さいので、鋭い光の模様と硬い影が揃う）。
   - Subsurface Scattering は照明をポットの奥へ回して逆光にし、低く中央寄りに置いて、回る注ぎ口と取っ手が光源の前を通るようにする（左右は巡回ごとの照明に合わせる）。逆光が目立つよう、環境光と、部屋とポットが周りの光を受ける割合を下げる。
 
 ## 時代
@@ -50,7 +51,7 @@
 - ポットの色（表の「巡回ごとの色」）。陶器らしい淡い色の候補から、前の巡回と違うもの。白は候補に入れない（Radiosity・Path Tracing の白磁と同じ色になり、白が続いて時代が移っても絵が変わらないため）。
 - 主な照明の向き（左上か右上か、高さ）。
 
-Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorealistic Rendering の画風と、Subsurface Scattering・Physically Based Shading の素材は選ばない。その技法らしさ（それまでの時代より優れている点）がいちばん伝わるものに固定する（「時代の定義」の表）。
+Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorealistic Rendering の画風と、Photon Mapping（色は巡回ごとの色）・Subsurface Scattering・Physically Based Shading の素材と、Cellular Texture の柄は選ばない。その技法らしさ（それまでの時代より優れている点）がいちばん伝わるものに固定する（「時代の定義」の表）。
 
 ### ラベル
 
@@ -68,6 +69,7 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 - `Phong Shading (1973)` は Phong の学位論文の年（論文誌は 1975 年）。
 - `Path Tracing (1986)` は Kajiya のレンダリング方程式の年。
 - `Non-Photorealistic Rendering (1990)` は、輪郭線などで形を描き分ける Saito と Takahashi [10] の年。
+- `Photon Mapping (1996)` と `Cellular Texture (1996)` は同じ年。発表の早い Photon Mapping（6 月、Jensen [16]）を先にする（Cellular Texture は 8 月の SIGGRAPH、Worley [17]）。
 - 年の出典: Wireframe と Hidden Line は Roberts の学位論文 [2]、Gouraud Shading は Gouraud [11]、Bump Mapping は Blinn [12]、Shadows は Williams（シャドウマップ）[13]、Ray Tracing は Whitted [14]、Radiosity は Goral ほか [15]。Solid Texture は Perlin と Peachey、Displacement Mapping は Reyes（Cook ほか）、Fur は Kajiya–Kay、Subsurface Scattering は Jensen ほか、Physically Based Shading は Disney の BRDF（Burley）。
 
 ### 史実に合わせている見た目
@@ -78,6 +80,8 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 - **Solid Texture**: 部屋は大理石、ポットは木目。どちらも Perlin の論文 [6] が作例に挙げた素材で、大理石の花瓶はこの論文の代表的な図。立体の柄は、Perlin と Peachey [7] が同じ年に別々に考えた。
 - **Non-Photorealistic Rendering**: 画風をハッチングに絞り、Saito と Takahashi [10] にならう。この論文は、深度や法線を画素ごとに持つ G-buffer から、輪郭線・稜線と曲面に沿うハッチングを描いた。ポットを輪郭線で縁取り、線をポットの曲面に沿わせる。トゥーン（2000 年前後）や Gooch の陰影（1998 年）は、この年より後の手法なので採らない（NPR は総称で範囲が広く、画風を並べると 1 つの技法の時代に見えないため）。
 - **Fur**: 毛皮の作例のテディベア（Kajiya–Kay [8]）にならい、テディベアらしい茶色にする。陰影も同じ論文の、毛の向きで照らす式にならう（「描き方」）。
+- **Photon Mapping**: 見せ場をコースティクス（ガラスで集まった光）に絞る。Jensen [16] は、コースティクス専用の光子の地図を、ほかの光の回り方とは分けて密に作った。
+- **Cellular Texture**: Worley [17] の関数そのもの。空間に散らばった点のうち、いちばん近い点と 2 番目に近い点までの距離（F1・F2）から柄を決める。網目（F2 − F1）と、セルごとの値（いちばん近い点の乱数）の 2 つの使い方を見せる。
 
 ### 史実と違う所
 
@@ -89,6 +93,9 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 - Non-Photorealistic Rendering のハッチングは、G-buffer の画像処理ではなく、ポットのシェーダーで線を引いて見た目を近似する。部屋は写実のまま（「描き方」）。
 - Fur は shell 法（Lengyel ほか、2001 年のリアルタイム向けの手法 [9]）で描く。Kajiya–Kay は毛を立体のテクスチャ（texel。体積の密度と、向きで変わる陰影）にしてレイトレーシングで描き、毛並みはこれより写実的だった。
   - そのため、回ると細い毛がちらつく。Kajiya–Kay のように画素より細かい毛を密度の平均で描くとちらつきは減るが、alpha-to-coverage では重なった殻の薄い平均が積み重ならず毛がまばらに見えるので、毛の密度を優先して採らない。
+
+- Photon Mapping は光子を飛ばさない。光を通すポットの面を光の束とみなし、面ごとに床に届く所へ写して、面積の比で明るさを決める（後のリアルタイム向けの caustic mapping の方法）。屈折は入口と出口の 2 回だが、出口の面は求めず、ポットを球とみなして近似する。光を曲げる屈折率は、ガラスの値より小さくする（ガラスの値だとポットのすぐ下で焦点を結び、床では光が広く散って模様にならないため）。光が集まるのは床だけで、壁と、ポットで照り返した光は追わない。光の模様の色は、通ったガラスの厚みによらず一様にする。
+- Cellular Texture の点は、格子のセルごとに 1 つ置く。Worley [17] は、セルごとの点の数をポアソン分布で変えた。見た目はほぼ変わらない。
 
 ## シーン切替
 
@@ -135,6 +142,13 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
   - 暗い所ほど線を太くし、さらに暗い所には直交する線を重ねる。明るい所には細い線を残さない。
   - 線の間隔が 2 画素を切る所は、1 本ずつ描かずに線の覆う割合で塗る（細かい線は、回るたびに縞が流れるため）。
   - ポットの色は、露出（トーンマッピングの前に掛ける）で暗くならないよう、その分を戻して掛ける。
+- **Photon Mapping**: 巡回ごとの色のガラスのポット。材質は Ray Tracing のガラスで、減衰の色だけを巡回ごとの色にする（無色の Ray Tracing のガラスと見分けやすく、白黒の床に色の付いた光が落ちて目を引く）。色が付く距離はガラスの厚みと同じにし、ガラスを通った光が巡回ごとの色そのものになるようにする。部屋は PBR の部屋で、床のつやを抑える（光の模様が映り込みに紛れないように）。影はふつうに落とし、照明の直接の光をポットで遮る。そこへ、ガラスを通った光を足す。
+  - 光の集め方: 細かく分割したポットを、毎フレーム、床の座標の描画先に加算で描く。頂点シェーダーで、照明からの光が面で 2 回屈折して床に届く点へ頂点を動かす（「史実との対応」）。照明の側を向いていない面は描かない。
+  - 明るさ: 照明から見た向きでの面の広さと、床に届いた広さの比（ガラスが無ければ、照明が直接当たる明るさと同じになる）。入口で照り返す分（フレネル）は除き、焦点で無限に明るくならないよう上限を設ける（上限は、光が集まる芯が白く飛びすぎず、ガラスの色が残る程度にする）。色は、ガラスの厚みを通った色（three.js の透過と同じく、減衰の色を 厚み / 距離 乗したもの。ここでは巡回ごとの色そのもの）で、場所によらず一様に掛ける。
+  - 床は、この描画先を照明の直接の光として足す。影の中にも届くので、影の中に明るい光の集まりができる。
+- **Cellular Texture**: Solid Texture と同じく、柄を物体の座標で決めて拡散の色に掛ける（パッチの継ぎ目で途切れず、ポットと一緒に回る）。近くの 27 セルの点から F1・F2 を求める。
+  - ポット: 巡回ごとの色の釉薬に、貫入（茶の染みたひび）。大きな網目と細かい網目を重ねる。網目は F2 − F1 が小さい所で、線の太さは画面での変化の幅（`fwidth`）でぼかす。
+  - 床: 石畳。石の色は、石の点（いちばん近い点）がある市松のマスの色にし、明るさを石ごとの乱数で少し揺らす（セルごとの値の使い方）。市松が、石の形に沿ったギザギザの境目で描き直される（市松の部屋の続きだと分かるように残す）。石はマスより十分小さくし（大きいと境目のギザギザが粗く、市松が読み取れない）、石の間を目地にする。焼き込みは、市松を描かずに、にじみと隅の暗さだけを描いたものを使う（市松の焼き込みに掛けると、マスの境目が石の上に線で残るため）。
 - **Subsurface Scattering**: 蝋。`MeshPhysicalMaterial` の透過・厚み・減衰の色で近似する。逆光が透けて光る分は、視線が光の来る向きに近いほど明るく、面が横を向く縁ほど強い項を足して近似する。厚みは測らず、取っ手・注ぎ口・蓋のつまみの頂点に「薄い所」の印を付け、そこだけ厚みを減らして光る分を増やす（`TeapotGeometry` のパッチの番号で選ぶ）。印は付け根から先へなめらかに上げる（取っ手と注ぎ口は軸からの距離、つまみは高さで決める）。急に変わると、別の部品が光って見えるため。
 - **Physically Based Shading**: 薄膜の掛かった黒っぽい金属（焼けたチタン・玉虫のような色）。`MeshPhysicalMaterial` の `metalness` と `roughness` で、金属が部屋を映し、粗さで映り込みがぼける様子を見せる（照明と無関係な鏡の Environment Mapping、白いハイライトの Phong との対比）。`iridescence`（薄膜の干渉）で、見る角度ごとに深い緑から赤紫へ色が移り、回るたびに色が流れる（光の波の性質まで扱う表現で、ほかの時代と重ならず、最後の時代の見せ場になる）。クリスタルは、Ray Tracing のガラスと見せ場が重なり、分光（虹色のきらめき）が three.js r160 に無いので採らない。黒い釉薬（clearcoat）は Path Tracing の白磁と、ビロード（sheen）は直前の Fur と見せ場が重なるので採らない。床は、粗さと金属らしさをマスごとに変えるテクスチャを貼る。
 
@@ -165,6 +179,8 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 | `Displacement Mapping (1987)` | 巡回ごとの色。表面の凹凸で輪郭までゴツゴツする（輪郭がなめらかな Bump Mapping との対比） | 壁がレンガになり、目地がへこむ（ざらつくだけの Bump Mapping の壁との対比） | ぼけた影と、真下の柔らかい影 | 64 |
 | `Fur (1989)` | 茶色の毛皮に覆われ、ふわふわになる | ポットの下の床に、青い毛足の敷物 | Displacement Mapping と同じ影が、敷物の毛先に落ちる | 12 |
 | `Non-Photorealistic Rendering (1990)` | 巡回ごとの色。黒い輪郭線と、曲面に沿って回るハッチング | 変わらない | Displacement Mapping と同じ | 24 |
+| `Photon Mapping (1996)` | 巡回ごとの色のガラス | 部屋が少し暗くなり、床のつやが消える。ガラスを通った光が集まる、ガラスと同じ色の模様が床に落ち、回ると流れる | 硬く濃い影の中に、光が集まる | 24 |
+| `Cellular Texture (1996)` | 巡回ごとの色の釉薬に、大小の網目の貫入が走る | 床が石畳になる。市松は残るが、マスの境目が石の形に沿ってギザギザになる | Displacement Mapping と同じ | 24 |
 | `Subsurface Scattering (2001)` | 蝋。逆光が中まで入り、縁が透け、薄い取っ手・注ぎ口・蓋のつまみの先ほど明るく光る | 照明が奥へ回って部屋が暗くなる | 逆光なので手前に落ちる | 24 |
 | `Physically Based Shading (2012)` | 薄膜の掛かった黒っぽい金属。部屋を映し、見る角度で深い緑から赤紫へ色が移る | 床の暗いマスだけが、磨いた金属のように艶めく | Displacement Mapping と同じ | 24 |
 
@@ -187,3 +203,5 @@ Texture Mapping と Solid Texture の柄と、Fur の毛の色と、Non-Photorea
 13. L. Williams, "Casting Curved Shadows on Curved Surfaces", SIGGRAPH 1978. https://history.siggraph.org/?p=120268
 14. T. Whitted, "An Improved Illumination Model for Shaded Display", Communications of the ACM 23(6), 1980. https://history.siggraph.org/?p=104559
 15. C. M. Goral, K. E. Torrance, D. P. Greenberg, B. Battaile, "Modeling the Interaction of Light between Diffuse Surfaces", SIGGRAPH 1984. https://history.siggraph.org/?p=107463
+16. H. W. Jensen, "Global Illumination using Photon Maps", Rendering Techniques '96 (Eurographics Workshop on Rendering), 1996. https://graphics.stanford.edu/~henrik/papers/ewr7/
+17. S. Worley, "A Cellular Texture Basis Function", SIGGRAPH 1996. https://doi.org/10.1145/237170.237267

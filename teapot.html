@@ -167,6 +167,18 @@ const BACKLIGHT = {
 const THIN = { patches: [12, 24], knob: 20, reach: [1.25, 1.6], height: [0.72, 0.85] };
 // Physically Based Shading の床の、マスごとの粗さと金属らしさ（明るいマス・暗いマスの順）
 const PBS_FLOOR = { roughness: [0.8, 0.15], metalness: [0, 1] };
+// Photon Mapping のコースティクス（ガラスのポットを通って床に集まる光）。size: 床に集まる光を描く描画先の解像度、
+// segments: 光を通すポットの分割数（細かいほど模様がなめらか）、ior: 光を曲げる屈折率（大きいほど強く曲がり、ポットの近くで集まる）、max: 1 画素に集まる明るさの上限（焦点で無限に明るくならないように。照明が直接当たる明るさを 1 とする）、
+// floor: 床の粗さ（光の模様が映り込みに紛れないよう、つやを抑える）、contact: ポットの真下の柔らかい影の濃さ（ガラスなので薄くする）、
+// ambient・room: 環境光の強さと、部屋が周りの光を受ける割合（ほかの PBR の時代より少し暗くし、影の中の光の集まりを際立たせる）。
+// shadow: 影の描画先の解像度とぼかし（小さな照明なので、光の模様と揃えて硬くする）
+const CAUSTIC = {
+  size: 1024, segments: 32, ior: 1.12, max: 15, floor: 0.7, contact: 0.3,
+  ambient: 0.4, room: 0.28, shadow: { size: 2048, radius: 1 },
+};
+// Cellular Texture。crackle: ポットの貫入（釉薬のひび）の [大きな網目, 細かい網目] のセルの大きさ（長さ）、crackWidth: ひびの太さ（F2 − F1 の値。セルの大きさに対する割合）、
+// crackColor: ひびの色（茶の染みた貫入）、stone: 床の石畳の石の大きさ（長さ。小さいほど市松の境目のギザギザが細かく、元の市松に近づく）、mortar: 目地の太さ（F2 − F1 の値）、mortarColor: 目地の明るさ
+const CELL = { crackle: [0.2, 0.07], crackWidth: [0.02, 0.018], crackColor: [0.35, 0.25, 0.16], stone: 0.2, mortar: 0.06, mortarColor: 0.25 };
 
 // ラベル
 const LABEL_BELOW = 0.2;          // ラベルの位置。画面の上端とポットの上端の中間から、ポットの上端までの間を何割下げるか（0 で中間、1 でポットの上端）
@@ -309,6 +321,58 @@ vec3 solidPattern(vec3 p) {
   return mix(vec3(0.33, 0.17, 0.07), vec3(0.8, 0.55, 0.3), ring * ring);
 }`;
 
+// Cellular Texture（Worley）: 空間に散らばった点のうち、いちばん近い点と 2 番目に近い点までの距離（F1・F2）から柄を決める。
+// 点は格子のセルごとに 1 つ置き、近くの 27 セルから探す。F2 − F1 が小さい所はセルの境目なので、網目の線になる。
+// addSolid で差し込む（物体の座標で決める立体の柄なので、Solid Texture と同じくパッチの継ぎ目で途切れない）
+const CELL_HEAD = /* glsl */`
+vec3 cellHash(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.xxy + p.yxx) * p.zyx);
+}
+// x: F1、y: F2、z: いちばん近い点のセルの乱数（0..1）。nearest: いちばん近い点の位置（p と同じ座標）
+vec3 cellular(vec3 p, out vec3 nearest) {
+  vec3 c = floor(p);
+  vec3 f = vec3(8.0, 8.0, 0.0);
+  for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) for (int k = -1; k <= 1; k++) {
+    vec3 g = c + vec3(i, j, k);
+    vec3 h = cellHash(g);
+    float d = length(g + h - p);
+    if (d < f.x) { f = vec3(d, f.x, h.x); nearest = g + h; }
+    else f.y = min(f.y, d);
+  }
+  return f;
+}
+// セルの境目の線の濃さ（0..1）。width は F2 − F1 の値
+float cellEdge(vec3 c, float width) {
+  float d = c.y - c.x;
+  float w = fwidth(d);
+  return 1.0 - smoothstep(width - w, width + w, d);
+}`;
+// 貫入: 大きな網目と、その中の細かい網目のひびを、釉薬の色に掛ける
+const CELL_CRACKLE = CELL_HEAD + /* glsl */`
+vec3 solidPattern(vec3 p) {
+  vec3 q;
+  float big = cellEdge(cellular(p / ${CELL.crackle[0].toFixed(3)}, q), ${CELL.crackWidth[0].toFixed(3)});
+  float small = cellEdge(cellular(p / ${CELL.crackle[1].toFixed(3)} + 17.0, q), ${CELL.crackWidth[1].toFixed(3)});
+  return mix(vec3(1.0), vec3(${CELL.crackColor.map((v) => v.toFixed(3)).join(', ')}), max(big, 0.6 * small));
+}`;
+// 石畳: 石の色を、石の点（いちばん近い点）がある市松のマスの色にする（市松を、石の形に沿ったギザギザの境目で描き直す）。
+// 石ごとに明るさを少し揺らす。市松の無い焼き込みの床（BAKED_PLAIN_FLOOR）に掛ける
+const [FLOOR_LIGHT, FLOOR_DARK] = FLOOR_COLORS.map((hex) => {
+  const c = linearColor(hex);
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
+});
+const CELL_FLAGSTONE = CELL_HEAD + /* glsl */`
+vec3 solidPattern(vec3 p) {
+  vec3 q;
+  vec3 c = cellular(vec3(p.x, 0.0, p.z) / ${CELL.stone.toFixed(3)}, q);
+  q *= ${CELL.stone.toFixed(3)};
+  float odd = mod(floor((q.x + ${ROOM.halfWidth.toFixed(3)}) / ${CHECKER.toFixed(3)}) + floor((q.z - (${ROOM.back.toFixed(3)})) / ${CHECKER.toFixed(3)}), 2.0);
+  vec3 stone = (odd < 0.5 ? ${FLOOR_LIGHT} : ${FLOOR_DARK}) * (0.9 + 0.2 * c.z);
+  return mix(stone, vec3(${CELL.mortarColor.toFixed(3)}), cellEdge(c, ${CELL.mortar.toFixed(3)}));
+}`;
+
 // Displacement Mapping: 物体の座標から凹凸の高さを求めて法線の向きに押し出し、法線も押し出した形から求め直す。
 // 高さは物体の座標で決めるので、パッチの継ぎ目でも途切れない。onBeforeCompile で three.js の材質に差し込む
 const DISPLACE_POT = /* glsl */`
@@ -431,6 +495,44 @@ void main() {
   float tone = sqrt(dot(base, vec3(0.3, 0.6, 0.1))) * (0.3 + 0.7 * diff);
   float ink = max(stroke(h.y, 1.0 - smoothstep(0.35, 0.75, tone)), stroke(h.x, 1.0 - smoothstep(0.1, 0.4, tone)));
   gl_FragColor = vec4(mix(mix(base, vec3(1.0), 0.5), base * 0.1, ink), 1.0);
+}`;
+
+// Photon Mapping のコースティクス。光子を 1 つずつ飛ばす代わりに、ポットの照明を向いた面を光の束とみなし、
+// 頂点を「照明からの光が面で屈折して床に届く点」へ動かして、床の座標の描画先に加算で描く（光が集まる所ほど重なって明るい）。
+// 明るさは、光の束の断面（照明から見た向き）での面積と、床に届いた面積の比。入口と出口で 2 回屈折させる（出口の面は求めず、球とみなして近似する）
+const CAUSTIC_VERTEX = /* glsl */`
+uniform vec3 lightPos;
+varying vec2 vBeam;       // 照明から見た向き（光の束の断面での位置）
+varying float vFacing;    // 面が照明を向く度合い（負なら裏側。光は通さない）
+varying float vScale;     // 照明から床に届くまでの距離の 2 乗（照明の明るさは距離で弱まらないので、向きの面積を床の面積に直す）
+void main() {
+  vec3 p = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec3 n = normalize(mat3(modelMatrix) * normal);
+  vec3 l = normalize(p - lightPos);
+  vFacing = -dot(n, l);
+  // 出口の法線は、入口の法線を、ガラスの中を進む向きに垂直な面で映したものとみなす（球なら正しい。ポットの胴は球に近い）
+  vec3 t = refract(l, n, ${(1 / CAUSTIC.ior).toFixed(4)});
+  t = refract(t, -(n - 2.0 * dot(n, t) * t), ${CAUSTIC.ior.toFixed(4)});
+  if (dot(t, t) < 0.5) vFacing = -1.0;   // 全反射（出られない光）は通さない
+  vec3 q = p + t * (p.y / max(-t.y, 1e-3));
+  vec3 axis = normalize(-lightPos);   // 断面の向きの基準（照明から部屋の中央へ。照明の向きに近ければよい）
+  vec3 u = normalize(cross(axis, vec3(0.0, 1.0, 0.0)));
+  vec3 v = cross(u, axis);
+  vBeam = vec2(dot(l, u), dot(l, v)) / dot(l, axis);
+  vScale = dot(q - lightPos, q - lightPos);
+  gl_Position = vec4(q.x / ${ROOM.halfWidth.toFixed(3)}, (q.z - ${((ROOM.front + ROOM.back) / 2).toFixed(3)}) / ${((ROOM.front - ROOM.back) / 2).toFixed(3)}, 0.0, 1.0);
+}`;
+const CAUSTIC_FRAGMENT = /* glsl */`
+uniform vec3 tint;
+varying vec2 vBeam;
+varying float vFacing;
+varying float vScale;
+void main() {
+  if (vFacing <= 0.0) discard;
+  vec2 dx = dFdx(vBeam), dy = dFdy(vBeam);
+  float ratio = abs(dx.x * dy.y - dx.y * dy.x) * vScale / ${((2 * ROOM.halfWidth / CAUSTIC.size) * ((ROOM.front - ROOM.back) / CAUSTIC.size)).toExponential(4)};
+  float fresnel = 0.04 + 0.96 * pow(1.0 - vFacing, 5.0);   // 入口で照り返す分は通らない
+  gl_FragColor = vec4(tint * min(ratio * (1.0 - fresnel), ${CAUSTIC.max.toFixed(1)}), 1.0);
 }`;
 
 // ---- three.js 初期化 ----
@@ -750,25 +852,29 @@ PLASTER_BUMP.repeat.set(1.5, 1.5);
 // Radiosity 以降（Non-Photorealistic Rendering を除く）の部屋に貼る、壁の色のにじみと隅の暗さを焼き込んだテクスチャ（光を追わない近似）
 const rgba = (hex) => { const c = new THREE.Color(hex); return `rgba(${c.r * 255 | 0},${c.g * 255 | 0},${c.b * 255 | 0},A)`; };
 const SHADE = 'rgba(0,0,0,A)';
+// checker: 市松を描くか（false なら白地に、にじみと隅の暗さだけを描く。柄をシェーダーで掛ける Cellular Texture の床）
+function bakeFloor(bleed = 1, checker = true) {
+  return canvasTexture(2 * HW * BAKE_PX, ROOM_DEPTH * BAKE_PX, (ctx, w, h) => {
+    const s = CHECKER * BAKE_PX;
+    for (let i = 0; i < w / s; i++) for (let j = 0; j < h / s; j++) {
+      ctx.fillStyle = checker ? css(FLOOR_COLORS[(i + j) % 2]) : '#ffffff';
+      ctx.fillRect(i * s, j * s, s, s);
+    }
+    // 左右の壁は奥から SIDE_LENGTH の所までなので、にじみもそこまでにする（canvas の上が奥）
+    const sideH = SIDE_LENGTH * BAKE_PX;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, w, sideH); ctx.clip();
+    edgeGradient(ctx, w, h, 'left', 1.6 * BAKE_PX, rgba(WALL_COLORS.left), 0.4 * bleed);
+    edgeGradient(ctx, w, h, 'right', 1.6 * BAKE_PX, rgba(WALL_COLORS.right), 0.4 * bleed);
+    edgeGradient(ctx, w, h, 'left', 0.5 * BAKE_PX, SHADE, 0.35);
+    edgeGradient(ctx, w, h, 'right', 0.5 * BAKE_PX, SHADE, 0.35);
+    ctx.restore();
+    edgeGradient(ctx, w, h, 'top', 0.6 * BAKE_PX, SHADE, 0.4);
+  });
+}
 function bakeRoom(bleed = 1) {
   return {
-    floor: canvasTexture(2 * HW * BAKE_PX, ROOM_DEPTH * BAKE_PX, (ctx, w, h) => {
-      const s = CHECKER * BAKE_PX;
-      for (let i = 0; i < w / s; i++) for (let j = 0; j < h / s; j++) {
-        ctx.fillStyle = css(FLOOR_COLORS[(i + j) % 2]);
-        ctx.fillRect(i * s, j * s, s, s);
-      }
-      // 左右の壁は奥から SIDE_LENGTH の所までなので、にじみもそこまでにする（canvas の上が奥）
-      const sideH = SIDE_LENGTH * BAKE_PX;
-      ctx.save();
-      ctx.beginPath(); ctx.rect(0, 0, w, sideH); ctx.clip();
-      edgeGradient(ctx, w, h, 'left', 1.6 * BAKE_PX, rgba(WALL_COLORS.left), 0.4 * bleed);
-      edgeGradient(ctx, w, h, 'right', 1.6 * BAKE_PX, rgba(WALL_COLORS.right), 0.4 * bleed);
-      edgeGradient(ctx, w, h, 'left', 0.5 * BAKE_PX, SHADE, 0.35);
-      edgeGradient(ctx, w, h, 'right', 0.5 * BAKE_PX, SHADE, 0.35);
-      ctx.restore();
-      edgeGradient(ctx, w, h, 'top', 0.6 * BAKE_PX, SHADE, 0.4);
-    }),
+    floor: bakeFloor(bleed),
     back: canvasTexture(2 * HW * BAKE_PX, ROOM_H * BAKE_PX, (ctx, w, h) => {
       ctx.fillStyle = css(WALL_COLORS.back);
       ctx.fillRect(0, 0, w, h);
@@ -800,6 +906,7 @@ function bakedRoom(bleed) {
 }
 const BAKED = bakedRoom(1);
 const BAKED_RADIOSITY = bakedRoom(RADIOSITY_BLEED.room);   // Radiosity の時代だけ、にじみを誇張する
+const BAKED_PLAIN_FLOOR = bakeFloor(1, false);   // Cellular Texture の石畳の床（市松の色は石ごとにシェーダーで決める）
 
 // Path Tracing 以降の、ポットの真下の柔らかい影（中心ほど暗い板）
 const CONTACT_SHADOW = canvasTexture(128, 128, (ctx, w) => {
@@ -837,10 +944,11 @@ function createEra({ background, tone = [0, 1] }) {
   scene.background = linearColor(background);
   // spin: 毎フレーム回すもの。lights: 巡回ごとに位置を変える主な照明。potColorMaterials: 巡回ごとのポットの色を当てる材質。
   // prepare: 描き始める前の準備（キューブマップを撮るなど）。setVariation: 巡回ごとの変化を当てる処理。
-  // variants: 巡回ごとに差し替える材質を当てる関数の並び（裏で全部のシェーダーを作っておく）。environment: 周りの光（RoomEnvironment）を使うか
+  // variants: 巡回ごとに差し替える材質を当てる関数の並び（裏で全部のシェーダーを作っておく）。environment: 周りの光（RoomEnvironment）を使うか。
+  // beforeRender: 毎フレーム、時代を描く前に別の描画先へ描く処理（コースティクス）。extraScenes: そこで描く場面（裏でシェーダーを作る）
   return {
     scene, tone, spin: [], lights: [], potColorMaterials: [],
-    prepare: null, setVariation: null, variants: null, environment: false,
+    prepare: null, setVariation: null, variants: null, environment: false, beforeRender: null, extraScenes: [],
   };
 }
 
@@ -979,6 +1087,45 @@ function addGlassShadow(era) {
   shadow.position.y = 0.002;
   shadow.receiveShadow = true;
   era.scene.add(shadow);
+}
+
+// コースティクス（Photon Mapping）。ガラスのポットを通った光を、床の座標の描画先に毎フレーム集める。
+// ポットと同じく回すので、光を通すポットは era.spin に入れる。床の材質に addCaustic で足す。
+// light: 光を出す照明（床で、その色と強さを掛ける）、tint: 光の模様に掛ける色（ガラスを通るうちに付く色）
+function createCaustics(era, light, tint) {
+  const target = new THREE.WebGLRenderTarget(CAUSTIC.size, CAUSTIC.size,
+    { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false });
+  const scene = new THREE.Scene();
+  const mesh = new THREE.Mesh(potGeometry(CAUSTIC.segments), new THREE.ShaderMaterial({
+    uniforms: { lightPos: { value: lightPos }, tint: { value: tint } },
+    vertexShader: CAUSTIC_VERTEX, fragmentShader: CAUSTIC_FRAGMENT,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+  }));
+  mesh.frustumCulled = false;
+  addSpin(era, mesh, scene);
+  era.extraScenes = [scene];
+  era.beforeRender = () => {
+    renderer.setRenderTarget(target);
+    renderer.render(scene, camera);
+  };
+  return { map: target.texture, light };
+}
+
+// 床に集まった光を、照明の直接光として足す（ポットの影の中にも届く）
+function addCaustic(material, caustics) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.causticMap = { value: caustics.map };
+    shader.uniforms.causticLight = { value: caustics.light.color };
+    shader.uniforms.causticIntensity = { value: caustics.light.intensity };
+    shader.vertexShader = 'varying vec2 vCausticUv;\n' + shader.vertexShader.replace('#include <begin_vertex>',
+      `#include <begin_vertex>
+      vCausticUv = vec2((position.x + ${HW.toFixed(3)}) / ${(2 * HW).toFixed(3)}, (position.z - (${BACK.toFixed(3)})) / ${ROOM_DEPTH.toFixed(3)});`);
+    shader.fragmentShader = 'uniform sampler2D causticMap;\nuniform vec3 causticLight;\nuniform float causticIntensity;\nvarying vec2 vCausticUv;\n'
+      + shader.fragmentShader.replace('#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+        reflectedLight.directDiffuse += BRDF_Lambert(material.diffuseColor) * texture2D(causticMap, vCausticUv).rgb * causticLight * causticIntensity;`);
+  };
+  return material;
 }
 
 // ポットのインスタンスを重ねて殻にする（Fur）。インスタンスの番号を殻の番号として使い、位置はシェーダーで決める
@@ -1266,6 +1413,50 @@ const SCENES = [
     },
   },
   {
+    name: 'Photon Mapping (1996)', segments: 24,
+    build(s) {
+      // 色ガラスのポットを通った光が、床に集まって色の付いた模様（コースティクス）を描く。Ray Tracing のガラスでは描けなかった、
+      // ガラスを通った光が床を照らす所を見せる。床はつやを抑え、光の模様が映り込みに紛れないようにする。
+      // 部屋は少し暗くし、影を硬くする（影の中の光の集まりを際立たせる）
+      const dim = (m) => Object.assign(m.clone(), { envMapIntensity: CAUSTIC.room });
+      const floor = Object.assign(dim(PBR_ROOM.floor), { roughness: CAUSTIC.floor });
+      const era = createPbrEra({
+        room: { floor, left: dim(PBR_ROOM.left), right: dim(PBR_ROOM.right), back: dim(PBR_ROOM.back) },
+        light: false, contact: CAUSTIC.contact,
+      });
+      const light = addSpot(era, 2, CAUSTIC.shadow, false);
+      era.scene.add(new THREE.AmbientLight(0xffffff, CAUSTIC.ambient));
+      era.scene.background = linearColor(SKY_COLOR);   // ガラスに映る部屋の上（天井の無い所）を空の色にする（Ray Tracing と同じ）。画面には映らない
+      // ガラスの色は巡回ごとの色。色が付く距離をガラスの厚みと同じにするので、ガラスを通った光（光の模様）の色は巡回ごとの色そのものになる
+      // （three.js の透過は、減衰の色を 厚み / 距離 乗する）
+      const tint = new THREE.Color();
+      addCaustic(floor, createCaustics(era, light, tint));
+      const cube = new THREE.CubeCamera(0.05, 50, new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }));
+      // 影はふつうに落とす（照明の直接の光はポットで遮られ、ガラスを通った光だけが影の中に集まる）
+      const glass = glassMaterial({ envMap: cube.renderTarget.texture, attenuationDistance: GLASS.thickness });
+      const pot = addPot(era, s.segments, glass, { cast: true });
+      era.setVariation = (v) => {
+        glass.attenuationColor.copy(v.potColor);
+        tint.copy(v.potColor);
+      };
+      era.prepare = () => captureCube(era, cube, [pot]);
+      return era;
+    },
+  },
+  {
+    name: 'Cellular Texture (1996)', segments: 24,
+    build(s) {
+      // 床は石畳（石の色を、石の点がある市松のマスの色にする。市松が、石の形に沿ったギザギザの境目で描き直される）
+      const floor = addSolid(Object.assign(PBR_ROOM.floor.clone(), { map: BAKED_PLAIN_FLOOR, roughness: 0.5 }), CELL_FLAGSTONE);
+      const era = createPbrEra({ room: { ...PBR_ROOM, floor } });
+      // ポットは巡回ごとの色の釉薬に、貫入（大小の網目のひび）が入る。柄は物体の座標で決まるので、ポットと一緒に回る
+      const pot = addSolid(new THREE.MeshPhysicalMaterial({ roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.05 }), CELL_CRACKLE);
+      era.potColorMaterials.push(pot);
+      addPot(era, s.segments, pot, { cast: true });
+      return era;
+    },
+  },
+  {
     name: 'Subsurface Scattering (2001)', segments: 24,
     build(s) {
       // 逆光: 照明をポットの奥へ回し、ポットに向ける（薄い所が透けて光り、影は手前に落ちる）
@@ -1320,6 +1511,7 @@ function prepareEra(era) {
 // 時代のシェーダーを裏で作る。巡回ごとに差し替える材質も、選び直したときに引っかからないよう全部作る
 async function warmupEra(era) {
   if (era.environment) era.scene.environment ??= roomEnvironment();
+  for (const scene of era.extraScenes) await renderer.compileAsync(scene, camera);
   if (!era.variants) return renderer.compileAsync(era.scene, camera);
   for (const apply of era.variants) { apply(); await renderer.compileAsync(era.scene, camera); }
   era.setVariation(variation);   // いまの巡回で選んだものに戻す
@@ -1466,6 +1658,7 @@ function renderEra(index, target) {
   const era = eras[index];
   const tilt = TILT_MAX * DEG * Math.sin(tiltPhase);
   for (const o of era.spin) o.rotation.set(tilt, angle, 0);
+  era.beforeRender?.();
   renderer.setRenderTarget(target);
   renderer.render(era.scene, camera);
 }
