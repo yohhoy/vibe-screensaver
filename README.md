@@ -222,6 +222,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [箱庭の街](https://yohhoy.github.io/vibe-screensaver/pixelcity.html)
+
+[<img src="docs/images/pixelcity.jpg" width="480" alt="箱庭の街">](https://yohhoy.github.io/vibe-screensaver/pixelcity.html)
+
+90 年代の 256 色のパソコンゲームのようなドット絵で、クォータービューの箱庭に街が育っていくのを眺めます。何も無い土地に道が引かれて家が建ち、鉄道、自動車の時代を経て、やがてビルの建ち並ぶ街になります。育ちきったら、新しい土地でやり直します。
+
+シーン切替: 新しい土地 / 強度: 成長の速さ
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
