@@ -71,6 +71,20 @@ export async function launchChrome(name) {
   return { chrome, wsUrl, userDataDir };
 }
 
+// Chrome を終わらせ、終わるまで待つ。重い WebGL のページのあとなどで終了の合図（SIGTERM）に応じないことがあり、
+// そのままだと標準エラーの管が開いたままで Node も終われないので、少し待って強制的に終わらせる
+export async function stopChrome(chrome, waitMs = 3000) {
+  chrome.removeAllListeners('exit');
+  if (chrome.exitCode !== null || chrome.signalCode !== null) return;
+  const exited = new Promise((resolve) => chrome.once('exit', resolve));
+  chrome.kill();
+  const timer = new Promise((resolve) => setTimeout(() => resolve('timeout'), waitMs));
+  if (await Promise.race([exited, timer]) === 'timeout') {
+    chrome.kill('SIGKILL');
+    await exited;
+  }
+}
+
 // console の引数を 1 行の文面にする。オブジェクトは中身でなく型の名前（Object など）になるので、中身は JSON.stringify して渡す
 const consoleText = (args) => args.map((a) => a.value ?? a.description ?? '').join(' ');
 

@@ -14,7 +14,7 @@ import { readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { ROOT, SEEDED_RANDOM, checkoutBase, connectCdp, launchChrome } from './common.mjs';
+import { ROOT, SEEDED_RANDOM, checkoutBase, connectCdp, launchChrome, stopChrome } from './common.mjs';
 import { CHOICES, PAGES as PAGE_NAMES, choiceExpressions } from './pages.mjs';
 
 // ---- 設定 ----
@@ -611,8 +611,7 @@ async function main() {
   } finally {
     monitor?.stop();
     browser.ws.close();
-    chrome.removeAllListeners('exit');
-    chrome.kill();
+    await stopChrome(chrome);
     for (const server of servers) server.close();
     await new Promise((r) => setTimeout(r, 500));
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {});

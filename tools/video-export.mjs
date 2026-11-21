@@ -10,7 +10,7 @@ import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { ROOT, SEEDED_RANDOM, connectCdp, launchChrome, run } from './common.mjs';
+import { ROOT, SEEDED_RANDOM, connectCdp, launchChrome, run, stopChrome } from './common.mjs';
 import { CHOICES, HIDDEN, PAGES, choiceExpressions, pagesWith } from './pages.mjs';
 
 // ---- 設定 ----
@@ -436,8 +436,7 @@ async function main() {
   } finally {
     clearInterval(stallTimer);
     cdp?.ws.close();
-    chrome.removeAllListeners('exit');
-    chrome.kill();
+    await stopChrome(chrome);
     server.closeAllConnections();
     server.close();
     await new Promise((r) => setTimeout(r, 500));
