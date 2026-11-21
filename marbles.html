@@ -73,6 +73,24 @@ const BORE_SHADE = [0.3, 0.04];   // 穴・出口の壁の明るさ（縁の下�
 const CARVE_STEP = 0.024;         // 溝・穴を彫る面の格子の間隔
 const MAX_DRAW_DEPTH = 5;         // 柱の上から何個まで立方体を描くか（それより深い所は見えない）
 
+// 橋（一直線につながった直進溝の 2 個を 1×2 の部材にし、見える長い側面の下をアーチ形にくり抜く。橋にできる組はすべて橋にする）
+const ARCH_SIZE = [0.62, 0.64];   // アーチの横の半径（2 個のつなぎ目から）と高さ（立方体の下面から。溝の底より下に収める）
+const ARCH_DEPTH = 0.6;           // アーチを彫る奥行き（奥は暗い蓋で閉じる。斜め上からは奥まで見えない）
+const ARCH_SHADE = [0.42, 0.1];   // アーチの中の明るさ（入口、奥）
+
+// 飾りの木（ろくろで挽いた木のおもちゃ）。経路の無い無地の柱の上に、まれに置く。形は 3 種類で、どれも細い円柱の幹の上に載せる
+const TREE_CHANCE = 0.05;         // 置ける柱のうち、木を置く割合
+const TREE_HEIGHT = 1.5;          // 柱の上面から先端までの高さ
+const TREE_TRUNK_RADIUS = 0.1;
+const TREE_CONES = [              // 円錐の木・段々の木の円錐（[底の高さ, 底の半径, 先端の高さ]）
+  [[0.42, 0.38, TREE_HEIGHT]],
+  [[0.36, 0.4, 0.95], [0.72, 0.32, 1.25], [1.02, 0.24, TREE_HEIGHT]],
+];
+const TREE_BALL = [0.4, 0.58];    // 丸い木の長球（縦に長い回転楕円体）の横と縦の半径（上端が TREE_HEIGHT）
+const TREE_ROUND = 0.03;          // 円錐の底の縁の丸み
+const TREE_AO = [0.6, 0.55];      // 陰の明るさ（幹の根元、葉の下の幹）
+const TREE_TINT = [0.42, 0.3, 0.24];   // 木の色の倍率（線形。積み木より濃い、くるみ材のような色）
+
 // 木（無塗装のブナ材）。木目は 1 つの立方体ぶんの 3 次元テクスチャに描き、立方体ごとに向きとずれを変えて貼る
 const WOOD_RGB = [226, 190, 150]; // 地の色（sRGB）
 const WOOD_RES = { nx: 64, ny: 128, nz: 128 };   // テクスチャの大きさ（x が木の繊維の向き）
@@ -505,16 +523,53 @@ const OPENING_LINES = [...dense(-0.28, 0.28, CARVE_STEP), TUNNEL_RADIUS, -TUNNEL
 
 // 頂点の並び（x, y, z の繰り返し）の 2 点 a・b の距離の 2 乗
 const dist2 = (p, a, b) => (p[3 * a] - p[3 * b]) ** 2 + (p[3 * a + 1] - p[3 * b + 1]) ** 2 + (p[3 * a + 2] - p[3 * b + 2]) ** 2;
-// 立方体の形を作る。key は `${top}:${rot}:${open}`（top は TOPS の名前か plain、open はトンネルの出口の側面のビット 1: +x、2: +z）
+function makeGeometry(positions, normals, colors, indices) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  return geometry;
+}
+// 側面に開ける穴（トンネルの出口・橋のアーチ）。面の上の横・縦 (a, b) が、中心 c・横と縦の半径 R の楕円の内側なら、
+// 縁から奥へ壁を引き込み（深さ bore）、内側を奥の蓋にした点 { pos, normal, shade } を返す。shades は明るさ（縁の下、奥）
+function carveOpening(a, b, face, horizontalU, c, R, bore, shades) {
+  const p = (a - c[0]) / R[0], q = (b - c[1]) / R[1], r = Math.hypot(p, q);
+  if (r >= 1 - 1e-6) return null;
+  const { n, u, v } = face, t = Math.atan2(q, p), cos = Math.cos(t), sin = Math.sin(t);
+  const onFace = (da, db) => (horizontalU ? [da, db] : [db, da]);   // 面の上の横・縦 → u・v
+  let ra, depth, shade, normal = n;
+  if (r >= BORE_WALL) {
+    const k = ((1 - r) / (1 - BORE_WALL)) ** BORE_EASE;
+    ra = 1; depth = k * bore; shade = lerp(...shades, Math.sqrt(k));
+    const [du, dv] = onFace(-cos / R[0], -sin / R[1]), l = Math.hypot(du, dv);   // 楕円の内向きの法線
+    normal = [0, 1, 2].map((m) => (u[m] * du + v[m] * dv) / l);
+  } else {
+    ra = r / BORE_WALL; depth = bore; shade = shades[1];
+  }
+  const [du, dv] = onFace(c[0] + R[0] * ra * cos, c[1] + R[1] * ra * sin);
+  return { pos: [0, 1, 2].map((m) => n[m] * (0.5 - depth) + u[m] * du + v[m] * dv), normal, shade };
+}
+// 立方体の形を作る。key は `${top}:${rot}:${open}:${arch}`（top は TOPS の名前か plain、open はトンネルの出口の側面のビット
+// 1: +x、2: +z、arch は橋のつなぎ目の側面 + 1（橋でなければ 0））
 function buildPiece(key) {
-  const [topName, rotText, openText] = key.split(':');
+  const [topName, rotText, openText, archText] = key.split(':');
   const top = TOPS[topName] ?? null, rot = +rotText, open = +openText;
+  // 橋: archJ はもう 1 個とのつなぎ目の側面（−1 なら橋でない）。つなぎ目の面は作らず、面取りもしない。
+  // アーチは archF の側面に、つなぎ目の下の辺の中点を中心に開ける（ca: その中心の横の位置、sgn: つなぎ目の向き）
+  const archJ = +archText - 1, archF = archJ < 0 ? -1 : archJ % 2 === 0 ? 1 : 0;
+  const sgn = archJ === 0 || archJ === 1 ? 1 : -1, ca = sgn * 0.5, [AX, AY] = ARCH_SIZE;
+  // アーチの面の格子は、縁の外にも少し足す（縁の外で楕円の輪へ寄せる範囲 3 輪ぶん ≈ 0.07 を覆う幅）
+  const archPad = 0.08;
+  const archLines = [dense(0, AX + archPad, CARVE_STEP).map((t) => ca - sgn * t), dense(-0.5, -0.5 + AY + archPad, CARVE_STEP)];
+  const bevelTo = (side) => (side === archJ ? 0.5 : 0.5 - BEVEL);   // 面取りを始める位置（側面 side の向きへ）
   const notchSides = new Set((top?.sides ?? []).map((s) => (s + rot) % 4));
   const positions = [], normals = [], colors = [], indices = [];
   const depthAt = (x, z) => { const [cx, cz] = unrotate(x, z, rot); return top.depth(cx, cz); };
 
   for (const face of FACES) {
-    const isTop = face.side < 0;
+    if (archJ >= 0 && face.side === archJ) continue;
+    const isTop = face.side < 0, isArch = archF >= 0 && face.side === archF;
     const opening = !isTop && (face.side === 0 ? open & 1 : face.side === 1 ? open & 2 : 0);
     const notch = !isTop && notchSides.has(face.side);
     const horizontalU = face.u[1] === 0;
@@ -523,6 +578,7 @@ function buildPiece(key) {
     else {
       if (notch) { hz = hz.concat(CARVE_LINES); vt = vt.concat(NOTCH_Y_LINES); }
       if (opening) { hz = hz.concat(OPENING_LINES); vt = vt.concat(OPENING_LINES); }
+      if (isArch) { hz = hz.concat(archLines[0]); vt = vt.concat(archLines[1]); }
     }
     const us = gridLines(isTop || horizontalU ? hz : vt), vs = gridLines(isTop || horizontalU ? vt : hz);
     const start = positions.length / 3;
@@ -537,10 +593,21 @@ function buildPiece(key) {
           [v, u] = rotate(cx, cz, rot);
         } else if (!onEdge && opening) {
           [u, v] = snapToRings(u, v, OPENING_RINGS);
+        } else if (isArch) {
+          // アーチの縁のまわりの点を、楕円の同心の輪の上へ寄せる。角度は 0（下の辺）と 90°（つなぎ目の辺）を含めて等分するので、
+          // 辺の上の点は辺から外れない
+          const a = horizontalU ? u : v, b = horizontalU ? v : u;
+          const p = sgn * (ca - a) / AX, q = (b + 0.5) / AY, r = Math.hypot(p, q), step = 2 * CARVE_STEP / (AX + AY);
+          if (r > 1e-9 && r < 1 + 3 * step) {
+            const r2 = Math.max(0, 1 + Math.round((r - 1) / step) * step), n = Math.max(4, Math.round(Math.PI / 2 * r2 / step));
+            const t = Math.round(Math.atan2(q, p) / (Math.PI / 2) * n) * (Math.PI / 2) / n;
+            const a2 = ca - sgn * AX * r2 * Math.cos(t), b2 = -0.5 + AY * r2 * Math.sin(t);
+            [u, v] = horizontalU ? [a2, b2] : [b2, a2];
+          }
         }
         // 面の上の点を、角の丸い立方体へ寄せる
         let x = nx * 0.5 + ux * u + vx * v, y = ny * 0.5 + uy * u + vy * v, z = nz * 0.5 + uz * u + vz * v;
-        const ix = clamp(x, -0.5 + BEVEL, 0.5 - BEVEL), iy = clamp(y, -0.5 + BEVEL, 0.5 - BEVEL), iz = clamp(z, -0.5 + BEVEL, 0.5 - BEVEL);
+        const ix = clamp(x, -bevelTo(2), bevelTo(0)), iy = clamp(y, -0.5 + BEVEL, 0.5 - BEVEL), iz = clamp(z, -bevelTo(3), bevelTo(1));
         let dx = x - ix, dy = y - iy, dz = z - iz;
         const len = Math.hypot(dx, dy, dz) || 1;
         dx /= len; dy /= len; dz /= len;
@@ -577,27 +644,11 @@ function buildPiece(key) {
             normal = [0, 1, 0];
           }
         }
-        // トンネルの出口: 面から奥へ壁を引き込み、奥を暗い蓋で閉じる
-        if (opening) {
-          const a = horizontalU ? u : v, b = horizontalU ? v : u;   // 面の上の横・縦
-          const r = Math.hypot(a, b);
-          if (r < TUNNEL_RADIUS - 1e-6) {
-            const oa = r > 1e-6 ? a / r : 1, ob = r > 1e-6 ? b / r : 0;
-            let ra, depth;
-            const du = horizontalU ? oa : ob, dv = horizontalU ? ob : oa;
-            if (r >= BORE_WALL * TUNNEL_RADIUS) {
-              const k = ((TUNNEL_RADIUS - r) / (TUNNEL_RADIUS * (1 - BORE_WALL))) ** BORE_EASE;
-              ra = TUNNEL_RADIUS; depth = k * TUNNEL_BORE; shade = lerp(...BORE_SHADE, Math.sqrt(k));
-              normal = [-(ux * du + vx * dv), -(uy * du + vy * dv), -(uz * du + vz * dv)];
-            } else {
-              ra = TUNNEL_RADIUS * r / (BORE_WALL * TUNNEL_RADIUS); depth = TUNNEL_BORE; shade = BORE_SHADE[1];
-              normal = [nx, ny, nz];
-            }
-            x = nx * (0.5 - depth) + (ux * du + vx * dv) * ra;
-            y = ny * (0.5 - depth) + (uy * du + vy * dv) * ra;
-            z = nz * (0.5 - depth) + (uz * du + vz * dv) * ra;
-          }
-        }
+        // トンネルの出口・橋のアーチ: 縁から奥へ壁を引き込み、奥を暗い蓋で閉じる
+        const a = horizontalU ? u : v, b = horizontalU ? v : u;   // 面の上の横・縦
+        const bore = opening ? carveOpening(a, b, face, horizontalU, [0, 0], [TUNNEL_RADIUS, TUNNEL_RADIUS], TUNNEL_BORE, BORE_SHADE)
+          : isArch ? carveOpening(a, b, face, horizontalU, [ca, -0.5], ARCH_SIZE, ARCH_DEPTH, ARCH_SHADE) : null;
+        if (bore) { [x, y, z] = bore.pos; ({ normal, shade } = bore); }
         positions.push(x, y, z);
         normals.push(...normal);
         colors.push(shade, shade, shade);
@@ -614,12 +665,68 @@ function buildPiece(key) {
       }
     }
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setIndex(indices);
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  return geometry;
+  // 橋のアーチの床（下の立方体の上面は描かないことがあるので、ここで塞ぐ。下の立方体の上面とちらつかないよう、わずかに浮かす）
+  if (archF >= 0) {
+    const n = FACES.find((f) => f.side === archF).n, h = archF === 1 ? [1, 0, 0] : [0, 0, 1], start = positions.length / 3;
+    for (const [a, d] of [[ca, 0], [ca - sgn * AX, 0], [ca, ARCH_DEPTH], [ca - sgn * AX, ARCH_DEPTH]]) {
+      positions.push(n[0] * (0.5 - d) + h[0] * a, -0.5 + 0.002, n[2] * (0.5 - d) + h[2] * a);
+      normals.push(0, 1, 0);
+      const shade = lerp(...ARCH_SHADE, d / ARCH_DEPTH);
+      colors.push(shade, shade, shade);
+    }
+    // 上から見て反時計回りにする（点の並びの回る向きは、アーチの面とつなぎ目の向きで決まる）
+    indices.push(...((archF === 0) === (sgn > 0) ? [0, 1, 2, 1, 3, 2] : [0, 2, 1, 1, 2, 3]).map((k) => start + k));
+  }
+  return makeGeometry(positions, normals, colors, indices);
+}
+
+// 飾りの木（type: 0 円錐、1 段々、2 長球）。局所座標は柱の上面の中心が原点で、y が上。幹と葉の断面の輪郭を y 軸のまわりに回す。
+// 角では点を 2 つにして法線を分け、輪郭の点ごとの明るさで陰を焼き込む
+function buildTree(type) {
+  const rt = TREE_TRUNK_RADIUS, f = TREE_ROUND, [R, Ry] = TREE_BALL;
+  const profiles = [];   // 輪郭の点 [r, y, 法線の r, 法線の y, 明るさ]
+  // 幹の上端（葉の中に隠れる高さ）
+  const top = type === 2 ? TREE_HEIGHT - Ry - Ry * Math.sqrt(1 - (rt / R) ** 2) : TREE_CONES[type][0][0];
+  profiles.push([[rt, -0.05, 1, 0, TREE_AO[0]], [rt, top, 1, 0, TREE_AO[1]]]);
+  if (type === 2) {
+    const cy = TREE_HEIGHT - Ry, a0 = -Math.acos(rt / R), arc = [];
+    for (let k = 0; k <= 16; k++) {
+      const a = lerp(a0, Math.PI / 2, k / 16), nr = Math.cos(a) / R, ny = Math.sin(a) / Ry, l = Math.hypot(nr, ny);
+      arc.push([R * Math.cos(a), cy + Ry * Math.sin(a), nr / l, ny / l, lerp(TREE_AO[1], 1, smooth(a0, 0, a))]);
+    }
+    profiles.push(arc);
+  } else {
+    // 円錐: 平らな底 → 丸めた縁 → 先端
+    for (const [y, rc, apex] of TREE_CONES[type]) {
+      const slope = Math.atan2(rc - f, apex - y - f);   // 円錐の面の法線の、水平からの角度
+      const cone = [[0, y, 0, -1, TREE_AO[1]], [rc - f, y, 0, -1, 1]];
+      for (let k = 0; k <= 6; k++) {
+        const a = lerp(-Math.PI / 2, slope, k / 6);
+        cone.push([rc - f + f * Math.cos(a), y + f + f * Math.sin(a), Math.cos(a), Math.sin(a), 1]);
+      }
+      cone.push([0, apex, Math.cos(slope), Math.sin(slope), 1]);
+      profiles.push(cone);
+    }
+  }
+  const N = 48, positions = [], normals = [], colors = [], indices = [];
+  for (const profile of profiles) {
+    const start = positions.length / 3, P = profile.length;
+    for (let m = 0; m <= N; m++) {
+      const phi = m / N * Math.PI * 2, c = Math.cos(phi), sn = Math.sin(phi);
+      for (const [r, y, nr, ny, shade] of profile) {
+        positions.push(r * c, y, r * sn);
+        normals.push(nr * c, ny, nr * sn);
+        colors.push(shade, shade, shade);
+      }
+    }
+    for (let m = 0; m < N; m++) {
+      for (let k = 0; k < P - 1; k++) {
+        const a = start + m * P + k, b = a + P;
+        indices.push(a, a + 1, b + 1, a, b + 1, b);
+      }
+    }
+  }
+  return makeGeometry(positions, normals, colors, indices);
 }
 
 // ---- 積み木と経路の生成 ----
@@ -1027,8 +1134,8 @@ function finalizeRow(r) {
 }
 
 // ---- 積み木の描画 ----
-// 立方体は、上面の模様・向き・出口ごとに 1 つの InstancedMesh にまとめる。行のまとまり（チャンク）を作ったり捨てたりしたら、
-// 全部の InstancedMesh を詰め直す
+// 立方体は上面の模様・向き・出口・橋ごとに、飾りの木は形ごとに、1 つの InstancedMesh にまとめる。
+// 行のまとまり（チャンク）を作ったり捨てたりしたら、全部の InstancedMesh を詰め直す
 const pieces = new Map();    // key → { mesh, cap, base }
 const chunks = new Map();    // チャンクの番号 → { cubes, decals }
 let instancesDirty = false;
@@ -1037,7 +1144,7 @@ function pieceMesh(key, need) {
   const p = pieces.get(key);
   if (p && p.cap >= need) return p.mesh;
   const cap = Math.max(need, (p?.cap ?? 32) * 2);
-  const base = p?.base ?? buildPiece(key);
+  const base = p?.base ?? (key.startsWith('tree') ? buildTree(+key.slice(5)) : buildPiece(key));
   if (p) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.dispose(); }
   const g = new THREE.BufferGeometry();
   g.setIndex(base.index);
@@ -1087,7 +1194,15 @@ function buildChunk(index) {
         let open = 0;
         for (const o of c.open) if (o.level === k) open |= o.side === 0 ? 1 : 2;
         const top = k === H - 1 && c.piece ? c.piece : null;
-        cubes.push({ key: `${top ? top.top : 'plain'}:${top ? top.rot : 0}:${open}`, i, k, j, ...woodParams(i, k, j) });
+        const bridge = k === H - 1 ? bridgeAt(c) : null;
+        cubes.push({ key: `${top ? top.top : 'plain'}:${top ? top.rot : 0}:${open}:${bridge ? bridge.junction + 1 : 0}`, i, k, j,
+          ...woodParams(i, k, j), ...bridge?.wood });
+      }
+      if (treeAt(c)) {
+        // 繊維を縦にして、縦に長い木でもテクスチャの繰り返す向き（繊維の向き）で引く
+        const w = woodParams(i, H, j), type = Math.floor(hash3(i * 5, H, j + 7) * 3);
+        cubes.push({ key: `tree:${type}`, i, k: H - 0.5, j, ...w, quat: woodQuats[8 + Math.floor(hash3(i, H, j * 3 + 1) * 4)],
+          tint: w.tint.map((v, n) => v * TREE_TINT[n]) });
       }
       // 柱が接する所の陰: 隣の柱が高ければ、この柱の上面の縁と、隣の柱の見える側面の付け根
       for (let s = 0; s < 4; s++) {
@@ -1103,6 +1218,52 @@ function buildChunk(index) {
   chunks.set(index, { cubes, decals });
   instancesDirty = true;
 }
+
+// 橋にする組の、奥の 1 個か（s: もう 1 個のある向き。0: +x、1: +z）。一直線につながった直進溝の 2 個で、高さが同じで、
+// 見える長い側面（s が +x なら +z の側面）の手前の柱が 2 個とも 1 段以上低いもの。3 個以上続くときに組が重ならないよう、
+// 1 つ奥の 1 個が組の始まりなら、始めない
+function bridgeStart(c, s) {
+  const [dx, dz] = DIRS[s], n = cells.get(cellKey(c.i + dx, c.j + dz));
+  if (!bridgePair(c, n, s)) return false;
+  const b = cells.get(cellKey(c.i - dx, c.j - dz));
+  return !(b && bridgeStart(b, s));
+}
+function bridgePair(c, n, s) {
+  if (!n || n.h !== c.h) return false;
+  const [fx, fz] = DIRS[1 - s];
+  for (const m of [c, n]) {
+    if (m.piece?.top !== 'straight' || m.piece.rot % 2 !== s || m.open.some((o) => o.level === c.h - 1)) return false;
+    if (heightAt(m.i + fx, m.j + fz) > c.h - 1) return false;
+  }
+  return true;
+}
+// 柱のいちばん上の立方体が橋の片方なら、つなぎ目の側面と、2 個で揃える木目（繊維を橋の向きにして、つなぎ目で続ける）
+function bridgeAt(c) {
+  for (const s of [0, 1]) {
+    const [dx, dz] = DIRS[s], b = cells.get(cellKey(c.i - dx, c.j - dz));
+    const a = bridgeStart(c, s) ? c : b && bridgeStart(b, s) ? b : null;
+    if (!a) continue;
+    const w = woodParams(a.i, a.h, a.j);
+    return { junction: a === c ? s : opposite(s), wood: { ...w, quat: woodQuats[s * 4 + Math.floor(hash3(a.i, a.h, a.j) * 4)] } };
+  }
+  return null;
+}
+
+// 柱の上に飾りの木を置くか（Math.random を使わず、座標から決める）。置ける柱のうち、8 近傍に置ける柱があれば、
+// treeRank の小さい方だけに置く（木を隣り合わせない）
+const treeRank = (c) => hash3(c.i * 3 + 11, c.h * 7, c.j * 5 - 3);
+function treeAt(c) {
+  if (!treeAllowed(c)) return false;
+  for (let di = -1; di <= 1; di++) {
+    for (let dj = -1; dj <= 1; dj++) {
+      const n = (di || dj) && cells.get(cellKey(c.i + di, c.j + dj));
+      if (n?.h != null && treeRank(n) < treeRank(c) && treeAllowed(n)) return false;
+    }
+  }
+  return true;
+}
+// 木を置ける柱か。経路も通路も無い無地の柱にだけ、まれに置く（奥の経路を隠してもよい）
+const treeAllowed = (c) => !c.node && !c.piece && !c.open.length && !c.tun.length && treeRank(c) < TREE_CHANCE;
 
 // 陰の板（縁で濃く、内へ薄れる）。色を掛け合わせる: 画面の色 × (1 − α + α·色)
 function gradientTexture(size, alphaAt) {
