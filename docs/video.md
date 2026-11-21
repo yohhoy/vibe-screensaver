@@ -19,6 +19,7 @@ node tools/video-export.mjs sandpicture --presets 0 --hidden off --warmup 190 --
 - `--warmup` が準備の長さ（絵を進める秒数）で、そのあとに `--seconds`（既定 0）だけ進めた最後のコマを撮る。砂が積もりきるまで待つ作品などは、`--warmup` を長くする。
 - `--size 幅x高さ` で大きさを決める（既定 1280x720）。動画は 1280x720 に固定で、`--size` は使えない。
 - `--shots 0,1.5,3` で、場面ごとに複数の時刻（収録を始めてからの秒）のコマを撮る。`--seconds` の代わりに使い、Chrome の起動は 1 回で済む。時刻ごとに撮り直さない。
+- `--seed 1,2,3` のように種を複数並べると、種ごとにページを開き直して、同じ場面・時刻を撮る（静止画だけ）。乱数で絵が変わる作品の「何パターンか見せて」は、種ごとにシェルでループを回さずにこれで撮る。番号は種・場面・時刻の順に付き、名前に `seed 2` のように種が付く。`--at` は種ごとに同じ時刻に実行する。
 - 2 枚以上なら、`desert-1.png`・`desert-2.png` のように場面ごと・時刻の順に番号を付け、縮小して並べた確認用の画像 `desert.sheet.jpg` も作る（時刻が複数なら 1 行に 1 場面の各時刻、そうでなければ 1 行に 4 枚）。
 - 標準出力に、1 枚ごとの明るさ（輝度の平均と最大。0〜255）が出る。明るさの調整は、画像を開かずにこの数値で判断する。ffmpeg で数値を取り直さない。
 - `--fade` は使わない。`--scenes`・`--presets`・`--hidden`・`--at`・`--seed` は動画と同じに使える。
@@ -27,7 +28,7 @@ node tools/video-export.mjs sandpicture --presets 0 --hidden off --warmup 190 --
 
 ## 場面の指定
 
-シーンの定義（`SCENES`）がある drone・ripple・waterfall・penguins・teapot・bubbles・orrery は `--scenes` にシーンの番号を、配色の定義（`COLOR_PRESETS`）がある tube・aurora・lavalamp・sandpicture・teapot・pixelcity は `--presets` に配色の番号を並べる。番号ごとに 1 場面ずつ撮る。シーンと配色は別々に選べ、両方を持つ teapot は同時に指定できる。そのときはシーン × 配色の組み合わせごとに 1 場面撮る（`--scenes 3,13 --presets 1,2` なら、シーン 3 の配色 1・2、シーン 13 の配色 1・2 の 4 場面）。範囲外の番号を渡すと、エラーに名前の一覧が出る（名前の無い tube・lavalamp の配色は `#0` のような番号）。省くと、作品が起動時に選んだシーン・配色のまま 1 場面だけを撮る（どれになるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
+シーンの定義（`SCENES`）がある作品は `--scenes` にシーンの番号を、配色の定義（`COLOR_PRESETS`）がある作品は `--presets` に配色の番号を並べる（どの作品で使えるかは `tools/pages.mjs` の `CHOICES` にあり、引数なしで実行したときの使い方にも出る）。番号ごとに 1 場面ずつ撮る。シーンと配色は別々に選べ、両方を持つ作品では同時に指定できる。そのときはシーン × 配色の組み合わせごとに 1 場面撮る（`--scenes 3,13 --presets 1,2` なら、シーン 3 の配色 1・2、シーン 13 の配色 1・2 の 4 場面）。範囲外の番号を渡すと、エラーに名前の一覧が出る（名前の無い配色は `#0` のような番号）。省くと、作品が起動時に選んだシーン・配色のまま 1 場面だけを撮る（どれになるかは `--seed` で変わる）。ほかの作品は場面を選べないので、1 場面だけを撮る。
 
 `--presets` で選ぶとき、tube・aurora・lavalamp は配色だけを替える（コース・幕・小物などは起動時のまま）。sandpicture は配色を替えて、新しい絵から撮る。pixelcity は季節を替えて、新しい土地から撮る。teapot はポットの色だけを替える。シーンを選んでから配色を当てるので、シーンを替えても指定した色のまま撮れる（Wireframe に戻ると、作品が色を選び直す）。
 
@@ -43,9 +44,15 @@ node tools/video-export.mjs aurora --seconds 15 --warmup 0 --at "1:startSanta()"
 
 時刻は動画の中の秒で数える。`--warmup` の時間は含まない。
 
+式の中の `console.log` は、頭に `ページ: ` を付けて標準出力に出る。数値で確かめたいことは、画像を開かずにこれで出す。オブジェクトは型の名前しか出ないので、`JSON.stringify` してから渡す。
+
+```sh
+node tools/video-export.mjs pixelcity --seed 1,2,3 --at '0:fastForward(240); console.log(era, JSON.stringify(town))' --out x.png
+```
+
 ## 隠し要素
 
-隠し要素（tube・aurora・ripple・penguins・diamond・sandpicture・campfire・waterfall・infcastle・bubbles・orrery）の出し方は `--hidden` で決める。
+隠し要素を持つ作品（`tools/pages.mjs` の `HIDDEN`）では、隠し要素の出し方を `--hidden` で決める。
 
 - `auto`（既定）: 作品に任せる。待ち時間が切れたときに出る。
 - `off`: 出さない。サムネイルや、隠し要素を写したくない動画に使う。

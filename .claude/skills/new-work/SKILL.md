@@ -35,7 +35,7 @@ argument-hint: [テーマや作品名] [案のみ]
 
 - DEVELOPMENT.md の「方針」と「ファイルの構成」節を読み、`.claude/rules/works.md` の要点に沿う。
 - 土台にする作品を 1 つ選ぶ（シーンがある作品なら bubbles.html か orrery.html）。`<head>`・`#hud`・節の順番（`grep -n '^// ----'`）を揃える。
-- `tools/pages.mjs` の `PAGES` に作品名を足す。シーン・配色があれば `CHOICES` にも足し、docs/video.md の「場面の指定」節の作品の列挙にも足す。
+- `tools/pages.mjs` の `PAGES` に作品名を足す。シーン・配色があれば `CHOICES` にも足す。
 - 最初の確認として、全シーンを横長と縦長で撮り、1 枚に並べる。
 
   ```sh

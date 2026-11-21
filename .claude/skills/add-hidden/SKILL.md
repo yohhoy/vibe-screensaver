@@ -53,7 +53,7 @@ DEVELOPMENT.md の「作品を追加・変更したとき」節の隠し要素�
 - 隠し要素の乱数は `Math.random` と別にする（orrery.html の `cometRandom`・bubbles.html の `heartRandom` と同じ mulberry32）。`○○Wait` の初期値も、この乱数で決める。
   - three.js も物を作るときに `Math.random` を引くので、隠し要素の物（メッシュ・材質など）は、最初に現れたときに作る。
   - `Math.random` を引く回数や順番が変わると、ふだんの絵が変わり、video-compare で比べられなくなる。
-- `tools/pages.mjs` の `HIDDEN` に `<作品名>: 'start○○'` を足す。docs/video.md の「隠し要素」節の作品の列挙にも足す。
+- `tools/pages.mjs` の `HIDDEN` に `<作品名>: 'start○○'` を足す。
 
 ## 4. 確かめる
 

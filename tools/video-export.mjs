@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 作品を 1 コマずつ描き出して、投稿用の動画（H.264）か静止画（PNG）を作る。使い方と例は docs/video.md。
 //
-//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--shots 0,1.5,3] [--out 出力先.mp4|出力先.png]
+//   node tools/video-export.mjs <作品名> [--scenes 0,1,2] [--presets 0,1,2] [--seconds 5] [--warmup 3] [--fade 0.5] [--seed 1,2,3] [--hidden off|auto|秒,秒] [--at "秒:式"]... [--size 1920x1080] [--shots 0,1.5,3] [--out 出力先.mp4|出力先.png]
 //
 // 作品の HTML は変更しない。手元の HTTP サーバーで配信するときに、収録用の処理を差し込む。
 // 依存は Node.js（22 以降。標準の WebSocket を使う）、Google Chrome、ffmpeg（ffprobe を含む）。
@@ -37,10 +37,11 @@ const USAGE = `使い方: node tools/video-export.mjs <作品名> [オプショ�
   --seconds S     1 場面の長さ（秒。既定 5。静止画では収録を始めてから撮るまでの秒数で、既定 0）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --fade S        各場面の最初と最後のフェード（秒。既定 0.5。0 で無し。静止画では使わない）
-  --seed N        乱数の種（既定 1）
+  --seed 1,2,3    乱数の種（既定 1）。静止画（.png）なら複数並べられ、種ごとにページを開き直して同じ場面・時刻を撮る
   --hidden H      隠し要素（${Object.keys(HIDDEN).join('・')} のみ）。auto は作品に任せる（既定）、off は出さない、
                   秒の並び（例 2,8.5）は自然には出さず、動画のその時刻に呼び出す
-  --at "秒:式"    動画の時刻に式を実行する。作品のスクリプトの変数を使える。複数指定できる
+  --at "秒:式"    動画の時刻に式を実行する。作品のスクリプトの変数を使える。複数指定できる。
+                  式の中の console.log は「ページ: 」を付けて標準出力に出る（数値を確かめるのに使う）
   --size WxH      静止画の大きさ（既定 1280x720。.png のときだけ）
   --shots 0,1.5   静止画を撮る時刻（収録を始めてからの秒）。場面ごとに各時刻のコマを撮る（.png のときだけ。--seconds の代わり）
   --out PATH      出力先（既定 <作品名>.mp4）。.png なら、各場面の最後のコマを PNG にする（2 枚以上なら <名前>-1.png のように番号を付け、
@@ -214,10 +215,12 @@ function errorSummary(text) {
   return [first, ...rest.filter((l) => l.includes('ERROR:')).slice(0, 3)].join('\n');
 }
 
-// ページのタブにつなぐ。ページのエラーが起きたら onError に渡す
+// ページのタブにつなぐ。ページのエラーが起きたら onError に渡す。console.log は標準出力に出す
 async function connectPage(wsUrl, onError) {
   const list = await (await fetch(`http://${new URL(wsUrl).host}/json/list`)).json();
-  return connectCdp(list.find((t) => t.type === 'page').webSocketDebuggerUrl, (text) => onError(new Error(`ページのエラー: ${errorSummary(text)}`)));
+  return connectCdp(list.find((t) => t.type === 'page').webSocketDebuggerUrl,
+    (text) => onError(new Error(`ページのエラー: ${errorSummary(text)}`)),
+    (text) => console.log(`ページ: ${text}`));
 }
 
 // ---- 収録 ----
@@ -260,6 +263,8 @@ function parseOptions() {
   const warmup = Number(values.warmup);
   if (!(seconds >= 0) || (!still && !(seconds > 0)) || !(warmup >= 0) || !(fade >= 0)) throw new Error(USAGE);
   if (fade * 2 > seconds) throw new Error('--fade は --seconds の半分以下にする');
+  const seeds = values.seed.split(',');
+  if (seeds.length > 1 && !still) throw new Error('--seed に複数の種を並べられるのは静止画（.png）だけ');
 
   // 場面ごとのシーンと配色の番号。null は選ばず、起動時のまま撮る
   const numbers = (kind) => values[kind]?.split(',').map((v) => {
@@ -285,7 +290,7 @@ function parseOptions() {
   return {
     page,
     hidden: { mode: values.hidden === 'auto' ? 'auto' : 'off' },
-    seed: values.seed,
+    seeds,
     out,
     plan: {
       width: size ? Number(size[1]) : WIDTH, height: size ? Number(size[2]) : HEIGHT, fps: FPS, jpegQuality: JPEG_QUALITY,
@@ -302,16 +307,20 @@ function parseOptions() {
 }
 
 async function main() {
-  const { page, hidden, seed, out, plan, totalFrames } = parseOptions();
+  const { page, hidden, seeds, out, plan, totalFrames } = parseOptions();
   const partial = `${out}.part`;
   const thumbs = `${out.replace(/\.mp4$/, '')}.thumbs.jpg`;
   // 静止画は ffmpeg を使わず、ページが送ってきた PNG をそのまま書く
   const { encoder, finished } = plan.still ? { encoder: null, finished: Promise.resolve() } : startEncoder(partial);
-  const stills = new Map();   // 場面の番号 → PNG
+  const stills = new Map();   // 静止画の番号（種・場面・時刻の順）→ PNG
+  let stillOffset = 0;        // いま撮っている種の、最初の静止画の番号
 
-  let settle;
-  const done = new Promise((resolve, reject) => { settle = { resolve, reject }; });
-  finished.catch(settle.reject);
+  // 収録の終わりは種ごとに待つ。失敗は覚えておき、あとの種を待つときにも返す
+  let settle = null;
+  let failure = null;
+  const fail = (e) => { failure ??= e; settle?.reject(e); };
+  const recorded = () => new Promise((resolve, reject) => { settle = { resolve, reject }; if (failure) reject(failure); });
+  finished.catch(fail);
   let received = 0;
   let lastFrameAt = Date.now();
   let lastTenth = 0;
@@ -336,7 +345,7 @@ async function main() {
       }
       if (name === '__still') {
         lastFrameAt = Date.now();
-        stills.set(Number(url.searchParams.get('n')), body);
+        stills.set(stillOffset + Number(url.searchParams.get('n')), body);
         return reply(200);
       }
       // 送り直されたコマは書かない。ffmpeg が受け取ってから返すと、ページが先走らずメモリも溜まらない
@@ -357,29 +366,35 @@ async function main() {
       const type = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }[path.extname(name)];
       reply(200, type ?? 'application/octet-stream', body);
     } catch (e) {
-      settle.reject(e);
+      fail(e);
       reply(404);
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
   const { chrome, wsUrl, userDataDir } = await launchChrome('video-export');
-  chrome.on('exit', (code) => settle.reject(new Error(`Chrome が終了した (${code})`)));
+  chrome.on('exit', (code) => fail(new Error(`Chrome が終了した (${code})`)));
   const stallTimer = setInterval(() => {
-    if (Date.now() - lastFrameAt > STALL_MS) settle.reject(new Error(`${STALL_MS / 1000} 秒間コマが届かない（${received}/${totalFrames} コマで停止）`));
+    if (Date.now() - lastFrameAt > STALL_MS) fail(new Error(`${STALL_MS / 1000} 秒間コマが届かない（${received}/${totalFrames} コマで停止）`));
   }, 1000);
 
   let cdp;
   try {
-    cdp = await connectPage(wsUrl, settle.reject);
+    cdp = await connectPage(wsUrl, fail);
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');
     await cdp.send('Page.enable');
     // --window-size は当てにならず、高さが奇数になると H.264 で失敗する。大きさはここで固定する
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: plan.width, height: plan.height, deviceScaleFactor: 1, mobile: false });
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${page}.html?seed=${encodeURIComponent(seed)}` });
-
-    const results = await done;
+    // 種ごとにページを開き直す（乱数はページを開いたときに種から決まる）。種が複数なら場面の名前に種を付ける
+    const results = [];
+    for (const [k, seed] of seeds.entries()) {
+      stillOffset = k * plan.scenes.length * plan.shotFrames.length;
+      const done = recorded();
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${page}.html?seed=${encodeURIComponent(seed)}` });
+      const label = seeds.length > 1 ? `seed ${seed}` : null;
+      for (const r of await done) results.push({ ...r, name: [label, r.name].filter(Boolean).join(' / ') || null });
+    }
     // リポジトリの中なら短く出す
     const shown = (file) => { const r = path.relative(process.cwd(), file); return r.startsWith('..') ? file : r; };
     const names = results.map((r) => r.name).filter(Boolean).join(' / ');

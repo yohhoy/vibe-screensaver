@@ -71,8 +71,12 @@ export async function launchChrome(name) {
   return { chrome, wsUrl, userDataDir };
 }
 
-// Chrome DevTools Protocol でつなぐ。ページのエラー（例外・エラーのログ・console.error）は errors に溜め、onError があれば渡す
-export async function connectCdp(url, onError = null) {
+// console の引数を 1 行の文面にする。オブジェクトは中身でなく型の名前（Object など）になるので、中身は JSON.stringify して渡す
+const consoleText = (args) => args.map((a) => a.value ?? a.description ?? '').join(' ');
+
+// Chrome DevTools Protocol でつなぐ。ページのエラー（例外・エラーのログ・console.error）は errors に溜め、onError があれば渡す。
+// onLog があれば、ページの console.log の文面を渡す
+export async function connectCdp(url, onError = null, onLog = null) {
   const ws = new WebSocket(url);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, { once: true });
@@ -96,7 +100,9 @@ export async function connectCdp(url, onError = null) {
       pageError(m.params.entry.text);
     } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       // three.js はシェーダーのコンパイルの失敗を例外にせず console.error で出すので、これも拾う
-      pageError(m.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
+      pageError(consoleText(m.params.args));
+    } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'log') {
+      onLog?.(consoleText(m.params.args));
     }
   });
   return {
