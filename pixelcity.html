@@ -78,6 +78,11 @@ const BUSY_SWING = [0.55, 0.3];   // 建設の始まる間隔のむら。2 つ�
 const BUSY_WAVES = [[2, 4], [5, 9]];   // 時代の中の、それぞれの波の数の範囲
 const FRAME_TIME = 0.3;        // 建設のコマ送りの 1 コマ（秒）
 const SCAFFOLD_STEP = 6;       // 足場が 1 コマで伸びる高さ（ドット。1 階ぶん）
+const CRANE_TYPES = ['office3', 'tower3'];   // 足場ではなく、タワークレーンで数階ずつ積み上げて建てる都市の時代のビル
+const CRANE_STEP = 3;          // クレーンで建てるビルが、1 度に積み上がる階数
+const CRANE_HOLD = 5;          // クレーンで建てるビルが、1 度積み上がってから次に積み上がるまでのコマ数
+const CRANE_HEIGHT = 12;       // タワークレーンのジブ（腕）の、積み上がったてっぺんからの高さ（ドット）
+const CRANE_JIB = 1.0;         // タワークレーンのジブの、マストから先の長さ（タイル）
 const ROAD_LEVEL = 4;          // 舗装した道路の色の段（asphalt の 0..7）。中央線はこれより 1 段だけ明るくし、目立たせない
 const HOLD_TIME = 30;          // 育ちきってから暗転するまで（秒）
 const MERGE_SHARE = [0, 0, 0.25, 0.4];   // 時代ごとに、街の中の道（大通り以外）の区間を取り除いて街区をまとめる割合
@@ -148,6 +153,8 @@ const RAMP_COLORS = {
   slate: ['#141c24', '#4c5c6c', '#b4c4d4'],
   teal: ['#04201c', '#1c7470', '#9ce8dc'],
   bronze: ['#201408', '#6c5434', '#dcc49c'],
+  // 開拓・鉄道の家の赤瓦（鮮やかにしない）
+  akagawara: ['#2c1410', '#844438', '#d0a090'],
 };
 // 水面の模様（16×8 ドットの周期。o は少し明るい波頭）。目立たないよう、波頭はまばらにし、明るさも 1 段だけ上げる。タイルの幅 32・高さ 16 ドットを割り切る周期なので、
 // 隣のタイルとも模様がつながる。コマごとに右へ WATER_SHIFT ドットずつずらして、波を流す
@@ -421,8 +428,11 @@ function fillPoly(s, pts, c) {
 }
 
 // 箱の面。f は色の番号か、(a, z) → 色の番号（a: 面の左端からのドット、z: 面の下端からのドット）
-// 左の面（v = v1）は光が当たり、右の面（u = u1）は陰になる
+// 左の面（v = v1）は光が当たり、右の面（u = u1）は陰になる。zClip より上は描かない（建設中のビルの外壁を下から仕上げるとき）
+let zClip = Infinity;
 function faceL(s, u0, u1, v, z0, z1, f) {
+  z1 = Math.min(z1, zClip);
+  if (z1 <= z0) return;
   const [xl, yl] = s.px(u0, v, 0);
   fillPoly(s, [s.px(u0, v, z0), s.px(u1, v, z0), s.px(u1, v, z1), s.px(u0, v, z1)],
     typeof f !== 'function' ? f : (x, y) => {
@@ -431,6 +441,8 @@ function faceL(s, u0, u1, v, z0, z1, f) {
     });
 }
 function faceR(s, v0, v1, u, z0, z1, f) {
+  z1 = Math.min(z1, zClip);
+  if (z1 <= z0) return;
   const [xl, yl] = s.px(u, v1, 0);
   fillPoly(s, [s.px(u, v1, z0), s.px(u, v0, z0), s.px(u, v0, z1), s.px(u, v1, z1)],
     typeof f !== 'function' ? f : (x, y) => {
@@ -439,6 +451,7 @@ function faceR(s, v0, v1, u, z0, z1, f) {
     });
 }
 function faceT(s, u0, v0, u1, v1, z, f) {
+  if (z > zClip) return;
   fillPoly(s, [s.px(u0, v0, z), s.px(u1, v0, z), s.px(u1, v1, z), s.px(u0, v1, z)], f);
 }
 function box(s, u0, v0, u1, v1, z0, z1, top, left, right) {
@@ -465,7 +478,7 @@ function gable(s, u0, v0, u1, v1, z, rh, alongU, ramp, wallL, wallR) {
 
 // 地面に落ちる影（右下の u の向きへ、高さに応じた長さ）
 function shadow(s, u0, v0, u1, v1, h) {
-  const len = Math.min(0.45, h * 0.014);
+  const len = Math.min(0.45, Math.min(h, zClip) * 0.014);
   fillPoly(s, [s.px(u1, v0, 0), s.px(u1 + len, v0, 0), s.px(u1 + len, v1, 0), s.px(u1, v1, 0)], SHADOW);
 }
 
@@ -479,6 +492,7 @@ function walls(fw, fd, [u0, v0, u1, v1], h, extra, shadowH, wall) {
   const s = buildingSprite(fw, fd, h + extra);
   shadow(s, u0, v0, u1, v1, shadowH);
   box(s, u0, v0, u1, v1, 0, h, 0, wall(5), wall(3));
+  s.tiers = [[u0, v0, u1, v1, 0, h]];   // 壁の箱 [u0, v0, u1, v1, 下の高さ, 上の高さ]（クレーンで積み上げて建てるときに使う）
   return s;
 }
 // 切妻屋根の建物。軒は eave だけ出し、妻の壁は ends（左・右の色の番号）
@@ -508,16 +522,16 @@ const BUILDINGS = {
   // 開拓: 木造の家
   house0(r) {
     const m = 0.2 + r(1) * 0.08;
-    const wall = (lvl) => (a, z) => (z >= 2 && z < 4 && ((a - 2) % 5 + 5) % 5 < 2 ? col('cream', lvl + 1) : col('wood', lvl));
-    return gableBuilding(1, 1, [m, m, 1 - m, 1 - m * 1.2], 6, 5, wall, 'kawara', r(3) < 0.5, [col('wood', 5), col('wood', 3)]);
+    const wall = (lvl) => (a, z) => (z >= 2 && z < 4 && ((a - 2) % 5 + 5) % 5 < 2 ? col('cream', lvl + 1) : col('wood', lvl + 1));
+    return gableBuilding(1, 1, [m, m, 1 - m, 1 - m * 1.2], 6, 5, wall, oldRoof(r), r(3) < 0.5, [col('wood', 6), col('wood', 4)]);
   },
   // 鉄道: 2 階建ての木造
   house1(r) {
     const plaster = r(4) < 0.5;
     const wall = (lvl) => (a, z) => (z === 6 ? col('wood', lvl - 2)
       : (floorBand(z, 2, 4) && a % 5 >= 1 && a % 5 < 4) ? col('glass', lvl - 1)
-      : plaster && z > 6 ? col('plaster', lvl + 1) : col('wood', lvl));
-    return gableBuilding(1, 1, inset(0.16 + r(1) * 0.06), 12, 5, wall, 'kawara', r(3) < 0.5, [col('wood', 5), col('wood', 3)]);
+      : plaster && z > 6 ? col('plaster', lvl + 1) : col('wood', lvl + 1));
+    return gableBuilding(1, 1, inset(0.16 + r(1) * 0.06), 12, 5, wall, oldRoof(r), r(3) < 0.5, [col('wood', 6), col('wood', 4)]);
   },
   // 鉄道: 駅前の商店（1 階は店先とひさし）
   shop1(r) {
@@ -561,6 +575,7 @@ const BUILDINGS = {
       fillPoly(s, [s.px(ua, v1, h), s.px(ub, v1, h), s.px(ub, v1, h + 5)], col(mat, 5));
     }
     s.chimney = { u: 0.17, v: 0.17, z: ch };   // 煙を出す所（タイルの中の位置と高さ）
+    s.scaffoldTop = h + 5;   // 足場の高さ（煙突を含めず、のこぎり屋根まで）
     return s;
   },
   // 都市: 高いビル（5〜14 階）。壁とガラスの色を数色から選び、3 割ほどは上の階を細くする（段々のビル）
@@ -577,6 +592,7 @@ const BUILDINGS = {
       const [u0, v0, u1, v1] = inset(0.22);
       const upper = (lvl) => (a, z) => wall(lvl)(a, z + hl);   // 面の z は面の下端から数えるので、階の窓の位置を下の階と揃える
       box(s, u0, v0, u1, v1, hl, h, col('concrete', 4), upper(5), upper(3));
+      s.tiers.push([u0, v0, u1, v1, hl, h]);
       faceT(s, u0 + 0.04, v0 + 0.04, u1 - 0.04, v1 - 0.04, h, col('concrete', 5));
     }
     box(s, 0.3, 0.3, 0.6, 0.55, h, h + 5, col('steel', 6), col('steel', 5), col('steel', 3));
@@ -613,6 +629,9 @@ function apartment(r, floors, mat, long, short, sidePeriod) {
   return flatBuilding(1, 1, slab(along, long, short), h, 4, (lvl) => ((lvl === 5) === along ? balcony(lvl) : side(lvl)));
 }
 const pick2 = (arr, r) => arr[Math.floor(r * arr.length) % arr.length];
+// 開拓・鉄道の家の屋根: 瓦と赤瓦から、壁の色とは別に等しい割合で選ぶ
+const OLD_ROOFS = ['kawara', 'akagawara'];
+const oldRoof = (r) => pick2(OLD_ROOFS, r(6));
 
 const spriteCache = new Map();
 function cached(key, make) {
@@ -620,8 +639,9 @@ function cached(key, make) {
   if (!s) spriteCache.set(key, s = make());
   return s;
 }
+const makeBuilding = (type, vr, fw, fd) => BUILDINGS[type]((k) => hash(vr, k, type.length * 31 + type.charCodeAt(0)), fw, fd);
 function buildingImage(type, vr, fw, fd) {
-  return cached(`b:${type}:${vr}:${fw}:${fd}`, () => BUILDINGS[type]((k) => hash(vr, k, type.length * 31 + type.charCodeAt(0)), fw, fd));
+  return cached(`b:${type}:${vr}:${fw}:${fd}`, () => makeBuilding(type, vr, fw, fd));
 }
 // 建設中のコマ: 基礎・足場・がれき
 function foundationImage(fw, fd) {
@@ -639,6 +659,46 @@ function scaffoldImage(fw, fd, h) {
     faceL(s, m, fw - m, m, 0, h, mesh(3));
     faceR(s, m, fd - m, m, 0, h, mesh(3));
     box(s, m, m, fw - m, fd - m, 0, h, 0, mesh(5), mesh(3));
+    return s;
+  });
+}
+// クレーンで建てるビルの、建設中のコマ。外壁は高さ c まで積み上がり、その上にタワークレーンが載る。
+// crane は 0: 無し、1: マストだけ、2: ジブ（腕）も。alongU ならジブが u の向きに伸びる
+const CRANE_PAD = 28;          // ジブがはみ出す分、画像の左右に足す幅（ドット）
+function craneSiteImage(type, vr, fw, fd, c, crane, alongU) {
+  return cached(`k:${type}:${vr}:${fw}:${fd}:${c}:${crane}:${alongU}`, () => {
+    const full = buildingImage(type, vr, fw, fd), maxZ = full.oy - 4 + CRANE_HEIGHT + 8;
+    const s = new Sprite((fw + fd) * 16 + 20 + CRANE_PAD * 2, (fw + fd) * 8 + maxZ + 14, fd * 16 + CRANE_PAD, maxZ + 4);
+    // 積み上がった外壁（高さ c で切り、切り口に床を張る）
+    zClip = c;
+    const facade = makeBuilding(type, vr, fw, fd);
+    zClip = Infinity;
+    for (let y = 0; y < facade.h; y++) for (let x = 0; x < facade.w; x++) {
+      const v = facade.data[y * facade.w + x];
+      if (v) s.set(x + s.ox - facade.ox, y + s.oy - facade.oy, v);
+    }
+    for (const [u0, v0, u1, v1, z0, z1] of full.tiers) if (c > z0 && c < z1) faceT(s, u0, v0, u1, v1, c, col('concrete', 4));
+    if (!crane) return s;
+    // タワークレーン（赤と白の縞）: 積み上がったてっぺんの段の上面の中央にマストを立て、上にジブを載せる（ワイヤーや吊り荷は描かない）
+    const top = full.tiers.find((t) => c >= t[4] && c < t[5]) ?? full.tiers[full.tiers.length - 1];
+    const m = 0.08, mu = (top[0] + top[2] - m) / 2, mv = (top[1] + top[3] - m) / 2, zj = c + CRANE_HEIGHT;
+    const stripe = (lvl) => (a, z) => (Math.floor(z / 3) % 2 ? col('red', lvl - 1) : col('plaster', lvl + 1));
+    // マストの根元の土台（ジブの向きに長い、低い箱）
+    const bu = alongU ? 0.2 : 0.13, bv = alongU ? 0.13 : 0.2, cu = mu + m / 2, cv = mv + m / 2;
+    box(s, cu - bu, cv - bv, cu + bu, cv + bv, c, c + 2, col('steel', 4), col('steel', 3), col('steel', 1));
+    box(s, mu, mv, mu + m, mv + m, c + 2, zj, col('plaster', 6), stripe(5), stripe(3));
+    if (crane < 2) return s;
+    const truss = (lvl) => (a, z) => (z === 0 || z === 3 || a % 3 === 0 ? (Math.floor(a / 6) % 2 ? col('red', lvl - 1) : col('plaster', lvl + 1)) : 0);
+    const w = mu + m / 2, vw = mv + m / 2;   // マストの中心
+    const weight = [col('concrete', 5), col('concrete', 4), col('concrete', 2)];
+    if (alongU) {
+      faceL(s, w - 0.3, w + CRANE_JIB, vw, zj - 3, zj + 1, truss(5));
+      box(s, w - 0.3, vw - 0.05, w - 0.18, vw + 0.05, zj - 5, zj, ...weight);   // おもり
+    } else {
+      faceR(s, vw - 0.3, vw + CRANE_JIB, w, zj - 3, zj + 1, truss(4));
+      box(s, w - 0.05, vw - 0.3, w + 0.05, vw - 0.18, zj - 5, zj, ...weight);
+    }
+    box(s, mu, mv, mu + m, mv + m, zj + 1, zj + 6, col('red', 5), col('red', 4), col('red', 2));   // 運転室と頂部
     return s;
   });
 }
@@ -1838,16 +1898,29 @@ function clearObject(x0, y0, fw, fd) {
 }
 
 // 建物を建てるコマの並び（取り壊して整地 → 基礎 → 足場が 1 階ずつ伸びる → 足場を上から外す → 完成）
-function buildFrames(x0, y0, fw, fd, type, eraOf, ground) {
-  const vr = randInt(BUILDING_VARIANTS), img = buildingImage(type, vr, fw, fd);
+function buildFrames(x0, y0, fw, fd, type, eraOf, ground, vr = randInt(BUILDING_VARIANTS)) {
+  const img = buildingImage(type, vr, fw, fd);
   const frames = [];
   const tiles = [];
   for (let y = y0; y < y0 + fd; y++) for (let x = x0; x < x0 + fw; x++) tiles.push(at(x, y));
   frames.push(() => { clearObject(x0, y0, fw, fd); for (const i of tiles) setGround(i, G_DIRT); });
   frames.push(() => placeObject(x0, y0, fw, fd, { kind: 'site', img: foundationImage(fw, fd) }));
+  if (CRANE_TYPES.includes(type)) {
+    // 都市のビル: 外壁が CRANE_STEP 階ずつ、CRANE_HOLD コマおきに積み上がる。てっぺんにはタワークレーンが載って一緒に上がる。
+    // てっぺんまで積み上がったら、ジブ・マストの順にクレーンを外す
+    const top = Math.max(...img.tiers.map((t) => t[5])), alongU = hash(vr, 91) < 0.5;
+    const site = (c, crane) => frames.push(() => placeObject(x0, y0, fw, fd, { kind: 'site', img: craneSiteImage(type, vr, fw, fd, c, crane, alongU) }));
+    for (let c = 0; c < top; c = Math.min(c + CRANE_STEP * 6, top)) {
+      for (let k = 0; k < CRANE_HOLD; k++) site(c, 2);
+    }
+    site(top, 2);
+    site(top, 1);
+    frames.push(() => { for (const i of tiles) setGround(i, ground); placeObject(x0, y0, fw, fd, { kind: 'bld', type, era: eraOf, img }); });
+    return frames;
+  }
   // 足場は 1 コマに 1 階ずつ伸ばし（高い建物ほど建つのに時間がかかる）、建物の高さまで届いたら、
   // 上から 1 階ずつ外して、できあがった建物を上から見せていく
-  const top = Math.max(6, buildingHeight(img) - 2), heights = [];
+  const top = img.scaffoldTop ?? Math.max(6, buildingHeight(img) - 2), heights = [];
   for (let h = Math.min(6, top); h < top; h += SCAFFOLD_STEP) heights.push(h);
   heights.push(top);
   for (const h of heights) frames.push(() => placeObject(x0, y0, fw, fd, { kind: 'site', img: scaffoldImage(fw, fd, h) }));
@@ -2264,7 +2337,7 @@ function setSpeed(v) {
 // ---- メインループ ----
 function step(dt) {
   time += dt;
-  updateGrowth(dt);
+  if (!growthStopped) updateGrowth(dt);
   updateSites(dt);
   updateTrains(dt);
   updateFactorySmoke(dt);
@@ -2276,6 +2349,36 @@ function step(dt) {
 // 成長を早送りする（確認用。--at で呼ぶ）
 function fastForward(seconds) {
   for (let t = 0; t < seconds; t += 0.1) step(0.1);
+}
+
+// 建物を 1 棟だけ、まわりに何も無い平地に建てる（確認用。--at で呼ぶ）。街の成長は止め、カメラはその建物に置いたままにする。
+// 土地の物・木・道・線路をすべて片付け、陸は草地にする。vr は見た目の番号（0..BUILDING_VARIANTS-1）
+let growthStopped = false;
+function showcase(type = 'tower3', vr = 0) {
+  growthStopped = true;
+  sites.length = 0;
+  trains = []; cars = []; puffs = [];
+  obj.fill(null); cover.fill(-1); trees.fill(null); road.fill(0); railState.fill(0); platform.fill(0);
+  for (let i = 0; i < N * N; i++) if (!terr[i] && gtype[i] !== G_SAND) gtype[i] = G_GRASS;
+  groundSprite.fill(null); groundCache.clear(); layerStale = true;
+  // 街の中心にいちばん近い、まわり 3 タイルまで平らな陸の所
+  const [fw, fd] = { block2: [2, 2], tower3: [2, 2], station1: [3, 1] }[type] ?? [1, 1];
+  const flat = (x, y) => { for (let dy = -3; dy < fd + 3; dy++) for (let dx = -3; dx < fw + 3; dx++) {
+    if (!inMap(x + dx, y + dy)) return false;
+    const i = at(x + dx, y + dy);
+    if (terr[i] || tmin[i] !== tmax[i] || tmin[i] !== tmin[at(x, y)]) return false;
+  } return true; };
+  let best = null, bd = Infinity;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const d = Math.hypot(x - town.x, y - town.y);
+    if (d < bd && flat(x, y)) { best = [x, y]; bd = d; }
+  }
+  const [x0, y0] = best;
+  startSite(x0, y0, buildFrames(x0, y0, fw, fd, type, 3, G_LOT, vr));
+  cam.x = cam.tx = Math.round(worldX(x0 + fw / 2, y0 + fd / 2));
+  cam.y = cam.ty = Math.round(worldY(x0 + fw / 2, y0 + fd / 2, tmin[at(x0, y0)] * STEP_H) - 70);
+  cam.retarget = Infinity;
+  return sites[0].frames.length;
 }
 
 function draw() {
