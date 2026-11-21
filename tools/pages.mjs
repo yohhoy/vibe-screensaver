@@ -23,6 +23,7 @@ export const CHOICES = {
   aurora: { presets: PRESETS },
   lavalamp: { presets: PRESETS },
   sandpicture: { presets: { ...PRESETS, select: 'startPicture(i)' } },   // 配色を替えて、新しい絵から始める
+  pixelcity: { presets: { ...PRESETS, select: 'newLand(i)' } },   // 季節を替えて、新しい土地から始める
 };
 
 // 隠し要素を持つ作品の、呼び出す関数名。作品のトップレベルの function で、隠しキー（C）と、待ち時間が切れたときの自然な出現の

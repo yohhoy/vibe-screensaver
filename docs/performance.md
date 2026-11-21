@@ -46,7 +46,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 作品ごとの測り方:
 
 - `SCENES` がある drone・ripple・waterfall・penguins・teapot はシーン別に測る。ほかの作品は固定の乱数で 1 行だけ測る。
-- tube・aurora・lavalamp・sandpicture の `COLOR_PRESETS` は配色の定義なので、シーンとして分けない。
+- tube・aurora・lavalamp・sandpicture・pixelcity の `COLOR_PRESETS` は配色の定義なので、シーンとして分けない。
 - teapot は 1 シーンずつ `--scene` と `--cool 50` で測る（18 シーンを続けて測ると、後のシーンほどクロックが下がって重く出る）。
 - sandpicture の砂が積もったあとの重さは `--warmup` で測る。基準値は `--warmup` なしで測る。
 - penguins・sandpicture は同じ場面でも FHD と Retina で描画命令や三角形の数が違うことがあるので、その行は FHD / Retina の順に両方を書く。

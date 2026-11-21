@@ -156,6 +156,43 @@ const RAMP_COLORS = {
   // 開拓・鉄道の家の赤瓦（鮮やかにしない）
   akagawara: ['#2c1410', '#844438', '#d0a090'],
 };
+// 季節の配色。土地ごとに 1 つを選び、ramps の素材の 3 色を RAMP_COLORS から差し替える（建物・乗り物の色は変えない）。
+// trees は木だけの色（TREE_COLORS）。省いたものは、元の素材の同じ段と同じ色にする
+// - leaf2: 広葉樹の半分に使う 2 つめの葉の色（明・中・暗の面の 3 色。元は leaf）
+// - conifer: 針葉樹の色（明・暗の面の 2 色。元は林の地面と同じ forest）
+const COLOR_PRESETS = [
+  { name: 'Summer', ramps: {}, trees: {} },
+  {
+    name: 'Autumn',
+    ramps: {
+      grass: ['#382a10', '#9c8a3c', '#e4d490'],    // 枯れはじめた草
+      forest: ['#2c2210', '#7a6830', '#c8b474'],   // 林の地面は落ち葉の色。草に近づけて、林だけが浮かないようにする
+      leaf: ['#300c08', '#b03418', '#f8a068'],     // もみじ
+      rice: ['#4a3408', '#c89a2c', '#f8e088'],     // 実った稲
+      wheat: ['#4c3c20', '#b4945c', '#ecd8a8'],    // 刈り取ったあとの麦畑
+    },
+    trees: {
+      leaf2: ['#f0cc50', '#d4a420', '#b48410'],    // いちょう
+      conifer: ['#5c7438', '#34481c'],             // 針葉樹は緑のまま、少しくすませる
+    },
+  },
+  {
+    name: 'Winter',
+    ramps: {
+      grass: ['#283450', '#c4d0e4', '#ffffff'],    // 雪。影は青く
+      forest: ['#283450', '#a4b2c8', '#eef2fa'],   // 林の地面も雪。草地の雪より少し暗くして、林の広がりを見せる
+      leaf: ['#20181c', '#6a5a5c', '#aa9c98'],     // 葉の落ちた木
+      rice: ['#30384c', '#b4bccc', '#f0f4fc'],     // 雪をかぶった田（草の雪より少し暗くして、区画を見せる）
+      wheat: ['#3c3c48', '#a8acb8', '#e8ecf4'],
+      dirt: ['#2c2420', '#6c5c50', '#b4a490'],
+      sand: ['#504c48', '#b0aaa0', '#ece8e0'],
+      water: ['#081830', '#1c3c6c', '#7c9cc8'],
+    },
+    trees: {
+      conifer: ['#c4d4dc', '#34504c'],             // 雪をかぶった針葉樹。明るい面は雪、暗い面は暗い緑
+    },
+  },
+];
 // 水面の模様（16×8 ドットの周期。o は少し明るい波頭）。目立たないよう、波頭はまばらにし、明るさも 1 段だけ上げる。タイルの幅 32・高さ 16 ドットを割り切る周期なので、
 // 隣のタイルとも模様がつながる。コマごとに右へ WATER_SHIFT ドットずつずらして、波を流す
 const WATER_PATTERN = [
@@ -225,8 +262,9 @@ function fbm(octaves) {
 }
 
 // ---- パレット ----
-// 色の番号: 0 は透明（画像の中だけ）、1 は黒、3 は影（画像の中だけ。下の色を暗くする）、8 からが素材ごとの 8 段
-const BLACK = 1, SHADOW = 3;
+// 色の番号: 0 は透明（画像の中だけ）、1 は黒、2 は影（画像の中だけ。下の色を暗くする）、3〜7 は木だけの色（TREE_COLORS）、
+// 8 からが素材ごとの 8 段
+const BLACK = 1, SHADOW = 2;
 const PAL = new Uint8Array(256 * 3);   // 元の色（sRGB）
 const RAMP = {};                       // 素材の名前 → 先頭の番号
 const RAMP_NAMES = Object.keys(RAMP_COLORS);
@@ -236,26 +274,56 @@ const parseHex = (c) => [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
 const vga = (v) => Math.round(clamp(v, 0, 255) / 255 * 63) * 255 / 63;
 {
   for (let i = 0; i < 256; i++) SHADE[i] = i;
-  PAL.set([255, 255, 255], 2 * 3);
   let next = 8;
   for (const name of RAMP_NAMES) {
-    const [d, m, l] = RAMP_COLORS[name].map(parseHex);
     RAMP[name] = next;
-    for (let k = 0; k < 8; k++) {
-      const t = k / 7, [a, b, s] = t < 0.5 ? [d, m, t / 0.5] : [m, l, (t - 0.5) / 0.5];
-      for (let c = 0; c < 3; c++) PAL[(next + k) * 3 + c] = vga(lerp(a[c], b[c], s));
-      SHADE[next + k] = next + Math.max(0, k - 2);
-    }
+    for (let k = 0; k < 8; k++) SHADE[next + k] = next + Math.max(0, k - 2);
     next += 8;
   }
 }
 const RAMP_ID = Object.fromEntries(RAMP_NAMES.map((n, i) => [n, i]));
 // 素材の段の色の番号（段は 0..7 に収める）
 const col = (ramp, level) => RAMP[ramp] + clamp(Math.round(level), 0, 7);
+// 木だけの色。季節で、木の色を地面などの素材と別に変えるためのもの。index から levels の数だけ番号を使い、それぞれ
+// 元の素材（ramp）の levels の段に当たる（季節が色を決めなければ、その段と同じ色。影はその 2 段下の色）
+const TREE_COLORS = {
+  leaf2: { index: 3, ramp: 'leaf', levels: [5, 4, 3] },   // 2 つめの葉の色（明・中・暗）
+  conifer: { index: 6, ramp: 'forest', levels: [5, 3] }, // 針葉樹（明・暗）
+};
+for (const { index, ramp, levels } of Object.values(TREE_COLORS)) levels.forEach((lv, k) => { SHADE[index + k] = col(ramp, lv - 2); });
+const treeColor = (name, k) => TREE_COLORS[name].index + k;
 
 // 表示するパレット（RGBA）
 const shownPalette = new Uint8Array(256 * 4);
-for (let i = 0; i < 256; i++) shownPalette.set([PAL[i * 3], PAL[i * 3 + 1], PAL[i * 3 + 2], 255], i * 4);
+let colorPresetIndex = -1;   // いまの季節（COLOR_PRESETS の番号。起動前は -1）
+
+// 季節を COLOR_PRESETS の index 番に替え、パレットを作り直す。絵はパレット番号で持っているので、描き直さずに色だけ替わる
+function setColorPreset(index) {
+  colorPresetIndex = index;
+  const { ramps, trees } = COLOR_PRESETS[index];
+  for (const name of RAMP_NAMES) {
+    const [d, m, l] = (ramps[name] ?? RAMP_COLORS[name]).map(parseHex);
+    for (let k = 0; k < 8; k++) {
+      const t = k / 7, [a, b, s] = t < 0.5 ? [d, m, t / 0.5] : [m, l, (t - 0.5) / 0.5];
+      for (let c = 0; c < 3; c++) PAL[(RAMP[name] + k) * 3 + c] = vga(lerp(a[c], b[c], s));
+    }
+  }
+  for (const [name, { index: i0, ramp, levels }] of Object.entries(TREE_COLORS)) {
+    levels.forEach((lv, k) => {
+      const i = i0 + k, src = col(ramp, lv);
+      if (trees[name]) PAL.set(parseHex(trees[name][k]).map(vga), i * 3);
+      else PAL.copyWithin(i * 3, src * 3, src * 3 + 3);
+    });
+  }
+  for (let i = 0; i < 256; i++) shownPalette.set([PAL[i * 3], PAL[i * 3 + 1], PAL[i * 3 + 2], 255], i * 4);
+  paletteTex.needsUpdate = true;
+}
+
+// 前と違う季節の番号を選ぶ。Math.random を引くと、そのあとの街の育ち方がすべて変わるので、土地の位置から決まる乱数で選ぶ
+function pickColorPreset(seed) {
+  if (colorPresetIndex < 0) return Math.floor(hash(seed, 1, 7) * COLOR_PRESETS.length);
+  return (colorPresetIndex + 1 + Math.floor(hash(seed, 2, 7) * (COLOR_PRESETS.length - 1))) % COLOR_PRESETS.length;
+}
 
 // ---- シェーダー ----
 // パレット番号の画面を、拡大して色に変える。1 ドットは画面の scale 画素四方
@@ -706,11 +774,11 @@ function craneSiteImage(type, vr, fw, fd, c, crane, alongU) {
 const buildingHeight = (s) => s.oy;
 
 // ---- 木 ----
-// 形は 2 種類、色は 3 段だけの簡単な木（明るい・中・暗い面）。vr は大きさの違い（0..7）
+// 形は 2 種類、色は 3 段だけの簡単な木（明るい・中・暗い面）。vr は大きさと葉の色の違い（0..7）
 function treeImage(kind, vr) {
   return cached(`t:${kind}:${vr}`, () => {
     const s = new Sprite(14, 24, 7, 21);
-    const big = vr % 2;
+    const big = vr % 2, leaf2 = (vr >> 1) % 2;   // 広葉樹の半分は、2 つめの葉の色（秋のいちょうなど）
     // 影と幹
     for (let x = 1; x < 5; x++) s.set(7 + x, 20, SHADOW);
     s.set(7, 20, col('wood', 2));
@@ -719,7 +787,7 @@ function treeImage(kind, vr) {
       const hgt = 10 + big * 2;
       for (let k = 0; k < hgt; k++) {
         const y = 20 - hgt + k, w = Math.floor((k + 1) * 0.3);
-        for (let dx = -w; dx <= w; dx++) s.set(7 + dx, y, col('forest', dx < 0 ? 5 : 3));
+        for (let dx = -w; dx <= w; dx++) s.set(7 + dx, y, treeColor('conifer', dx < 0 ? 0 : 1));
       }
     } else {
       // 広葉樹: 丸。左上を明るく、右下を暗く
@@ -729,7 +797,8 @@ function treeImage(kind, vr) {
           const dx = x + 0.5 - 7.5, dy = y + 0.5 - cy;
           if (dx * dx + dy * dy > r * r) continue;
           const t = (dx + dy) / r;
-          s.set(x, y, col('leaf', t < -0.6 ? 5 : t > 0.5 ? 3 : 4));
+          const face = t < -0.6 ? 0 : t > 0.5 ? 2 : 1;
+          s.set(x, y, leaf2 ? treeColor('leaf2', face) : col('leaf', TREE_COLORS.leaf2.levels[face]));
         }
       }
     }
@@ -2305,7 +2374,8 @@ function render() {
   for (const b of buckets) b.length = 0;
 }
 // ---- 新しい土地 ----
-function newLand() {
+// preset は季節（COLOR_PRESETS の番号）。省くと前と違う季節を、土地の形から決まる乱数で選ぶ
+function newLand(preset) {
   generateLand();
   road.fill(0);
   railState.fill(0);
@@ -2326,6 +2396,7 @@ function newLand() {
   cam.y = cam.ty = worldY(town.x + 0.5, town.y + 0.5, 0);
   [cam.x, cam.y] = clampView(cam.x, cam.y);
   cam.retarget = CAM_RETARGET;
+  setColorPreset(preset ?? pickColorPreset(at(town.x, town.y)));
 }
 
 
