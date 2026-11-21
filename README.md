@@ -230,6 +230,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 新しい土地 / 強度: 成長の速さ
 
+## [ビー玉の積み木](https://yohhoy.github.io/vibe-screensaver/marbles.html)
+
+[<img src="docs/images/marbles.jpg" width="480" alt="ビー玉の積み木">](https://yohhoy.github.io/vibe-screensaver/marbles.html)
+
+溝と穴を彫った木の積み木を、斜め上から眺めます。積み木は手前へ段々に下がりながら果てしなく続き、ガラスのビー玉が溝を転がり、段を飛び降り、穴をくぐって 1 段ずつ下っていきます。ところどころに、アーチの橋や木のおもちゃの木が並びます。
+
+シーン切替: リセット / 強度: ビー玉の数
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
