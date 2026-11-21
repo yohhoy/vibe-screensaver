@@ -404,6 +404,7 @@ const tmin = new Uint8Array(N * N), tmax = new Uint8Array(N * N);   // タイル
 const terr = new Uint8Array(N * N);   // 0: 陸、1: 川、2: 海
 const gtype = new Uint8Array(N * N);  // 地面の種類（G_*）
 const road = new Uint8Array(N * N);   // 0: 無し、1: 土の道、2: 舗装した道路
+const roadBegun = new Uint8Array(N * N);   // 道の工事を始めたタイル（開通前も含む。隣の道の工事を始めてよいかに使う）
 const planRoad = new Uint8Array(N * N);   // 道を通す予定のタイル
 const roadDist = new Int16Array(N * N);   // 街の中心から道をたどった距離
 const railMask = new Uint8Array(N * N);   // 線路の予定（つながる向きのビット）
@@ -2018,8 +2019,9 @@ function runTask(t) {
   const i = t.i, x = i % N, y = (i / N) | 0;
   switch (t.kind) {
     case 'road': {
-      if (road[i]) return true;
-      if (i !== at(town.x, town.y) && !roadMask(x, y)) return false;
+      if (road[i] || roadBegun[i]) return true;
+      // 隣の道の工事が始まっていれば始める（開通を待つと、強度が高いときに後へ回す回数が尽き、その先の道がまとめて取りやめになる）
+      if (i !== at(town.x, town.y) && !neighbors(i).some((j) => roadBegun[j])) return false;
       const kind = era >= 2 ? 2 : 1, frames = [];
       if (terr[i]) {
         // 橋は途中で止めない: 続く川の上のタイルと、向こう岸の 1 タイルまで一度に架ける
@@ -2027,9 +2029,11 @@ function runTask(t) {
         for (let q = 0; q < span.length; q++) {
           if (terr[span[q]]) for (const k of neighbors(span[q])) if (planRoad[k] && !road[k] && !span.includes(k)) span.push(k);
         }
+        for (const j of span) roadBegun[j] = 1;
         startSite(x, y, [() => {}, () => { for (const j of span) { road[j] = kind; setGround(j, terr[j] ? gtype[j] : G_GRASS); } }]);
         return true;
       }
+      roadBegun[i] = 1;
       frames.push(() => { clearObject(x, y, 1, 1); setGround(i, G_DIRT); },
         () => { road[i] = kind; setGround(i, G_GRASS); });
       startSite(x, y, frames);
@@ -2037,6 +2041,7 @@ function runTask(t) {
     }
     case 'unroad':
       if (!road[i]) return true;
+      roadBegun[i] = 0;
       startSite(x, y, [() => { road[i] = 0; setGround(i, G_DIRT); }, () => setGround(i, G_GRASS)]);
       return true;
     case 'pave':
@@ -2378,6 +2383,7 @@ function render() {
 function newLand(preset) {
   generateLand();
   road.fill(0);
+  roadBegun.fill(0);
   railState.fill(0);
   obj.fill(null);
   cover.fill(-1);
@@ -2429,7 +2435,7 @@ function showcase(type = 'tower3', vr = 0) {
   growthStopped = true;
   sites.length = 0;
   trains = []; cars = []; puffs = [];
-  obj.fill(null); cover.fill(-1); trees.fill(null); road.fill(0); railState.fill(0); platform.fill(0);
+  obj.fill(null); cover.fill(-1); trees.fill(null); road.fill(0); roadBegun.fill(0); railState.fill(0); platform.fill(0);
   for (let i = 0; i < N * N; i++) if (!terr[i] && gtype[i] !== G_SAND) gtype[i] = G_GRASS;
   groundSprite.fill(null); groundCache.clear(); layerStale = true;
   // 街の中心にいちばん近い、まわり 3 タイルまで平らな陸の所
