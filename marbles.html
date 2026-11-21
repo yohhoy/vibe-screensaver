@@ -1,0 +1,1634 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marble Run</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: リセット / F・ダブルクリック: 全画面 / ↑↓: ビー玉の数</span>
+  <span class="touch-only">左右スワイプ: リセット / 上下スワイプ: ビー玉の数</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
+
+// ---- 設定 ----
+// 長さの単位は立方体の一辺（実物の 5cm ほどの見立て）。y が上。格子のマス (i, j) は x = i〜i+1、z = j〜j+1 を占める。
+// 柱の高さ h は、柱のいちばん上の面の高さ（y = h）。カメラは +x・+z の側から見下ろし、画面の右は +x・−z、画面の下（手前）は +x・+z。
+// マスの行は r = i + j（画面の下ほど大きい）、行の中の位置は q = i − j（画面の右ほど大きい。横の位置は q/√2）
+
+// カメラ（正射影で、斜め上から見下ろしたまま、画面の下へ進むだけ）
+const CAM_ELEVATION = 49;         // 見下ろす角度（度）。上面の菱形は、縦の対角線が横の sin(49°) ≈ 0.75 倍になる
+const VIEW_SHORT = 10;            // 画面の短い辺に写る長さ（立方体の上面の横の対角線 √2 が 7 個ぶんほど）
+const SCROLL_PERIOD = 40;         // 画面の短い辺の長さぶん流れる秒数
+const CAM_DIST = 60;              // 見る点からカメラまでの距離（正射影なので、写り方には効かない）
+
+// 地形（柱の高さ）。基準の高さは −⌊(i + j)/2⌋（行 2 本ぶんの幅の、横に長い台地が、手前へ 1 段ずつ下がる段々）
+const TERRAIN_NOISE = 0.6;        // 基準の高さからのゆらぎ（段）。ノイズは −1〜1 で高さは四捨五入するので、0.5 以下では効かない
+const TERRAIN_NOISE_SCALE = 0.35; // ゆらぎの細かさ（1 マスあたり）
+const MAX_STEP = 2;               // 隣り合う柱の高さの差の上限（それより高い崖を作らない）
+
+// 経路
+const PATH_SPACING = 6;           // 経路の横の間隔の目安（q で数える。横の長さでは 6/√2 ≈ 4.2）
+const RUN_LENGTH = [3, 6];        // 受けのあとに続ける平らな溝のマス数（受けを入れて 4〜7 マス）
+const PLATEAU_RUN = 8;            // 同じ高さの台地が続くときは、下らずにこのマス数まで平らに進む
+const LEG_LENGTH = [1, 3];        // 平らな溝で、曲がらずにまっすぐ進むマス数（曲がるまでの 1 区切り）
+const LEG_STRAIGHT = [20, 0.4];   // まっすぐ進む向きの重みの倍率（区切りの途中、区切りの後）
+const PLATEAU_SCAN = 12;          // 下りる向きを選ぶとき、下りた先の台地の広さを数える上限（マス）
+const TUNNEL_CHANCE = 0.25;       // 下るときに、穴を選ぶ割合（残りは飛び降り）
+const BACKTRACK = 2;              // 経路が奥へ戻ってよい行数
+const BAND_MARGIN = 2.5;          // 積み木を作る範囲の、画面の左右の外の余白
+const ROW_MARGIN_TOP = 5;         // 画面の上の外に残しておく行数（ビー玉はここから現れる）
+const ROW_MARGIN_BOTTOM = 4;      // 画面の下の外に、作っておく行数
+const ROW_LOOKAHEAD = 8;          // 経路は、作っておく行よりさらにこれだけ先まで決めておく
+const CHUNK_ROWS = 4;             // 立方体をまとめて作る・捨てる行数
+
+// 立方体の形
+const BEVEL = 0.04;               // 辺の面取りの半径
+const LIP_ROUND = 0.035;          // 溝・くぼみの縁の丸みの半径（縁を格子の細かさでギザギザにしないためにも要る）
+const GROOVE_DEPTH = 0.16;        // 溝の深さ
+const GROOVE_RADIUS = 0.2;        // 溝の断面の円の半径（溝の幅は 2√(R² − (R − 深さ)²) ≈ 0.39）
+const DISH_RADIUS = 0.3;          // 受けのくぼみの半径（深さは溝と同じ）
+const HOLE_RADIUS = 0.2;          // 穴の半径
+const HOLE_BOTTOM = -0.45;        // 穴を描く深さ（立方体の中心からの高さ。その下は暗い蓋で閉じる）
+const TUNNEL_RADIUS = 0.19;       // トンネルの半径。中心は立方体の中心の高さ
+const TUNNEL_BORE = 0.45;         // トンネルの出口の穴を描く深さ（その奥は暗い蓋で閉じる）
+const BORE_WALL = 0.55;           // 穴の格子のうち、壁にする外側の割合（内側は蓋）
+const BORE_EASE = 2;              // 壁の輪を下ろす深さの曲線の次数（縁の近くの輪を浅く詰め、縁で明暗が急に変わる帯を細くする）
+const BORE_SHADE = [0.3, 0.04];   // 穴・出口の壁の明るさ（縁の下、奥。奥の蓋も奥の明るさ）
+const CARVE_STEP = 0.024;         // 溝・穴を彫る面の格子の間隔
+const MAX_DRAW_DEPTH = 5;         // 柱の上から何個まで立方体を描くか（それより深い所は見えない）
+
+// 木（無塗装のブナ材）。木目は 1 つの立方体ぶんの 3 次元テクスチャに描き、立方体ごとに向きとずれを変えて貼る
+const WOOD_RGB = [226, 190, 150]; // 地の色（sRGB）
+const WOOD_RES = { nx: 64, ny: 128, nz: 128 };   // テクスチャの大きさ（x が木の繊維の向き）
+const WOOD_SEED = 7;              // 木目の乱数の種
+const RINGS_PER_UNIT = 15;        // 1 マスあたりの年輪の数
+const RING_DARK = 0.09;           // 年輪の晩材の暗さ
+const STREAK = 0.075;             // 繊維に沿った細かな筋の濃淡
+const RAY_COUNT = 2600;           // 放射組織（斑）の数
+const RAY_DARK = 0.22;            // 斑の暗さ
+const END_GRAIN_DARK = 0.19;      // 木口の面の暗さ
+const WOOD_TINT = 0.05;           // 立方体ごとの色味のばらつき
+const WOOD_ROUGHNESS = 0.72;      // 粗さ
+const WOOD_ENV = 0.55;            // 映り込み（環境の光）の強さ
+const CUT_BRIGHT = 1.05;          // 削った面の明るさ（外の面に対する倍率）
+const GROOVE_AO = 0.5;            // 溝の底の暗さ（底で 1 − この値の明るさ）
+const BEVEL_AO = 0.14;            // 面取りの暗さ
+const CONTACT_COLOR = [0.25, 0.18, 0.12];   // 柱が接する所の陰の色（線形）
+const CONTACT_ALPHA = 0.5;        // その濃さ
+const CONTACT_WIDTH = 0.22;       // その幅
+
+// ビー玉
+const MARBLE_RADIUS = 0.17;
+const GRAVITY = 20;               // 重力の加速度（1 マス 5cm の実物の 1/10。時間を 3 倍ほどゆっくり見せる）
+const SPEED_MIN = 1.5;            // 平らな溝で落ち着く速さ（マス/秒）
+const SPEED_MAX = 2.8;            // 速さの上限（マス/秒）
+const SPEED_DECAY = 0.8;          // 速さが SPEED_MIN へ戻る時定数（秒）
+const FALL_GAIN = 0.04;           // 落ちた高さの位置エネルギーのうち、転がる速さに残る割合
+const BOUNCE_HEIGHT = 0.045;      // 落ちた高さ 1 あたりの、受けで跳ねる高さ
+const BOUNCE_MAX = 0.08;          // 跳ねる高さの上限
+const CURVE_SHIFT = 0.004;        // 曲がりの溝で外へ寄る量（速さの 2 乗に掛ける）
+const CURVE_SHIFT_MAX = 0.025;    // 外へ寄る量の上限
+const RIBBON_CHANCE = 0.45;       // 羽根入りの玉の割合
+const GLASS_COLORS = ['#1452ff', '#00b33c', '#ff7a00', '#00b8d4', '#8a2cff', '#ff1f3d'];   // 色ガラス（青・緑・橙・水色・紫・赤）
+const GLASS_ATTENUATION = 0.4;    // 色ガラスの色の濃さ（光がこの距離で色の分だけ吸われる）
+const GLASS_IOR = 1.52;           // ガラスの屈折率
+const RIBBON_SIZE = 0.96;         // 羽根の大きさ（玉の半径に対する割合。ガラスで拡大されて見える分を見込む）
+const CLEAR_GLASS_OPACITY = 0.22; // 羽根入りの玉の透明なガラスの不透明度（羽根の透け方）
+const GLASS_BLUR = 0.05;          // 玉を通して見える環境のぼかし（粗さ 0..1）
+const RIBBON_COLORS = [['#ff1a1a', '#ffc800', '#0a50ff'], ['#00b050', '#ff1a1a', '#00b050'], ['#ff6a00', '#ff6a00', '#ff6a00'],
+  ['#0a50ff', '#00d0ff', '#0a50ff'], ['#b000ff', '#ffc800', '#b000ff']];   // 羽根入りの玉の羽根の色
+const MARBLE_SHADOW_ALPHA = 0.55; // 玉の影の濃さ
+const CAUSTIC = 0.9;              // 影の中の集光の明るさ
+const SPAWN_GAP = [1, 2.5];       // 続けて玉を出すときの間隔（秒）
+
+// 強度（画面の中のビー玉の数）
+const BASE_COUNT = 8;
+const MIN_COUNT = 4;
+const MAX_COUNT = 20;
+const COUNT_STEP = 1.25;          // ↑↓ 1 回あたりの倍率
+
+// 明かり
+const LIGHT_ELEVATION = 58;       // 平行光の高さ（度）
+const LIGHT_BACK = 0.25;          // 光の向き。カメラから見て左から、この割合だけ奥へ寄せる
+const LIGHT_COLOR = '#fff6ea';
+const LIGHT_INTENSITY = 2.6;
+const ENV_SKY = [0.95, 0.95, 0.96];   // 映り込みの環境の上半分（明るい部屋）
+const ENV_GROUND = [0.55, 0.38, 0.24];  // 下半分（木の色）
+const ENV_INTENSITY = 0.9;
+const ENV_LIGHT = 14;             // 環境の中の、明かりの所の明るさ（ガラスの照り返しになる）
+
+// 描画
+const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+const MAX_FPS = 60;               // 1 秒に描く回数の上限
+const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
+const SHADOW_MAP_SIZE = { pc: 4096, touch: 2048 };
+const SHADOW_RADIUS = 2.5;        // 影の縁のぼかし（影の画素）
+const SHADOW_SLACK = 2;           // 影は毎コマ描かず、見る点がここまで（マス）動くか、積み木を詰め直したときに描き直す
+const MAX_RADIANCE = 64;          // 後段へ渡す明るさの上限（ガラスの鋭い照り返しが半精度の上限を超えないように）
+const VIGNETTE = 0.35;            // 周辺減光の強さ（画面の隅で暗くする割合）
+const EXPOSURE = 1.0;             // トーンマッピングの露出
+const REBASE_STEP = 256;          // 座標の原点を戻す間隔（マス）
+
+// ---- ユーティリティ ----
+const DEG = Math.PI / 180;
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];   // 側面の向き（0: +x、1: +z、2: −x、3: −z）
+const opposite = (s) => (s + 2) % 4;
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+const rowOf = (i, j) => i + j;
+const randRange = ([a, b]) => a + randInt(b - a + 1);   // a〜b の整数
+const baseHeight = (i, j) => -Math.floor((i + j) / 2);
+
+// 整数の座標から 0〜1 の値（同じ座標なら毎回同じ）
+function hash3(a, b, c) {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+// 種から作る乱数の列（Math.random と別）
+function seededRandom(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// なめらかな 2 次元のノイズ（−1..1）。salt で別の模様になる
+function noise2(x, y, salt = 0) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const fx = x - xi, fy = y - yi;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const h = (a, b) => hash3(a, b, salt) * 2 - 1;
+  return lerp(lerp(h(xi, yi), h(xi + 1, yi), sx), lerp(h(xi, yi + 1), h(xi + 1, yi + 1), sx), sy);
+}
+// 点 (x, z) から線分までの距離
+function segDist(x, z, x0, z0, x1, z1) {
+  const dx = x1 - x0, dz = z1 - z0;
+  const t = clamp(((x - x0) * dx + (z - z0) * dz) / (dx * dx + dz * dz), 0, 1);
+  return Math.hypot(x - x0 - dx * t, z - z0 - dz * t);
+}
+// 重みに比例して選ぶ（[{ w, ... }]）。すべて 0 なら null
+function pickWeighted(list) {
+  const total = list.reduce((sum, o) => sum + o.w, 0);
+  if (!(total > 0)) return null;
+  let x = Math.random() * total;
+  for (const o of list) if ((x -= o.w) < 0) return o;
+  return list[list.length - 1];
+}
+
+// ---- シェーダー ----
+// シーンの描画先を composer へ写し、周辺を暗くする。明るさを MAX_RADIANCE で抑える（無限大も抑えられる）
+const SCENE_COPY_SHADER = {
+  uniforms: { tScene: { value: null }, maxRadiance: { value: MAX_RADIANCE }, vignette: { value: VIGNETTE } },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: `
+    uniform sampler2D tScene;
+    uniform float maxRadiance;
+    uniform float vignette;
+    varying vec2 vUv;
+    void main() {
+      vec2 d = vUv - 0.5;
+      vec3 c = min(texture2D(tScene, vUv).rgb, vec3(maxRadiance));
+      gl_FragColor = vec4(c * (1.0 - vignette * smoothstep(0.1, 0.75, dot(d, d) * 2.0)), 1.0);
+    }`,
+};
+// 木の素材（標準の素材）に、木目の 3 次元テクスチャを足す。woodRot（四元数）で立方体の中の位置をテクスチャの向きへ回し、
+// woodOff だけ繊維の向きにずらして引く。木口（繊維の向きに面した面）は少し暗くする
+const WOOD_VERTEX_PARS = `
+attribute vec4 woodRot;
+attribute float woodOff;
+varying vec3 vWood;
+varying vec3 vWoodNormal;
+vec3 rotateByQuat(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }`;
+const WOOD_VERTEX = `
+vWood = rotateByQuat(woodRot, position) + 0.5 + vec3(woodOff, 0.0, 0.0);
+vWoodNormal = rotateByQuat(woodRot, objectNormal);`;
+const WOOD_FRAGMENT_PARS = `
+uniform highp sampler3D woodTex;
+uniform float endGrainDark;
+varying vec3 vWood;
+varying vec3 vWoodNormal;`;
+const WOOD_FRAGMENT = `
+vec4 wood = texture(woodTex, vWood);
+float endGrain = abs(normalize(vWoodNormal).x);
+diffuseColor.rgb *= wood.rgb * (1.0 - endGrainDark * endGrain * endGrain);`;
+
+// ---- three.js 初期化 ----
+// シーンは別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = EXPOSURE;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.autoUpdate = false;   // 影は積み木と一緒にしか変わらないので、要るときだけ描く（updateShadow）
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(...WOOD_RGB.map((c) => (c / 255) ** 2.2 * 0.3));
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, CAM_DIST * 2);
+
+// マルチサンプルにするのはシーンを描く描画先だけ。色の形式は compactHdrFormat（common.js）で選ぶ
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES });
+function updateSceneTargetSize() {
+  const pr = renderer.getPixelRatio();
+  sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
+}
+updateSceneTargetSize();
+
+const composer = new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
+// 写すのは sceneTarget なので、前のパスの絵（tDiffuse）は受け取らない
+const scenePass = new ShaderPass(SCENE_COPY_SHADER, 'none');
+scenePass.uniforms.tScene.value = sceneTarget.texture;
+scenePass.material.blending = THREE.NoBlending;
+composer.addPass(scenePass);
+composer.addPass(new OutputPass());
+
+// 明かり（カメラから見て左の、少し奥の上から）。上面がいちばん明るく、左の側面（+z）、右の側面（+x）の順に暗い
+const LIGHT_DIR = (() => {
+  const h = new THREE.Vector3(-1 - LIGHT_BACK, 0, 1 - LIGHT_BACK).normalize();
+  const e = LIGHT_ELEVATION * DEG;
+  return new THREE.Vector3(h.x * Math.cos(e), Math.sin(e), h.z * Math.cos(e));
+})();
+const sun = new THREE.DirectionalLight(LIGHT_COLOR, LIGHT_INTENSITY);
+sun.castShadow = true;
+const shadowMapSize = IS_TOUCH ? SHADOW_MAP_SIZE.touch : SHADOW_MAP_SIZE.pc;
+sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+sun.shadow.bias = -0.0004;
+sun.shadow.radius = SHADOW_RADIUS;
+sun.shadow.normalBias = 0.015;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 80;
+scene.add(sun, sun.target);
+
+// 映り込みの環境。上半分が明るい部屋のような淡い灰色、下半分が木の色で、明かりの所が明るい（まわりの積み木は映さない）
+function buildEnvironment() {
+  const env = new THREE.Scene();
+  const sphere = new THREE.SphereGeometry(50, 48, 24);
+  const colors = [];
+  const pos = sphere.attributes.position;
+  for (let k = 0; k < pos.count; k++) {
+    const t = smooth(-0.15, 0.25, pos.getY(k) / 50);
+    colors.push(...ENV_GROUND.map((g, c) => lerp(g, ENV_SKY[c], t)));
+  }
+  sphere.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  env.add(new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  const lamp = new THREE.Mesh(new THREE.CircleGeometry(3.5, 32),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(LIGHT_COLOR).multiplyScalar(ENV_LIGHT) }));
+  lamp.position.copy(LIGHT_DIR).multiplyScalar(40);
+  lamp.lookAt(0, 0, 0);
+  env.add(lamp);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(env, 0.02).texture;
+  pmrem.dispose();
+  env.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+}
+buildEnvironment();
+
+// ---- 状態 ----
+let time = 0;                // 経過秒
+let marbleCount = BASE_COUNT;   // 画面の中のビー玉の数（強度。四捨五入して使う）
+let camK = 0;                // 見る点の、格子の対角に沿った位置（マス。見る点は (camK, −camK, camK) の近く）
+const origin = new THREE.Vector3();   // 描く座標の原点（世界の座標から引く）。ときどき REBASE_STEP ずつ進める
+let bandQ = 0;               // 積み木を作る横の範囲（|q| ≤ bandQ）
+
+// ---- 木目 ----
+// 1 つの立方体ぶんの木目（線形の色と粗さ）。年輪の中心は立方体の外の遠くにあり、年輪は大きな弧の一部として見える。
+// 繊維の向き（x）には周期的につながるので、立方体ごとに x へずらして貼れる
+function buildWoodTexture() {
+  const rnd = seededRandom(WOOD_SEED);
+  const { nx, ny, nz } = WOOD_RES;
+  const ray = new Float32Array(nx * ny * nz);
+  const logAngle = rnd() * TAU, logDist = 3.5 + rnd() * 3;
+  const cy = 0.5 + Math.cos(logAngle) * logDist, cz = 0.5 + Math.sin(logAngle) * logDist;
+  // 放射組織: 年輪の中心から外へ向かう薄い板。繊維の向きには短く（1〜3mm）、半径の向きには長い
+  const span = 0.8 / logDist;
+  for (let k = 0; k < RAY_COUNT; k++) {
+    const theta = logAngle + Math.PI + (rnd() - 0.5) * 2 * span;
+    const rho0 = logDist + (rnd() - 0.5) * 1.6;
+    const halfR = 0.03 + rnd() * 0.12, halfX = 0.012 + rnd() * 0.024;
+    const x0 = rnd(), strength = 0.5 + rnd() * 0.5;
+    const c = Math.cos(theta), s = Math.sin(theta);
+    for (let t = -halfR; t <= halfR; t += 0.5 / ny) {
+      const y = cy + c * (rho0 + t), z = cz + s * (rho0 + t);
+      if (y < 0 || y >= 1 || z < 0 || z >= 1) continue;
+      const iy = Math.floor(y * ny), iz = Math.floor(z * nz);
+      const fade = Math.sqrt(1 - (t / halfR) ** 2) * strength;
+      for (let ix = Math.floor((x0 - halfX) * nx); ix <= Math.ceil((x0 + halfX) * nx); ix++) {
+        const w = Math.max(0, 1 - (((ix + 0.5) / nx - x0) / halfX) ** 2) * fade;
+        const idx = ((ix % nx) + nx) % nx + nx * (iy + ny * iz);
+        if (w > ray[idx]) ray[idx] = w;
+      }
+    }
+  }
+  const base = WOOD_RGB.map((c) => (c / 255) ** 2.2);
+  const data = new Uint8Array(nx * ny * nz * 4);
+  for (let iz = 0; iz < nz; iz++) {
+    const z = (iz + 0.5) / nz;
+    for (let iy = 0; iy < ny; iy++) {
+      const y = (iy + 0.5) / ny;
+      const r0 = Math.hypot(y - cy, z - cz);
+      for (let ix = 0; ix < nx; ix++) {
+        const x = (ix + 0.5) / nx;
+        // 年輪は繊維に沿ってゆるくうねる（x に周期的）
+        const wobble = 0.025 * Math.sin(TAU * x + 9 * y + 4 * z) + 0.012 * Math.sin(TAU * 2 * x + 17 * z + 1.3);
+        const f = ((r0 + wobble) * RINGS_PER_UNIT) % 1;
+        const late = smooth(0.62, 0.92, f) * (1 - smooth(0.92, 1, f));
+        // 繊維に沿った細かな筋（断面の向きに細かく、繊維の向きにはゆっくり変わる）
+        const streak = noise2((y + 0.015 * Math.sin(TAU * x)) * 60, (z + 0.015 * Math.cos(TAU * x)) * 60, 3);
+        const broad = 0.025 * Math.sin(3.1 * y + 2.3 * z + 1.7) + 0.02 * Math.sin(TAU * x + 5 * y);
+        const idx = ix + nx * (iy + ny * iz);
+        const k = (1 - RING_DARK * late + STREAK * streak + broad) * (1 - RAY_DARK * ray[idx]);
+        const o = idx * 4;
+        data[o] = Math.min(255, Math.round(base[0] * k * 255));
+        data[o + 1] = Math.min(255, Math.round(base[1] * k * (1 - 0.05 * ray[idx]) * 255));
+        data[o + 2] = Math.min(255, Math.round(base[2] * k * (1 - 0.1 * ray[idx]) * 255));
+        data[o + 3] = Math.round(128 * (1 - 0.3 * ray[idx]));   // 粗さの倍率 ×2（斑はわずかに艶がある）
+      }
+    }
+  }
+  const texture = new THREE.Data3DTexture(data, nx, ny, nz);
+  texture.format = THREE.RGBAFormat;
+  texture.type = THREE.UnsignedByteType;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = texture.wrapR = THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+const woodTexture = buildWoodTexture();
+const woodMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: WOOD_ROUGHNESS, envMapIntensity: WOOD_ENV });
+woodMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.woodTex = { value: woodTexture };
+  shader.uniforms.endGrainDark = { value: END_GRAIN_DARK };
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>\n${WOOD_VERTEX_PARS}`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WOOD_VERTEX}`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\n${WOOD_FRAGMENT_PARS}`)
+    .replace('#include <map_fragment>', WOOD_FRAGMENT)
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= wood.a * 2.0;');
+};
+
+// ---- 立方体の形 ----
+// 局所座標は中心が原点、一辺 1（−0.5〜0.5）。上面の模様は基準の向きで決め、rot（0〜3）だけ 90° ずつ回す
+// （回すと、側面 s が側面 s + rot になる）。トンネルの出口は、カメラから見える +x・+z の側面にだけ開ける
+const GROOVE_HALF = Math.sqrt(GROOVE_RADIUS ** 2 - (GROOVE_RADIUS - GROOVE_DEPTH) ** 2);   // 溝の幅の半分
+const DISH_SPHERE = (DISH_RADIUS ** 2 + GROOVE_DEPTH ** 2) / (2 * GROOVE_DEPTH);           // 受けのくぼみの球の半径
+// 円（球）で削った溝（くぼみ）の、中心からの距離 t での深さ。縁を半径 LIP_ROUND で丸める（削った形を LIP_ROUND だけ
+// 太らせてから、同じだけ削り戻す）。表にしておいて引く
+function roundedProfile(radius) {
+  const f = LIP_ROUND, cy = radius - GROOVE_DEPTH, N = 1024, tMax = radius + 2 * f;
+  const inner = (t) => Math.min(-f, Math.abs(t) < radius + f ? cy - Math.sqrt((radius + f) ** 2 - t * t) : Infinity);
+  const table = new Float32Array(N + 1);
+  for (let k = 0; k <= N; k++) {
+    const t = tMax * k / N;
+    let h = -Infinity;
+    for (let m = -16; m <= 16; m++) { const d = f * m / 16; h = Math.max(h, inner(t + d) + Math.sqrt(f * f - d * d)); }
+    table[k] = Math.max(0, -h);
+  }
+  return (t) => {
+    const x = clamp(t / tMax, 0, 1) * N, k = Math.min(N - 1, Math.floor(x));
+    return lerp(table[k], table[k + 1], x - k);
+  };
+}
+const grooveDepth = roundedProfile(GROOVE_RADIUS);
+const dishDepth = roundedProfile(DISH_SPHERE);
+const Y_ROLL = -GROOVE_DEPTH + MARBLE_RADIUS;          // 溝を転がる玉の中心の、柱の上面からの高さ
+const TUNNEL_Y = 0.5 - TUNNEL_RADIUS + MARBLE_RADIUS;  // トンネルを転がる玉の中心の、立方体の下面からの高さ
+
+// 上面の模様（基準の向き）。depth: 溝・くぼみの深さ。sides: 溝が抜ける側面。
+// rings: 円い縁のまわりで、格子の点を同心円 { c: 中心, ref: 通る半径, min〜max: 範囲 } の上へ寄せる（下の snapToRings）。
+//   keep(dx, dz, r) が真の点は寄せない。溝が穴・くぼみにつながる側の、その外にある溝の縁に使う（溝のまっすぐな縁は
+//   格子の線に乗っていて、寄せると線から外れ、つなぎ目に明るい段ができるため）
+const RING_BAND = GROOVE_HALF + 2 * LIP_ROUND;
+const TOPS = {
+  straight: {   // まっすぐ（−x から +x へ）
+    depth: (x, z) => grooveDepth(Math.abs(z)),
+    sides: [0, 2],
+  },
+  curve: {      // 90° の曲がり（−x の側面と −z の側面をつなぐ。中心は (−0.5, −0.5) の角）
+    depth: (x, z) => grooveDepth(Math.abs(Math.hypot(x + 0.5, z + 0.5) - 0.5)),
+    sides: [2, 3],
+    rings: [{ c: [-0.5, -0.5], ref: 0.5, min: 0.5 - RING_BAND, max: 0.5 + RING_BAND }],
+  },
+  hole: {       // −x の側面から中心の穴へ
+    depth: (x, z) => grooveDepth(segDist(x, z, -0.5, 0, 0, 0)),
+    sides: [2],
+    rings: [{ c: [0, 0], ref: HOLE_RADIUS, min: 0, max: HOLE_RADIUS + 2 * LIP_ROUND, keep: (dx, dz, r) => dx < 0 && r > HOLE_RADIUS }],
+    hole: true,
+  },
+  catch: {      // 中心のくぼみから +x の側面へ
+    depth: (x, z) => Math.max(grooveDepth(segDist(x, z, 0, 0, 0.5, 0)), dishDepth(Math.hypot(x, z))),
+    sides: [0],
+    rings: [{ c: [0, 0], ref: 0, min: 0, max: DISH_RADIUS + 2 * LIP_ROUND, keep: (dx, dz, r) => dx > 0 && r > DISH_RADIUS && Math.abs(dz) < RING_BAND }],
+  },
+};
+// 局所の (x, z) を基準の向きへ戻す（rot の逆に回す）・基準の向きから回す
+function unrotate(x, z, rot) {
+  for (let k = 0; k < rot; k++) [x, z] = [z, -x];
+  return [x, z];
+}
+function rotate(x, z, rot) {
+  for (let k = 0; k < rot; k++) [x, z] = [-z, x];
+  return [x, z];
+}
+// 円い縁のまわりの格子の点を、中心からの距離が ref + 格子の間隔の整数倍で、角度も等分の所へ寄せる。四角い格子のままだと
+// 円い縁を格子がまたぎ、角度が不揃いだと三角形がジグザグになって、縁の陰影と影や、輪ごとに明暗が大きく変わる穴の壁が
+// ギザギザになる
+function snapToRings(x, z, rings) {
+  for (const { c, ref, min, max, keep } of rings) {
+    const dx = x - c[0], dz = z - c[1], r = Math.hypot(dx, dz);
+    if (r < min || r > max || r < 1e-9 || keep?.(dx, dz, r)) continue;
+    const r2 = Math.max(0, ref + Math.round((r - ref) / CARVE_STEP) * CARVE_STEP);
+    const n = Math.max(8, Math.round(TAU * r2 / CARVE_STEP)), t = Math.round(Math.atan2(dz, dx) / TAU * n) * TAU / n;
+    return [c[0] + Math.cos(t) * r2, c[1] + Math.sin(t) * r2];
+  }
+  return [x, z];
+}
+const OPENING_RINGS = [{ c: [0, 0], ref: TUNNEL_RADIUS, min: 0, max: TUNNEL_RADIUS + 2 * CARVE_STEP }];
+
+// 面（下面は見えず、光も下から来ないので作らない）。u × v が外向きの法線
+const FACES = [
+  { n: [0, 1, 0], u: [0, 0, 1], v: [1, 0, 0], side: -1 },
+  { n: [1, 0, 0], u: [0, 1, 0], v: [0, 0, 1], side: 0 },
+  { n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], side: 1 },
+  { n: [-1, 0, 0], u: [0, 0, 1], v: [0, 1, 0], side: 2 },
+  { n: [0, 0, -1], u: [0, 1, 0], v: [1, 0, 0], side: 3 },
+];
+const BEVEL_LINES = [0, 0.423, 0.732, 1];   // 面取りの格子（1 − tan 45°・30°・15°・0°。面取りの円弧を等しい角度で分ける）
+// 面の 1 つの向きの格子（−0.5〜0.5）。interior は面取りの内側に足す線
+function gridLines(interior) {
+  const lo = BEVEL_LINES.map((f) => -0.5 + BEVEL * f);
+  const hi = lo.map((x) => -x).reverse();
+  const mid = [...new Set(interior.map((x) => Math.round(x * 1e5) / 1e5))].sort((a, b) => a - b)
+    .filter((x) => x > lo[3] + 0.004 && x < hi[0] - 0.004);
+  // 近すぎる線を間引く（± の溝の縁などの線は残す）
+  const out = [];
+  for (const x of mid) if (!out.length || x - out[out.length - 1] > 0.006) out.push(x);
+  return [...lo, ...out, ...hi];
+}
+function dense(a, b, step) {
+  const n = Math.ceil((b - a) / step);
+  return Array.from({ length: n + 1 }, (_, k) => a + (b - a) * k / n);
+}
+const CARVE_LINES = [...dense(-0.5 + BEVEL, 0.5 - BEVEL, CARVE_STEP), GROOVE_HALF, -GROOVE_HALF];
+const NOTCH_Y_LINES = [0.46, 0.42, 0.38, 0.34, 0.3, 0.1, -0.2];   // 溝が抜ける側面の、縦の格子
+const OPENING_LINES = [...dense(-0.28, 0.28, CARVE_STEP), TUNNEL_RADIUS, -TUNNEL_RADIUS];
+
+// 頂点の並び（x, y, z の繰り返し）の 2 点 a・b の距離の 2 乗
+const dist2 = (p, a, b) => (p[3 * a] - p[3 * b]) ** 2 + (p[3 * a + 1] - p[3 * b + 1]) ** 2 + (p[3 * a + 2] - p[3 * b + 2]) ** 2;
+// 立方体の形を作る。key は `${top}:${rot}:${open}`（top は TOPS の名前か plain、open はトンネルの出口の側面のビット 1: +x、2: +z）
+function buildPiece(key) {
+  const [topName, rotText, openText] = key.split(':');
+  const top = TOPS[topName] ?? null, rot = +rotText, open = +openText;
+  const notchSides = new Set((top?.sides ?? []).map((s) => (s + rot) % 4));
+  const positions = [], normals = [], colors = [], indices = [];
+  const depthAt = (x, z) => { const [cx, cz] = unrotate(x, z, rot); return top.depth(cx, cz); };
+
+  for (const face of FACES) {
+    const isTop = face.side < 0;
+    const opening = !isTop && (face.side === 0 ? open & 1 : face.side === 1 ? open & 2 : 0);
+    const notch = !isTop && notchSides.has(face.side);
+    const horizontalU = face.u[1] === 0;
+    let hz = [], vt = [];
+    if (isTop) { if (top) hz = vt = CARVE_LINES; }
+    else {
+      if (notch) { hz = hz.concat(CARVE_LINES); vt = vt.concat(NOTCH_Y_LINES); }
+      if (opening) { hz = hz.concat(OPENING_LINES); vt = vt.concat(OPENING_LINES); }
+    }
+    const us = gridLines(isTop || horizontalU ? hz : vt), vs = gridLines(isTop || horizontalU ? vt : hz);
+    const start = positions.length / 3;
+    const [nx, ny, nz] = face.n, [ux, uy, uz] = face.u, [vx, vy, vz] = face.v;
+    for (const u0 of us) {
+      for (const v0 of vs) {
+        let u = u0, v = v0;
+        const onEdge = Math.abs(u) > 0.5 - 1e-6 || Math.abs(v) > 0.5 - 1e-6;
+        // 円い縁のまわりの点を同心円の上へ寄せる。面の端の点は、隣の面の点と揃えるために動かさない
+        if (!onEdge && isTop && top?.rings) {
+          const [cx, cz] = snapToRings(...unrotate(v, u, rot), top.rings);
+          [v, u] = rotate(cx, cz, rot);
+        } else if (!onEdge && opening) {
+          [u, v] = snapToRings(u, v, OPENING_RINGS);
+        }
+        // 面の上の点を、角の丸い立方体へ寄せる
+        let x = nx * 0.5 + ux * u + vx * v, y = ny * 0.5 + uy * u + vy * v, z = nz * 0.5 + uz * u + vz * v;
+        const ix = clamp(x, -0.5 + BEVEL, 0.5 - BEVEL), iy = clamp(y, -0.5 + BEVEL, 0.5 - BEVEL), iz = clamp(z, -0.5 + BEVEL, 0.5 - BEVEL);
+        let dx = x - ix, dy = y - iy, dz = z - iz;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        dx /= len; dy /= len; dz /= len;
+        x = ix + dx * BEVEL; y = iy + dy * BEVEL; z = iz + dz * BEVEL;
+        let shade = 1 - BEVEL_AO * clamp((1 - (dx * nx + dy * ny + dz * nz)) / (1 - Math.SQRT1_2), 0, 1);
+        // 法線は形から直接求める（縁へ寄せた点の細い三角形から求めると、縁から筋が伸びて見えるため）
+        let normal = [dx, dy, dz];
+        if (top && y > 0.5 - GROOVE_DEPTH - 0.02) {
+          const d = depthAt(x, z);
+          if (d > 0 && y > 0.5 - d) {
+            y = 0.5 - d;
+            if (isTop) {
+              const e = 1e-4, gx = (depthAt(x + e, z) - depthAt(x - e, z)) / (2 * e), gz = (depthAt(x, z + e) - depthAt(x, z - e)) / (2 * e);
+              const l = Math.hypot(gx, 1, gz);
+              normal = [gx / l, 1 / l, gz / l];
+              shade = CUT_BRIGHT * (1 - GROOVE_AO * (d / GROOVE_DEPTH) ** 1.5);
+            } else normal = [nx, ny, nz];   // 側面の溝の切り欠き
+          }
+        }
+        // 穴: 縁から下へ壁を下ろし、底を暗い蓋で閉じる
+        const rho = Math.hypot(x, z);
+        if (isTop && top?.hole && rho < HOLE_RADIUS - 1e-6) {
+          const ox = rho > 1e-6 ? x / rho : 1, oz = rho > 1e-6 ? z / rho : 0;
+          const rimY = 0.5 - depthAt(ox * HOLE_RADIUS, oz * HOLE_RADIUS);
+          if (rho >= BORE_WALL * HOLE_RADIUS) {
+            const k = ((HOLE_RADIUS - rho) / (HOLE_RADIUS * (1 - BORE_WALL))) ** BORE_EASE;
+            x = ox * HOLE_RADIUS; z = oz * HOLE_RADIUS; y = lerp(rimY, HOLE_BOTTOM, k);
+            shade = lerp(...BORE_SHADE, Math.sqrt(k));
+            normal = [-ox, 0, -oz];
+          } else {
+            const k = rho / (BORE_WALL * HOLE_RADIUS);
+            x = ox * HOLE_RADIUS * k; z = oz * HOLE_RADIUS * k; y = HOLE_BOTTOM;
+            shade = BORE_SHADE[1];
+            normal = [0, 1, 0];
+          }
+        }
+        // トンネルの出口: 面から奥へ壁を引き込み、奥を暗い蓋で閉じる
+        if (opening) {
+          const a = horizontalU ? u : v, b = horizontalU ? v : u;   // 面の上の横・縦
+          const r = Math.hypot(a, b);
+          if (r < TUNNEL_RADIUS - 1e-6) {
+            const oa = r > 1e-6 ? a / r : 1, ob = r > 1e-6 ? b / r : 0;
+            let ra, depth;
+            const du = horizontalU ? oa : ob, dv = horizontalU ? ob : oa;
+            if (r >= BORE_WALL * TUNNEL_RADIUS) {
+              const k = ((TUNNEL_RADIUS - r) / (TUNNEL_RADIUS * (1 - BORE_WALL))) ** BORE_EASE;
+              ra = TUNNEL_RADIUS; depth = k * TUNNEL_BORE; shade = lerp(...BORE_SHADE, Math.sqrt(k));
+              normal = [-(ux * du + vx * dv), -(uy * du + vy * dv), -(uz * du + vz * dv)];
+            } else {
+              ra = TUNNEL_RADIUS * r / (BORE_WALL * TUNNEL_RADIUS); depth = TUNNEL_BORE; shade = BORE_SHADE[1];
+              normal = [nx, ny, nz];
+            }
+            x = nx * (0.5 - depth) + (ux * du + vx * dv) * ra;
+            y = ny * (0.5 - depth) + (uy * du + vy * dv) * ra;
+            z = nz * (0.5 - depth) + (uz * du + vz * dv) * ra;
+          }
+        }
+        positions.push(x, y, z);
+        normals.push(...normal);
+        colors.push(shade, shade, shade);
+      }
+    }
+    // −x の面はカメラから見えず、光の側を向くので影も落とさない。カメラから縁だけが見える、上の面取りの帯だけを描く
+    const nv = vs.length;
+    for (let a = 0; a < us.length - 1; a++) {
+      for (let b = face.side === 2 ? vs.findIndex((y) => y > 0.5 - BEVEL - 1e-6) : 0; b < nv - 1; b++) {
+        const i00 = start + a * nv + b, i10 = i00 + nv, i01 = i00 + 1, i11 = i10 + 1;
+        // 四角形は短い方の対角線で分ける（輪へ寄せた点で、明るい縁と暗い壁を一気にまたぐ細長い三角形を作らない）
+        if (dist2(positions, i00, i11) <= dist2(positions, i10, i01)) indices.push(i00, i10, i11, i00, i11, i01);
+        else indices.push(i00, i10, i01, i10, i11, i01);
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  return geometry;
+}
+
+// ---- 積み木と経路の生成 ----
+// マス: { i, j, h（決まった高さ。経路のマスは最初から決まる）, lo, hi（高さの制約）, fixed（行が確定した）,
+//         node（経路のマス）, piece（上面の模様 { top, rot }）, tun（トンネルが通る立方体の高さ）, open（出口 { level, side }） }
+// 経路のマス（node）: { i, j, h, kind（'groove'・'catch'・'hole'）, inSide（入口の側面）, cell, path, seg（このマスを転がる区間の通し番号）,
+//         landed（上から落ちてきた）, mergers（ここへ飛び降りて合流する経路） }
+// 経路: { segs（玉が進む区間）, base（segs[0] の通し番号）, cur（出口がまだ決まっていない最後のマス）,
+//         run・runLen（下りてから平らに進んだマス数と、その目安）, leg・legLen（まっすぐ進んだマス数と、その区切りの長さ）,
+//         drift（左右どちらへ寄りやすいか）, lastBack（前のマスで奥へ戻った）, maxRow, active（まだ先を作る）, ended（終わりまで作った）,
+//         merge（合流先 { path, seg, s }）, marbles }
+// 区間: 転がり { type: 'roll', pts, cum, len, arc（曲がりの中心）, hidden, row } と、
+//       落下 { type: 'fall', a, b, dh（落ちる高さ）, dist（横の距離）, T（落ちる秒）, hidden, row }
+const cells = new Map();
+let paths = [];
+let finalRow = 0;            // この行より前の行は、高さが確定している
+let lastFillRow = -Infinity;
+
+const cellKey = (i, j) => i * 1048576 + j;
+function getCell(i, j) {
+  const k = cellKey(i, j);
+  let c = cells.get(k);
+  if (!c) cells.set(k, c = { i, j, h: null, lo: -Infinity, hi: Infinity, fixed: false, node: null, piece: null, tun: [], open: [] });
+  return c;
+}
+const inBand = (i, j) => Math.abs(i - j) <= bandQ;
+// 地形のゆらぎだけで決まる柱の高さ（経路の制約を入れない。丸める前）
+const terrainLevel = (i, j) => baseHeight(i, j) + TERRAIN_NOISE * noise2(i * TERRAIN_NOISE_SCALE + j * 0.11, j * TERRAIN_NOISE_SCALE - i * 0.13, 1);
+// 決まっていないマスの高さ（基準の高さにゆらぎを足し、制約に収める）
+function freeHeight(c) {
+  const { i, j } = c;
+  // 高さの決まった隣の柱と MAX_STEP 段より離れないようにし、手前の隣（+x・+z）より低くしない（台地にくぼみを作らない）。
+  // 経路の制約のほうを優先する
+  let lo = c.lo, hi = c.hi;
+  for (const [s, [dx, dz]] of DIRS.entries()) {
+    const n = cells.get(cellKey(i + dx, j + dz));
+    if (n?.h == null) continue;
+    lo = Math.max(lo, n.h - (s <= 1 ? 0 : MAX_STEP));
+    hi = Math.min(hi, n.h + MAX_STEP);
+  }
+  const h = Math.round(terrainLevel(i, j));
+  if (lo <= hi) return clamp(h, lo, hi);
+  return c.lo > c.hi ? c.hi : clamp(h, c.lo, c.hi);
+}
+// 柱の高さ（作る範囲の外は、基準の高さ）
+function heightAt(i, j) {
+  const c = cells.get(cellKey(i, j));
+  if (c?.h != null) return c.h;
+  return Math.round(baseHeight(i, j));
+}
+
+// 経路のマスを高さ h で置けるか。手前の 3 マス（+x・+z・+x+z）が h より高いと、溝が隠れるので置かない
+function canPlace(i, j, h, p) {
+  if (!inBand(i, j) || rowOf(i, j) < finalRow + 1) return false;
+  if (p && rowOf(i, j) < p.maxRow - BACKTRACK) return false;
+  const c = getCell(i, j);
+  if (c.node || c.h != null || h < c.lo || h > c.hi) return false;
+  for (const [dx, dz] of DIRS) {
+    const n = cells.get(cellKey(i + dx, j + dz));
+    if (n?.h != null && Math.abs(n.h - h) > MAX_STEP) return false;
+  }
+  for (const [a, b] of [[1, 0], [0, 1], [1, 1]]) {
+    const f = cells.get(cellKey(i + a, j + b));
+    if (f && ((f.h != null && f.h > h) || f.lo > h)) return false;
+  }
+  return true;
+}
+function placeNode(p, i, j, h, kind, inSide) {
+  const c = getCell(i, j);
+  c.h = h;
+  const node = { i, j, h, kind, inSide, cell: c, path: p, seg: null };
+  c.node = node;
+  for (const [a, b] of [[1, 0], [0, 1], [1, 1]]) {
+    const f = getCell(i + a, j + b);
+    f.hi = Math.min(f.hi, h);
+  }
+  p.cur = node;
+  p.maxRow = Math.max(p.maxRow, rowOf(i, j));
+  p.drift = clamp(p.drift * 0.97 + (Math.random() - 0.5) * 0.6, -1.5, 1.5);
+  return node;
+}
+
+// 区間を作る
+function rollSeg(pts, row, { arc = null, hidden = false } = {}) {
+  const cum = [0];
+  for (let k = 1; k < pts.length; k++) cum.push(cum[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1], pts[k][2] - pts[k - 1][2]));
+  return { type: 'roll', pts, cum, len: cum[cum.length - 1], arc, hidden, row };
+}
+function fallSeg(a, b, row, hidden = false) {
+  const dh = Math.max(0, a[1] - b[1]);
+  return { type: 'fall', a, b, dh, dist: Math.hypot(b[0] - a[0], b[2] - a[2]), T: Math.max(0.05, Math.sqrt(2 * dh / GRAVITY)), hidden, row };
+}
+const center = (n, y) => [n.i + 0.5, y, n.j + 0.5];
+const sideMid = (n, s, y) => [n.i + 0.5 + DIRS[s][0] * 0.5, y, n.j + 0.5 + DIRS[s][1] * 0.5];
+
+// マスの中を転がる区間（入口から出口 s へ）と、上面の模様を決める
+function finishNode(p, n, s) {
+  const y = n.h + Y_ROLL, row = rowOf(n.i, n.j);
+  n.seg = p.base + p.segs.length;   // このマスを転がる区間の通し番号（合流する玉の行き先）
+  if (n.kind === 'catch') {
+    n.cell.piece = { top: 'catch', rot: s };
+    p.segs.push(rollSeg([center(n, y), sideMid(n, s, y)], row));
+  } else if (s === opposite(n.inSide)) {
+    n.cell.piece = { top: 'straight', rot: s % 2 };
+    p.segs.push(rollSeg([sideMid(n, n.inSide, y), sideMid(n, s, y)], row));
+  } else {
+    // 曲がり: 2 つの側面の間の角を中心に、半径 0.5 の弧
+    const a = n.inSide, b = s;
+    let rot = 0;
+    while (![(2 + rot) % 4, (3 + rot) % 4].every((side) => side === a || side === b)) rot++;
+    n.cell.piece = { top: 'curve', rot };
+    const cx = n.i + 0.5 + (DIRS[a][0] + DIRS[b][0]) * 0.5, cz = n.j + 0.5 + (DIRS[a][1] + DIRS[b][1]) * 0.5;
+    const pa = sideMid(n, a, y), pb = sideMid(n, b, y);
+    const t0 = Math.atan2(pa[2] - cz, pa[0] - cx);
+    let dt = Math.atan2(pb[2] - cz, pb[0] - cx) - t0;
+    if (dt > Math.PI) dt -= TAU;
+    if (dt < -Math.PI) dt += TAU;
+    const pts = [];
+    for (let k = 0; k <= 10; k++) { const t = t0 + dt * k / 10; pts.push([cx + Math.cos(t) * 0.5, y, cz + Math.sin(t) * 0.5]); }
+    p.segs.push(rollSeg(pts, row, { arc: [cx, cz] }));
+  }
+  resolveMergers(n);
+}
+// マスを穴にする（入口から中心へ転がり、穴へ落ちる）
+function makeHole(p, n) {
+  const y = n.h + Y_ROLL, row = rowOf(n.i, n.j);
+  n.kind = 'hole';
+  n.cell.piece = { top: 'hole', rot: (n.inSide + 2) % 4 };
+  if (n.inSide != null && !n.landed) {
+    n.seg = p.base + p.segs.length;
+    p.segs.push(rollSeg([sideMid(n, n.inSide, y), center(n, y)], row));
+    resolveMergers(n);
+  }
+}
+// このマスへ飛び降りて合流する経路の、落ちる先を決める（マスを転がる区間が決まったとき）
+function resolveMergers(n) {
+  for (const mp of n.mergers ?? []) {
+    // 受けではくぼみの中心（区間の始め）、溝では区間の中ほどへ落ちる
+    const target = n.path.segs[n.seg - n.path.base], fall = mp.segs[mp.segs.length - 1];
+    const s = n.kind === 'catch' ? 0 : target.len / 2;
+    mp.segs[mp.segs.length - 1] = fallSeg(fall.a, rollPoint(target, s), fall.row);
+    Object.assign(mp.merge, { seg: n.seg, s });
+  }
+  n.mergers = null;
+}
+
+// 経路を 1 マス先へ延ばす
+function advance(p) {
+  const c = p.cur;
+  // 地形の基準の高さに沿わせる。基準より高ければ下り、低ければ平らに進む。同じ高さなら、台地が続くかぎり地表を長く進む
+  const e = c.h - baseHeight(c.i, c.j);
+  const plateau = p.run < PLATEAU_RUN && flatChoices(p).some((o) => o.plateau);
+  const descend = e > 0 || (e === 0 && p.run >= p.runLen && !plateau);
+  if (descend && tryDescend(p)) return;
+  if (tryFlat(p)) return;
+  if (tryDescend(p)) return;
+  if (tryMerge(p)) return;
+  // 行き詰まったら、穴で終える（玉は穴へ落ちて消える）
+  makeHole(p, c);
+  p.segs.push(fallSeg(center(c, c.h + Y_ROLL), center(c, c.h - 0.9), rowOf(c.i, c.j), true));
+  p.active = false;
+  p.ended = true;
+}
+
+// 高さ h のマス (i, j) へ入口 inSide から入ったあと、次へ進めるか（平らに進むか、手前へ 1 段下りられるか）
+function hasExit(i, j, h, inSide, p) {
+  for (let s = 0; s < 4; s++) {
+    if (s === inSide) continue;
+    const ni = i + DIRS[s][0], nj = j + DIRS[s][1];
+    if (!inBand(ni, nj) || canPlace(ni, nj, h, p) || (s <= 1 && canPlace(ni, nj, h - 1, p))) return true;
+  }
+  return false;
+}
+// 台地かを見るのに使う、もともとの柱の高さ
+const naturalHeight = (i, j) => Math.round(terrainLevel(i, j));
+// (i, j) からつながる、地形がもともと高さ h の台地のマスの数（PLATEAU_SCAN マスまで数える）
+function plateauSize(i, j, h) {
+  const seen = new Set([cellKey(i, j)]), queue = [[i, j]];
+  let count = 0;
+  while (queue.length && count < PLATEAU_SCAN) {
+    const [a, b] = queue.shift();
+    for (const [dx, dz] of DIRS) {
+      const ni = a + dx, nj = b + dz, k = cellKey(ni, nj);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const c = cells.get(k);
+      if (!inBand(ni, nj) || c?.node || c?.fixed || naturalHeight(ni, nj) !== h) continue;
+      count++;
+      queue.push([ni, nj]);
+    }
+  }
+  return count;
+}
+// (i, j) の手前の隣（+x・+z）を、別の経路が同じ高さで通っているか（そこへ進むと、手前へ下りられずに行き詰まりやすい）
+function frontTaken(i, j, h, p) {
+  return [0, 1].some((t) => { const n = cells.get(cellKey(i + DIRS[t][0], j + DIRS[t][1]))?.node; return n && n.path !== p && n.h === h; });
+}
+// 同じ高さのまま隣へ進む候補（重み付き）
+function flatChoices(p) {
+  const c = p.cur;
+  const options = [];
+  for (let s = 0; s < 4; s++) {
+    if (s === c.inSide) continue;
+    const i = c.i + DIRS[s][0], j = c.j + DIRS[s][1];
+    // 奥へ戻る向き（−x・−z）は選びにくくし、続けて戻るのはまっすぐ 2 マスまで（戻りすぎると、自分の溝に囲まれて行き詰まる）
+    const back = s >= 2, right = s === 0 || s === 3 ? 1 : -1, straight = s === opposite(c.inSide);
+    if (back && p.lastBack && (!straight || p.leg >= 2)) continue;
+    // 区切りの長さまではまっすぐ進み、そのあとは曲がりやすくする（1 マスごとに曲がると、細かいジグザグばかりになる）
+    const w = Math.exp(p.drift * right) * (straight ? LEG_STRAIGHT[p.leg < p.legLen ? 0 : 1] : 1) * (back ? 0.25 : 1);
+    if (!inBand(i, j)) options.push({ s, out: true, w: w * 0.5 });
+    // 次に進める先が無いマスは、ほかに無いときだけ選ぶ
+    else if (canPlace(i, j, c.h, p)) {
+      // 台地（地形がもともと同じ高さの所）に沿う向きを選びやすくする
+      const plateau = naturalHeight(i, j) === c.h;
+      // 奥へ戻る向きも、台地の上なら選びやすい（手前と奥へ交互に進んで、台地の上を横へ長く進む）
+      options.push({ s, back, plateau, w: w * (plateau ? (back ? 24 : 6) : p.run < p.runLen ? 0.05 : 1) * (hasExit(i, j, c.h, opposite(s), p) ? 1 : 0.02) * (frontTaken(i, j, c.h, p) ? 0.05 : 1) });
+    }
+  }
+  return options;
+}
+function tryFlat(p) {
+  const c = p.cur;
+  const o = pickWeighted(flatChoices(p));
+  if (!o) return false;
+  finishNode(p, c, o.s);
+  if (o.out) {
+    // 作る範囲の外へ出ていく（画面の外なので、地形は作らない）
+    const y = c.h + Y_ROLL, a = sideMid(c, o.s, y);
+    p.segs.push(rollSeg([a, [a[0] + DIRS[o.s][0] * 3, y, a[2] + DIRS[o.s][1] * 3]], rowOf(c.i, c.j)));
+    p.active = false;
+    p.ended = true;
+    return true;
+  }
+  if (o.s === opposite(c.inSide)) p.leg++;
+  else newLeg(p);
+  placeNode(p, c.i + DIRS[o.s][0], c.j + DIRS[o.s][1], c.h, 'groove', opposite(o.s));
+  p.run++;
+  p.lastBack = o.back;
+  return true;
+}
+
+// 行き詰まったときの特例: 1 段下の隣が別の経路の溝か受けなら、そこへ飛び降りて合流する。玉はそこからその経路に乗り換え、
+// この経路はここで終わる
+function tryMerge(p) {
+  const c = p.cur, merges = [];
+  for (const t of [0, 1]) {
+    if (t === c.inSide) continue;
+    const n = cells.get(cellKey(c.i + DIRS[t][0], c.j + DIRS[t][1]))?.node;
+    if (n && n.path !== p && (n.kind === 'groove' || n.kind === 'catch') && n.h === c.h - 1 && (n.seg == null || n.seg >= n.path.base)) merges.push({ t, n });
+  }
+  if (!merges.length) return false;
+  const { t, n } = pick(merges);
+  finishNode(p, c, t);
+  // 落ちる先は、下のマスの出口がまだ決まっていなければ、仮にマスの中心にしておき、決まったときに決め直す
+  p.segs.push(fallSeg(sideMid(c, t, c.h + Y_ROLL), center(n, n.h + Y_ROLL), rowOf(c.i, c.j)));
+  p.merge = { path: n.path, seg: null, s: 0 };
+  (n.mergers ??= []).push(p);
+  if (n.seg != null) resolveMergers(n);
+  p.active = false;
+  p.ended = true;
+  return true;
+}
+
+function tryDescend(p) {
+  const c = p.cur;
+  const drops = [], tunnels = [];
+  for (const t of [0, 1]) {
+    if (t === c.inSide) continue;
+    const [dx, dz] = DIRS[t];
+    // 飛び降りも穴も 1 段だけ下る（2 段以上は落とさない）。穴は溝のマスだけ（受けのくぼみには穴を開けない）で、出口のある柱には開けない
+    if (!canPlace(c.i + dx, c.j + dz, c.h - 1, p)) continue;
+    // 下りた先に台地が広く続く側を選びやすくする
+    const w = (hasExit(c.i + dx, c.j + dz, c.h - 1, opposite(t), p) ? 1 : 0.02) * (1 + plateauSize(c.i + dx, c.j + dz, c.h - 1));
+    drops.push({ t, w });
+    if (c.kind === 'groove' && !c.cell.tun.length) tunnels.push({ t, w });
+  }
+  const row = rowOf(c.i, c.j);
+  const useTunnel = tunnels.length && (!drops.length || Math.random() < TUNNEL_CHANCE);
+  const o = pickWeighted(useTunnel ? tunnels : drops);
+  if (!o) return false;
+  const [dx, dz] = DIRS[o.t];
+  if (useTunnel) {
+    // 穴に落ち、同じ立方体の中の L 字の通路を通って、側面の出口から 1 段下の受けへ転がり出る
+    const level = c.h - 1, ty = level + TUNNEL_Y;
+    makeHole(p, c);
+    p.segs.push(fallSeg(center(c, c.h + Y_ROLL), center(c, ty), row, true));
+    c.cell.tun.push(level);
+    c.cell.open.push({ level, side: o.t });
+    const exit = sideMid(c, o.t, ty);
+    p.segs.push(rollSeg([center(c, ty), exit], row, { hidden: true }));
+    const m = placeNode(p, c.i + dx, c.j + dz, level, 'catch', opposite(o.t));
+    p.segs.push(fallSeg(exit, center(m, m.h + Y_ROLL), rowOf(m.i, m.j)));
+  } else {
+    // 段差の縁から飛び降りて、下の受けへ
+    finishNode(p, c, o.t);
+    const a = sideMid(c, o.t, c.h + Y_ROLL);
+    const m = placeNode(p, c.i + dx, c.j + dz, c.h - 1, 'catch', opposite(o.t));
+    p.segs.push(fallSeg(a, center(m, m.h + Y_ROLL), row));
+  }
+  p.cur.landed = true;
+  p.lastBack = false;
+  newLeg(p);
+  p.run = 0;
+  p.runLen = randRange(RUN_LENGTH);
+  return true;
+}
+
+// 曲がったあと（下りたあと）の、まっすぐ進む区切りを始める
+function newLeg(p) {
+  p.leg = 1;
+  p.legLen = randRange(LEG_LENGTH);
+}
+function newPath() {
+  const p = { segs: [], base: 0, cur: null, run: 0, runLen: randRange(RUN_LENGTH),
+    drift: (Math.random() - 0.5) * 2, lastBack: false, maxRow: -Infinity, active: true, ended: false, marbles: [] };
+  newLeg(p);
+  return p;
+}
+// 作る範囲の左右の端から入ってくる経路を始める（side: −1 が左、+1 が右）
+function startEdgePath(side, row) {
+  const q = side * bandQ;
+  for (const r of [row, row + 1]) {
+    if ((r + q) % 2 !== 0) continue;
+    const i = (r + q) / 2, j = (r - q) / 2;
+    const inSide = side < 0 ? 2 : 3;   // 左は −x の側から、右は −z の側から（どちらも画面の下へ向かって）入る
+    const c = getCell(i, j);
+    const h = clamp(Math.round(baseHeight(i, j)), c.lo, c.hi);
+    const p = newPath();
+    p.maxRow = r;
+    if (!canPlace(i, j, h, p)) return false;
+    const n = placeNode(p, i, j, h, 'groove', inSide);
+    const y = h + Y_ROLL, a = sideMid(n, inSide, y);
+    p.segs.push(rollSeg([[a[0] + DIRS[inSide][0] * 3, y, a[2] + DIRS[inSide][1] * 3], a], r));
+    paths.push(p);
+    return true;
+  }
+  return false;
+}
+// 見えないトンネルから出てくる経路を始める（受けのマスの横の位置 q のあたり）
+function startTunnelPath(q0, row) {
+  for (const dq of [0, 2, -2, 4, -4]) {
+    for (const r of [row + 1, row + 2]) {
+      const q = q0 + dq;
+      if ((r + q) % 2 !== 0 || Math.abs(q) > bandQ - 2) continue;
+      const i = (r + q) / 2, j = (r - q) / 2;
+      const t = Math.random() < 0.5 ? 0 : 1, [dx, dz] = DIRS[t];
+      const ci = i - dx, cj = j - dz;   // 出口のある柱
+      if (!inBand(ci, cj) || rowOf(ci, cj) < finalRow + 1) continue;
+      const m = getCell(i, j), cn = getCell(ci, cj);
+      const h = clamp(Math.round(baseHeight(i, j)), m.lo, m.hi);
+      // 出口のある柱には、ほかの通路を通さない（出口が 2 つの側面に開く柱を作らない）
+      if (cn.tun.length || cn.node || Math.max(cn.lo, h + 1) > cn.hi || (cn.h != null && cn.h < h + 1)) continue;
+      const p = newPath();
+      p.maxRow = r;
+      if (!canPlace(i, j, h, p)) continue;
+      cn.lo = Math.max(cn.lo, h + 1);
+      cn.tun.push(h);
+      cn.open.push({ level: h, side: t });
+      const ty = h + TUNNEL_Y;
+      const exit = [ci + 0.5 + dx * 0.5, ty, cj + 0.5 + dz * 0.5];
+      p.segs.push(rollSeg([[ci + 0.5 - dx * 0.4, ty, cj + 0.5 - dz * 0.4], exit], r, { hidden: true }));
+      const n = placeNode(p, i, j, h, 'catch', opposite(t));
+      n.landed = true;
+      p.segs.push(fallSeg(exit, center(n, h + Y_ROLL), r));
+      paths.push(p);
+      return true;
+    }
+  }
+  return false;
+}
+// 経路の間が空いた所に、新しい経路を始める
+function fillGaps(row) {
+  const heads = paths.filter((p) => p.active).map((p) => p.cur.i - p.cur.j).sort((a, b) => a - b);
+  if (!heads.length || heads[0] + bandQ > PATH_SPACING * 1.5) startEdgePath(-1, row);
+  if (!heads.length || bandQ - heads[heads.length - 1] > PATH_SPACING * 1.5) startEdgePath(1, row);
+  for (let k = 0; k + 1 < heads.length; k++) {
+    if (heads[k + 1] - heads[k] > PATH_SPACING * 2) startTunnelPath(Math.round((heads[k] + heads[k + 1]) / 2), row);
+  }
+}
+
+// 行 targetRow まで経路を延ばし、確定できる行の高さを決める
+function generate(targetRow) {
+  for (let guard = 0; guard < 5000; guard++) {
+    const active = paths.filter((p) => p.active);
+    const front = active.length ? Math.min(...active.map((p) => p.maxRow)) : targetRow;
+    if (front > lastFillRow) { lastFillRow = front; fillGaps(Math.max(front, finalRow + BACKTRACK + 3)); }
+    const lag = paths.filter((p) => p.active).reduce((a, p) => (!a || p.maxRow < a.maxRow ? p : a), null);
+    if (!lag || lag.maxRow >= targetRow) break;
+    advance(lag);
+  }
+  const active = paths.filter((p) => p.active);
+  const safe = (active.length ? Math.min(...active.map((p) => p.maxRow)) : targetRow) - BACKTRACK - 3;
+  while (finalRow < safe) finalizeRow(finalRow++);
+}
+function finalizeRow(r) {
+  for (let q = -bandQ - 2; q <= bandQ + 2; q++) {
+    if ((r + q) % 2 !== 0) continue;
+    const i = (r + q) / 2, j = (r - q) / 2;
+    const c = getCell(i, j);
+    if (c.h == null) c.h = inBand(i, j) ? freeHeight(c) : Math.round(baseHeight(i, j));
+    c.fixed = true;
+    // 手前の隣は、この柱より高くしない（台地にくぼみを作らない）
+    for (const [a, b] of [[1, 0], [0, 1]]) { const f = getCell(i + a, j + b); f.hi = Math.min(f.hi, c.h); }
+  }
+}
+
+// ---- 積み木の描画 ----
+// 立方体は、上面の模様・向き・出口ごとに 1 つの InstancedMesh にまとめる。行のまとまり（チャンク）を作ったり捨てたりしたら、
+// 全部の InstancedMesh を詰め直す
+const pieces = new Map();    // key → { mesh, cap, base }
+const chunks = new Map();    // チャンクの番号 → { cubes, decals }
+let instancesDirty = false;
+
+function pieceMesh(key, need) {
+  const p = pieces.get(key);
+  if (p && p.cap >= need) return p.mesh;
+  const cap = Math.max(need, (p?.cap ?? 32) * 2);
+  const base = p?.base ?? buildPiece(key);
+  if (p) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.dispose(); }
+  const g = new THREE.BufferGeometry();
+  g.setIndex(base.index);
+  for (const name of ['position', 'normal', 'color']) g.setAttribute(name, base.getAttribute(name));
+  g.setAttribute('woodRot', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
+  g.setAttribute('woodOff', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1));
+  const mesh = new THREE.InstancedMesh(g, woodMaterial, cap);
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
+  mesh.count = 0;
+  scene.add(mesh);
+  pieces.set(key, { mesh, cap, base });
+  return mesh;
+}
+
+// 立方体ごとの木目の向き・ずれと色味（座標から決める）
+const woodQuats = (() => {
+  const align = [new THREE.Quaternion(),   // 繊維が x
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2),    // z
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)];  // y
+  const list = [];
+  for (const a of align) {
+    for (let k = 0; k < 4; k++) list.push(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), k * Math.PI / 2).multiply(a));
+  }
+  return list;
+})();
+function woodParams(i, k, j) {
+  const h = (salt) => hash3(i * 7 + salt, k * 13 - salt, j * 5 + salt * 3);
+  const axis = h(1) < 0.45 ? 0 : h(1) < 0.9 ? 1 : 2;   // 繊維の向き（x・z が多く、y はまれ）
+  const quat = woodQuats[axis * 4 + Math.floor(h(2) * 4)];
+  const bright = 1 + (h(3) - 0.5) * 2 * WOOD_TINT, warm = (h(4) - 0.5) * 2 * WOOD_TINT;
+  return { quat, off: h(5), tint: [bright * (1 + warm * 0.5), bright, bright * (1 - warm)] };
+}
+
+function buildChunk(index) {
+  const cubes = [], decals = [];
+  for (let r = index * CHUNK_ROWS; r < (index + 1) * CHUNK_ROWS; r++) {
+    for (let q = -bandQ; q <= bandQ; q++) {
+      if ((r + q) % 2 !== 0) continue;
+      const i = (r + q) / 2, j = (r - q) / 2;
+      const c = cells.get(cellKey(i, j));
+      const H = c.h;
+      const around = DIRS.map(([dx, dz]) => heightAt(i + dx, j + dz));
+      const lowest = Math.max(H - MAX_DRAW_DEPTH, Math.min(H - 1, ...around));
+      for (let k = H - 1; k >= lowest; k--) {
+        let open = 0;
+        for (const o of c.open) if (o.level === k) open |= o.side === 0 ? 1 : 2;
+        const top = k === H - 1 && c.piece ? c.piece : null;
+        cubes.push({ key: `${top ? top.top : 'plain'}:${top ? top.rot : 0}:${open}`, i, k, j, ...woodParams(i, k, j) });
+      }
+      // 柱が接する所の陰: 隣の柱が高ければ、この柱の上面の縁と、隣の柱の見える側面の付け根
+      for (let s = 0; s < 4; s++) {
+        if (around[s] <= H) continue;
+        const [dx, dz] = DIRS[s];
+        const ex = [-dz, 0, dx];
+        const edge = [i + 0.5 + dx * 0.5, H, j + 0.5 + dz * 0.5];
+        decals.push({ ex, ey: [-dx * CONTACT_WIDTH, 0, -dz * CONTACT_WIDTH], ez: [0, 1, 0], p: [edge[0], H + 0.003, edge[2]] });
+        if (s >= 2) decals.push({ ex, ey: [0, CONTACT_WIDTH * 0.8, 0], ez: [-dx, 0, -dz], p: [edge[0] - dx * 0.003, H, edge[2] - dz * 0.003] });
+      }
+    }
+  }
+  chunks.set(index, { cubes, decals });
+  instancesDirty = true;
+}
+
+// 陰の板（縁で濃く、内へ薄れる）。色を掛け合わせる: 画面の色 × (1 − α + α·色)
+function gradientTexture(size, alphaAt) {
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const a = Math.round(clamp(alphaAt((x + 0.5) / size, (y + 0.5) / size), 0, 1) * 255);
+      data.set([a, a, a, 255], (y * size + x) * 4);
+    }
+  }
+  const t = new THREE.DataTexture(data, size, size);
+  t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+function multiplyMaterial(color, alphaMap, opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: new THREE.Color(...color), alphaMap, opacity, transparent: true, premultipliedAlpha: true, depthWrite: false,
+    blending: THREE.CustomBlending, blendSrc: THREE.DstColorFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide,
+  });
+}
+const contactGeometry = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+const contactMaterial = multiplyMaterial(CONTACT_COLOR, gradientTexture(32, (u, v) => (1 - v) ** 2), CONTACT_ALPHA);
+let contactMesh = null, contactCap = 0;
+
+function rebuildInstances() {
+  instancesDirty = false;
+  shadowAt = null;
+  const groups = new Map();
+  const decals = [];
+  for (const ch of chunks.values()) {
+    for (const c of ch.cubes) { if (!groups.has(c.key)) groups.set(c.key, []); groups.get(c.key).push(c); }
+    decals.push(...ch.decals);
+  }
+  for (const [key, p] of pieces) if (!groups.has(key)) p.mesh.count = 0;
+  const m = new THREE.Matrix4();
+  for (const [key, list] of groups) {
+    const mesh = pieceMesh(key, list.length);
+    const rot = mesh.geometry.attributes.woodRot, off = mesh.geometry.attributes.woodOff;
+    list.forEach((c, n) => {
+      m.makeTranslation(c.i + 0.5 - origin.x, c.k + 0.5 - origin.y, c.j + 0.5 - origin.z);
+      mesh.setMatrixAt(n, m);
+      mesh.instanceColor.setXYZ(n, ...c.tint);
+      rot.setXYZW(n, c.quat.x, c.quat.y, c.quat.z, c.quat.w);
+      off.setX(n, c.off);
+    });
+    mesh.count = list.length;
+    mesh.instanceMatrix.needsUpdate = mesh.instanceColor.needsUpdate = rot.needsUpdate = off.needsUpdate = true;
+  }
+  if (decals.length > contactCap) {
+    if (contactMesh) { scene.remove(contactMesh); contactMesh.dispose(); }
+    contactCap = Math.max(decals.length, contactCap * 2, 256);
+    contactMesh = new THREE.InstancedMesh(contactGeometry, contactMaterial, contactCap);
+    contactMesh.frustumCulled = false;
+    scene.add(contactMesh);
+  }
+  if (contactMesh) {
+    decals.forEach((d, n) => {
+      m.makeBasis(new THREE.Vector3(...d.ex), new THREE.Vector3(...d.ey), new THREE.Vector3(...d.ez));
+      m.setPosition(d.p[0] - origin.x, d.p[1] - origin.y, d.p[2] - origin.z);
+      contactMesh.setMatrixAt(n, m);
+    });
+    contactMesh.count = decals.length;
+    contactMesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// ---- ビー玉 ----
+// 玉: { path, seg（区間の通し番号）, s（転がりの区間で進んだ長さ）, t（落下の区間に入ってからの秒）, v, v0（落ち始めの速さ）,
+//       pos（世界の座標）, group, shadow, caustic, seen（画面に入った）, age, bounce（受けで跳ねる { t, a }）,
+//       axis・spin（回転の軸と速さ）, done（経路の終わりまで来た） }
+const marbles = [];
+let nextSpawn = 0;
+const marbleGeometry = new THREE.SphereGeometry(MARBLE_RADIUS, 48, 32);
+const ribbonGeometry = (() => {
+  // ねじれた羽根 1 枚（中心の軸から外へ広がる帯）
+  const R = MARBLE_RADIUS * RIBBON_SIZE, NY = 18, NS = 4, pos = [], idx = [];
+  for (let a = 0; a <= NY; a++) {
+    const y = -R + 2 * R * a / NY;
+    const w = Math.sqrt(Math.max(0, R * R - y * y)) * 0.92, ang = y / R * 1.6;
+    for (let s = 0; s <= NS; s++) pos.push(Math.cos(ang) * w * s / NS, y, Math.sin(ang) * w * s / NS);
+  }
+  for (let a = 0; a < NY; a++) for (let s = 0; s < NS; s++) {
+    const k = a * (NS + 1) + s;
+    idx.push(k, k + NS + 1, k + 1, k + 1, k + NS + 1, k + NS + 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+})();
+// ガラスは three.js の透過（背後をもう一度描く重い処理）を使わず、玉を通った光線の向きで映り込みの環境を引いて近似する。
+// 光線は玉の表面で 2 回屈折させる（球のレンズなので、上下左右が逆さまになる）。透ける光にはガラスの色（color）と、
+// 厚みで吸われる色を掛け、彩度を上げて目立たせる。羽根入りの玉の透明なガラスは半透明にし、先に描いた羽根を透かす
+const GLASS_REFRACT = `
+vec3 glassD = -vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);   // 視線（正射影なので、どこでも同じ向き）
+vec3 glassN = normalize(vGlassPos - vGlassCenter);
+vec3 glassD1 = refract(glassD, glassN, 1.0 / GLASS_IOR);
+float glassChord = -2.0 * dot(glassD1, glassN) * length(vGlassPos - vGlassCenter);   // 玉の中を通る長さ
+vec3 glassD2 = refract(glassD1, -normalize(vGlassPos + glassD1 * glassChord - vGlassCenter), GLASS_IOR);
+float glassF = 0.04 + 0.96 * pow(1.0 - max(dot(-glassD, glassN), 0.0), 5.0);   // 表で照り返す割合（Schlick）
+vec3 glassT = glassColor * exp(log(max(glassColor, 1e-4)) * glassAbsorb * glassChord);
+outgoingLight += (1.0 - glassF) * glassT * textureCubeUV(envMap, glassD2, GLASS_BLUR).rgb * envMapIntensity;`;
+const glassMaterial = (color, attenuationDistance, opacity) => {
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0x000000, metalness: 0, roughness: 0.02, ior: GLASS_IOR, envMapIntensity: ENV_INTENSITY * 1.3, opacity, transparent: true, depthWrite: false,
+  });
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, { glassColor: { value: color }, glassAbsorb: { value: 1 / attenuationDistance } });
+    shader.vertexShader = 'varying vec3 vGlassPos;\nvarying vec3 vGlassCenter;\n' + shader.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\nvGlassPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvGlassCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;');
+    shader.fragmentShader = `uniform vec3 glassColor;\nuniform float glassAbsorb;\nvarying vec3 vGlassPos;\nvarying vec3 vGlassCenter;
+#define GLASS_IOR ${GLASS_IOR.toFixed(3)}\n#define GLASS_BLUR ${GLASS_BLUR.toFixed(3)}\n` + shader.fragmentShader.replace('#include <opaque_fragment>', GLASS_REFRACT + '\n#include <opaque_fragment>');
+  };
+  return material;
+};
+const clearGlass = glassMaterial(new THREE.Color(1, 1, 1), Infinity, CLEAR_GLASS_OPACITY);
+const colorGlass = GLASS_COLORS.map((c) => glassMaterial(new THREE.Color(c), GLASS_ATTENUATION, 1));
+const shadowAlpha = gradientTexture(32, (u, v) => 1 - smooth(0.25, 1, Math.hypot(u - 0.5, v - 0.5) * 2));
+const causticAlpha = gradientTexture(32, (u, v) => (1 - smooth(0, 1, Math.hypot(u - 0.5, v - 0.5) * 2)) ** 2);
+const decalGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+const LIGHT_FLAT = new THREE.Vector2(LIGHT_DIR.x, LIGHT_DIR.z).normalize();
+
+function createMarble(path, seg, s) {
+  const group = new THREE.Group();
+  let tint;
+  if (Math.random() < RIBBON_CHANCE) {
+    group.add(Object.assign(new THREE.Mesh(marbleGeometry, clearGlass), { renderOrder: 1 }));
+    const colors = pick(RIBBON_COLORS);
+    colors.forEach((color, b) => {
+      const ribbon = new THREE.Mesh(ribbonGeometry, new THREE.MeshStandardMaterial({ color, roughness: 0.35, side: THREE.DoubleSide }));
+      ribbon.rotation.y = b * TAU / colors.length;
+      group.add(ribbon);
+    });
+    tint = new THREE.Color(0.9, 0.9, 0.9);
+  } else {
+    const k = randInt(GLASS_COLORS.length);
+    group.add(Object.assign(new THREE.Mesh(marbleGeometry, colorGlass[k]), { renderOrder: 1 }));
+    tint = new THREE.Color(GLASS_COLORS[k]);
+  }
+  group.quaternion.setFromAxisAngle(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize(), rand(0, TAU));
+  scene.add(group);
+  // 影はガラスの色を帯び、中ほどに明かりが集まる
+  const shadowColor = tint.clone().lerp(new THREE.Color(0, 0, 0), 0.55);
+  const shadow = new THREE.Mesh(decalGeometry, multiplyMaterial([shadowColor.r, shadowColor.g, shadowColor.b], shadowAlpha, MARBLE_SHADOW_ALPHA));
+  const caustic = new THREE.Mesh(decalGeometry, new THREE.MeshBasicMaterial({
+    color: new THREE.Color(LIGHT_COLOR).lerp(tint, 0.6).multiplyScalar(CAUSTIC), alphaMap: causticAlpha, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  }));
+  shadow.rotation.y = caustic.rotation.y = Math.atan2(-LIGHT_FLAT.y, LIGHT_FLAT.x);
+  scene.add(shadow, caustic);
+  const m = { path, seg, s, t: 0, v: SPEED_MIN * 1.1, v0: 0, pos: new THREE.Vector3(), group, shadow, caustic,
+    seen: false, age: 0, bounce: null, axis: new THREE.Vector3(1, 0, 0), spin: 0, done: false };
+  if (path.segs[seg - path.base].type === 'fall') m.v0 = m.v;
+  positionOf(m, m.pos);
+  // 出したコマから正しい位置に描く（置かないと、そのコマだけ玉と影が座標の原点に写る）
+  m.group.position.copy(m.pos).sub(origin);
+  placeMarbleShadow(m);
+  marbles.push(m);
+  path.marbles.push(m);
+  return m;
+}
+function removeMarble(m) {
+  scene.remove(m.group, m.shadow, m.caustic);
+  m.group.traverse((o) => { if (o.isMesh && o.material !== clearGlass && !colorGlass.includes(o.material)) o.material.dispose(); });
+  m.shadow.material.dispose();
+  m.caustic.material.dispose();
+  marbles.splice(marbles.indexOf(m), 1);
+  m.path.marbles.splice(m.path.marbles.indexOf(m), 1);
+}
+
+// 玉の中心の位置（世界の座標）
+function positionOf(m, out) {
+  const seg = m.path.segs[m.seg - m.path.base];
+  if (seg.type === 'roll') {
+    out.set(...rollPoint(seg, m.s));
+    if (seg.arc) {
+      // 曲がりでは、速さに応じて外側へ寄る
+      const ox = out.x - seg.arc[0], oz = out.z - seg.arc[1], len = Math.hypot(ox, oz) || 1;
+      const shift = Math.min(CURVE_SHIFT_MAX, CURVE_SHIFT * m.v * m.v);
+      out.x += ox / len * shift;
+      out.z += oz / len * shift;
+    }
+  } else {
+    // 落下: 縦は重力で、横は落ち始めの速さから、着く所へなめらかにつなぐ
+    const tau = clamp(m.t / seg.T, 0, 1);
+    const h0 = seg.dist > 0 ? clamp(m.v0 * seg.T / seg.dist, 0, 2) : 0;
+    const f = h0 * tau + (1 - h0) * tau * tau;
+    out.set(lerp(seg.a[0], seg.b[0], f), seg.a[1] - seg.dh * tau * tau, lerp(seg.a[2], seg.b[2], f));
+  }
+  if (m.bounce) out.y += bounceOffset(m.bounce);
+  return out;
+}
+function bounceOffset(b) {
+  let t = b.t, a = b.a;
+  for (let n = 0; n < 2; n++) {
+    const T = 2 * Math.sqrt(2 * a / GRAVITY);
+    if (t < T) { const x = t / T * 2 - 1; return a * (1 - x * x); }
+    t -= T;
+    a *= 0.3;
+  }
+  return 0;
+}
+
+// 玉を dt 秒進めた状態（m は変えない）
+function stepMarble(m, dt) {
+  const st = { path: m.path, seg: m.seg, s: m.s, t: m.t, v: m.v, v0: m.v0, landed: 0, done: false };
+  let rest = dt;
+  for (let guard = 0; guard < 8 && rest > 0; guard++) {
+    const seg = st.path.segs[st.seg - st.path.base];
+    if (seg.type === 'roll') {
+      st.v = SPEED_MIN + (st.v - SPEED_MIN) * Math.exp(-rest / SPEED_DECAY);
+      st.s += st.v * rest;
+      if (st.s < seg.len) { rest = 0; break; }
+      rest = (st.s - seg.len) / st.v;
+      st.s = seg.len;
+    } else {
+      st.t += rest;
+      if (st.t < seg.T) { rest = 0; break; }
+      rest = st.t - seg.T;
+      st.t = seg.T;
+      st.v = Math.min(SPEED_MAX, Math.sqrt(st.v * st.v + FALL_GAIN * 2 * GRAVITY * seg.dh));
+      st.landed = seg.dh;
+    }
+    // 次の区間へ。合流して終わる経路の終わりでは、合流先の経路に乗り換える
+    if (st.seg + 1 - st.path.base >= st.path.segs.length) {
+      const merge = st.path.merge;
+      if (merge && merge.seg != null && merge.seg >= merge.path.base && paths.includes(merge.path)) {
+        Object.assign(st, { path: merge.path, seg: merge.seg, s: merge.s, t: 0 });
+        continue;
+      }
+      if (st.path.ended) st.done = true;
+      rest = 0;
+      break;
+    }
+    st.seg++;
+    st.s = 0;
+    st.t = 0;
+    if (st.path.segs[st.seg - st.path.base].type === 'fall') st.v0 = st.v;
+  }
+  return st;
+}
+
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
+function updateMarbles(dt) {
+  const transfers = [];
+  for (const path of paths) {
+    // 前の玉から順に進め、前の玉に追いついたら後ろに付く
+    path.marbles.sort((a, b) => b.seg - a.seg || (b.s + b.t) - (a.s + a.t));
+    let front = null;
+    for (const m of path.marbles) {
+      m.age += dt;
+      const st = stepMarble(m, dt);
+      const old = { path: m.path, seg: m.seg, s: m.s, t: m.t, v: m.v, v0: m.v0 };
+      Object.assign(m, { path: st.path, seg: st.seg, s: st.s, t: st.t, v: st.v, v0: st.v0 });
+      positionOf(m, tmpA);
+      if (front && tmpA.distanceTo(front.pos) < MARBLE_RADIUS * 2.04) {
+        Object.assign(m, old);
+        m.v = Math.min(m.v, front.v);
+        positionOf(m, tmpA);
+      } else {
+        if (st.landed > 0.3) m.bounce = { t: 0, a: Math.min(BOUNCE_MAX, BOUNCE_HEIGHT * st.landed) };
+        if (st.done) m.done = true;
+        if (m.path !== path) transfers.push([m, path]);
+      }
+      if (m.bounce && (m.bounce.t += dt) > 1) m.bounce = null;
+      // 転がった分だけ回す（落ちている間は、それまでの回転を続ける）
+      const dx = tmpA.x - m.pos.x, dz = tmpA.z - m.pos.z, d = Math.hypot(dx, dz);
+      const seg = m.path.segs[m.seg - m.path.base];
+      if (seg.type === 'roll' && d > 1e-6) { m.axis.set(dz / d, 0, -dx / d); m.spin = d / MARBLE_RADIUS / Math.max(dt, 1e-4); }
+      if (m.spin > 0) m.group.quaternion.premultiply(tmpQ.setFromAxisAngle(m.axis, m.spin * dt));
+      m.pos.copy(tmpA);
+      front = m;
+    }
+  }
+  for (const [m, from] of transfers) {
+    from.marbles.splice(from.marbles.indexOf(m), 1);
+    m.path.marbles.push(m);
+  }
+  for (const m of [...marbles]) {
+    const on = onScreen(m.pos, -MARBLE_RADIUS);
+    if (on) m.seen = true;
+    if (m.done || (m.seen && !onScreen(m.pos, 0.6)) || (!m.seen && m.age > 20)) { removeMarble(m); continue; }
+    m.group.position.copy(m.pos).sub(origin);
+    placeMarbleShadow(m);
+  }
+}
+
+// 玉の影と集光を、明かりの向きに沿って下の面へ映した所に置く
+function placeMarbleShadow(m) {
+  const seg = m.path.segs[m.seg - m.path.base];
+  const visible = !seg.hidden;
+  m.shadow.visible = m.caustic.visible = visible;
+  if (!visible) return;
+  const gy = seg.type === 'roll' ? seg.pts[0][1] - MARBLE_RADIUS * 0.6 : seg.b[1] - MARBLE_RADIUS * 0.6;
+  const lift = Math.max(0, m.pos.y - MARBLE_RADIUS * 0.4 - gy);
+  const k = (m.pos.y - gy) / LIGHT_DIR.y;
+  tmpB.set(m.pos.x - LIGHT_DIR.x * k, gy, m.pos.z - LIGHT_DIR.z * k).sub(origin);
+  const spread = 1 + lift * 0.8, fade = 1 / (1 + lift * 2.5);
+  m.shadow.position.copy(tmpB);
+  m.shadow.scale.set(2.4 * MARBLE_RADIUS / LIGHT_DIR.y * spread, 1, 2.4 * MARBLE_RADIUS * spread);
+  m.shadow.material.opacity = MARBLE_SHADOW_ALPHA * fade;
+  m.caustic.position.set(tmpB.x - LIGHT_FLAT.x * MARBLE_RADIUS * 0.35, tmpB.y + 0.001, tmpB.z - LIGHT_FLAT.y * MARBLE_RADIUS * 0.35);
+  m.caustic.scale.set(MARBLE_RADIUS * 1.1 * spread, 1, MARBLE_RADIUS * 0.8 * spread);
+  m.caustic.material.opacity = fade * fade;
+}
+
+// 玉を出す所: 経路の上で、画面の外から画面の中へ入る直前の点
+function findEntry(path) {
+  let last = null;
+  for (let n = 0; n < path.segs.length && n < 60; n++) {
+    const seg = path.segs[n];
+    const samples = seg.type === 'roll' ? Math.max(1, Math.ceil(seg.len / 0.3)) : 1;
+    for (let k = 0; k < samples; k++) {
+      const s = seg.type === 'roll' ? seg.len * k / samples : 0;
+      const p = seg.type === 'roll' ? rollPoint(seg, s) : seg.a;
+      const inside = !seg.hidden && onScreen(tmpA.set(...p), -MARBLE_RADIUS * 2);
+      if (inside) return last ? { ...last, at: [...p] } : null;
+      last = { seg: path.base + n, s };
+    }
+  }
+  return null;
+}
+// 転がりの区間で、始めから長さ s 進んだ点
+function rollPoint(seg, s) {
+  let k = 1;
+  while (k < seg.pts.length - 1 && seg.cum[k] < s) k++;
+  const a = seg.pts[k - 1], b = seg.pts[k], t = clamp((s - seg.cum[k - 1]) / ((seg.cum[k] - seg.cum[k - 1]) || 1), 0, 1);
+  return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+}
+function spawnMarble() {
+  const options = [];
+  for (const path of paths) {
+    const e = findEntry(path);
+    if (!e || path.marbles.some((m) => Math.abs(m.seg - e.seg) <= 2)) continue;
+    // 画面にある玉から離れた経路を選びやすくする
+    let d = 6;
+    for (const m of marbles) d = Math.min(d, Math.hypot(m.pos.x - e.at[0], m.pos.z - e.at[2]));
+    options.push({ e, path, w: (d + 0.5) ** 2 });
+  }
+  const o = pickWeighted(options);
+  if (o) createMarble(o.path, o.e.seg, o.e.s);
+  return !!o;
+}
+// 起動時とリセットのときは、画面の中の溝に散らして置く
+function scatterMarbles(n) {
+  const options = [];
+  for (const path of paths) {
+    path.segs.forEach((seg, k) => {
+      if (seg.type === 'roll' && !seg.hidden && onScreen(tmpA.set(...rollPoint(seg, seg.len / 2)), 0)) options.push({ path, seg: path.base + k, s: seg.len / 2 });
+    });
+  }
+  for (let k = 0; k < n && options.length; k++) {
+    const o = options.splice(randInt(options.length), 1)[0];
+    if (o.path.marbles.some((m) => Math.abs(m.seg - o.seg) <= 2)) { k--; continue; }
+    createMarble(o.path, o.seg, o.s).seen = true;
+  }
+}
+function controlCount() {
+  const want = Math.round(marbleCount);
+  const live = marbles.filter((m) => m.seen ? onScreen(m.pos, 0) : true).length;
+  if (live < want && time >= nextSpawn && spawnMarble()) nextSpawn = time + rand(...SPAWN_GAP);
+}
+
+// ---- カメラ ----
+const CAM_BACK = new THREE.Vector3(Math.cos(CAM_ELEVATION * DEG) * Math.SQRT1_2, Math.sin(CAM_ELEVATION * DEG), Math.cos(CAM_ELEVATION * DEG) * Math.SQRT1_2);
+const SCREEN_RIGHT = new THREE.Vector3(Math.SQRT1_2, 0, -Math.SQRT1_2);
+const SCREEN_UP = new THREE.Vector3().crossVectors(CAM_BACK, SCREEN_RIGHT).negate();
+// 平均の地形（行 r のマスの上面）が画面を縦に動く量（1 行あたり）
+const ROW_V = (Math.SQRT2 * Math.sin(CAM_ELEVATION * DEG) + Math.cos(CAM_ELEVATION * DEG)) / 2;
+const CAM_SPEED = VIEW_SHORT / SCROLL_PERIOD / (2 * ROW_V);   // camK の速さ（マス/秒）
+const camTarget = new THREE.Vector3();   // 見る点（世界の座標）
+let viewW = 1, viewH = 1;
+
+function updateView() {
+  const aspect = innerWidth / innerHeight;
+  [viewW, viewH] = aspect >= 1 ? [VIEW_SHORT * aspect, VIEW_SHORT] : [VIEW_SHORT, VIEW_SHORT / aspect];
+  Object.assign(camera, { left: -viewW / 2, right: viewW / 2, top: viewH / 2, bottom: -viewH / 2 });
+  camera.updateProjectionMatrix();
+  // 影を描く範囲（見る点が SHADOW_SLACK だけ動いても、画面に見えている所と、影を落とす柱が収まる大きさ。3 は柱の高さの違いの分）
+  const half = Math.hypot(viewW, viewH) / 2 + 3 + SHADOW_SLACK;
+  Object.assign(sun.shadow.camera, { left: -half, right: half, top: half, bottom: -half });
+  sun.shadow.camera.updateProjectionMatrix();
+  shadowAt = null;
+}
+function updateCamera() {
+  camTarget.set(camK + 0.5, -camK - 0.5, camK + 0.5);
+  const t = tmpA.copy(camTarget).sub(origin);
+  camera.position.copy(t).addScaledVector(CAM_BACK, CAM_DIST);
+  camera.lookAt(t);
+}
+// 影を描き直す（見る点が SHADOW_SLACK より動いたときと、shadowAt を消したとき）。積み木を詰め直したら、そのコマのうちに呼ぶ
+let shadowAt = null;   // 影を最後に描いたときの見る点（世界の座標）
+function updateShadow() {
+  if (shadowAt && camTarget.distanceTo(shadowAt) < SHADOW_SLACK) return;
+  shadowAt = camTarget.clone();
+  renderer.shadowMap.needsUpdate = true;
+  // 影の範囲を見る点へ動かす。影の 1 画素ずつ刻み、描き直しても影の縁が動かないようにする
+  const t = tmpA.copy(camTarget).sub(origin);
+  const texel = (sun.shadow.camera.right - sun.shadow.camera.left) / shadowMapSize;
+  const lx = tmpB.crossVectors(new THREE.Vector3(0, 1, 0), LIGHT_DIR).normalize();
+  const ly = new THREE.Vector3().crossVectors(LIGHT_DIR, lx);
+  const a = t.dot(lx), b = t.dot(ly);
+  const st = t.clone().addScaledVector(lx, Math.round(a / texel) * texel - a).addScaledVector(ly, Math.round(b / texel) * texel - b);
+  sun.target.position.copy(st);
+  sun.position.copy(st).addScaledVector(LIGHT_DIR, 40);
+}
+// 点（世界の座標）が画面の中にあるか（margin だけ内側・外側に広げる）
+function onScreen(p, margin) {
+  const dx = p.x - camTarget.x, dy = p.y - camTarget.y, dz = p.z - camTarget.z;
+  const u = dx * SCREEN_RIGHT.x + dz * SCREEN_RIGHT.z;
+  const v = dx * SCREEN_UP.x + dy * SCREEN_UP.y + dz * SCREEN_UP.z;
+  return Math.abs(u) < viewW / 2 + margin && Math.abs(v) < viewH / 2 + margin;
+}
+// 画面の上端・下端にかかる行
+const rowTop = () => 2 * camK - viewH / 2 / ROW_V;
+const rowBottom = () => 2 * camK + viewH / 2 / ROW_V;
+
+// ---- 積み木の更新 ----
+// 画面の下の先を作り足し、上の外へ出た所を捨てる
+function updateWorld() {
+  const bottom = Math.ceil(rowBottom()) + ROW_MARGIN_BOTTOM;
+  generate(bottom + ROW_LOOKAHEAD);
+  for (let index = Math.floor((rowTop() - ROW_MARGIN_TOP) / CHUNK_ROWS); index * CHUNK_ROWS <= bottom; index++) {
+    if (!chunks.has(index) && finalRow > (index + 1) * CHUNK_ROWS + 1) buildChunk(index);
+  }
+  const discard = rowTop() - ROW_MARGIN_TOP - CHUNK_ROWS;
+  for (const index of chunks.keys()) {
+    if ((index + 1) * CHUNK_ROWS < discard) { chunks.delete(index); instancesDirty = true; }
+  }
+  for (const [k, c] of cells) if (rowOf(c.i, c.j) < discard - 4) cells.delete(k);
+  // 玉の通らない古い区間を捨てる
+  for (const path of paths) {
+    const first = path.marbles.length ? Math.min(...path.marbles.map((m) => m.seg)) : Infinity;
+    while (path.segs.length > 1 && path.segs[0].row < discard && path.base < first) { path.segs.shift(); path.base++; }
+  }
+  paths = paths.filter((p) => p.active || p.marbles.length || p.segs.some((s) => s.row >= discard));
+  if (instancesDirty) rebuildInstances();
+}
+
+// 積み木を作る横の範囲（|q|）。画面の幅に BAND_MARGIN を足す
+const neededBand = () => Math.ceil((viewW / 2 + BAND_MARGIN) * Math.SQRT2);
+// リセット: 積み木と経路を作り直し、ビー玉を画面の中の溝に散らして置く。カメラは進み続ける。
+// 起動時と、画面が横に広がって作る範囲が足りなくなったときにも呼ぶ
+function reset() {
+  for (const m of [...marbles]) removeMarble(m);
+  cells.clear();
+  chunks.clear();
+  paths = [];
+  bandQ = neededBand();
+  const start = Math.floor(rowTop()) - ROW_MARGIN_TOP - CHUNK_ROWS * 2;
+  finalRow = start - BACKTRACK - 4;
+  lastFillRow = -Infinity;
+  // 最初の経路は、画面の上の外の見えないトンネルから出てくる
+  for (let q = -bandQ + PATH_SPACING / 2; q < bandQ; q += PATH_SPACING) startTunnelPath(Math.round(q + rand(-1, 1)), start);
+  updateCamera();
+  updateWorld();
+  updateShadow();
+  scatterMarbles(Math.round(marbleCount));
+}
+
+function rebase() {
+  if (camK - origin.x < REBASE_STEP) return;
+  origin.add(new THREE.Vector3(REBASE_STEP, -REBASE_STEP, REBASE_STEP));
+  instancesDirty = true;
+}
+
+// ---- 強度 ----
+function setCount(value) {
+  marbleCount = clamp(value, MIN_COUNT, MAX_COUNT);
+}
+
+// ---- メインループ ----
+function step(dt) {
+  time += dt;
+  camK += CAM_SPEED * dt;
+  rebase();
+  updateCamera();
+  updateWorld();
+  updateShadow();
+  updateMarbles(dt);
+  controlCount();
+}
+
+let last = performance.now();
+let nextDraw = 0;            // 次に描いてよい時刻 (ms)
+function tick(now) {
+  // MAX_FPS より速くは描かない。描いてよい時刻は一定の間隔で進め、画面の更新の間隔の揺れで 1 回飛ばさないよう少し余裕を持たせる
+  if (now < nextDraw - 2) return;
+  nextDraw = Math.max(nextDraw + 1000 / MAX_FPS, now);
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  step(dt);
+  renderer.setRenderTarget(sceneTarget);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  composer.render();
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。場面の一覧は持たず、暗転している間にリセットする
+  changeScene: () => fadeAndRun(reset),
+  // 強度（↑↓・上下スワイプ）。画面の中のビー玉の数
+  intensity: {
+    up: () => setCount(marbleCount * COUNT_STEP),
+    down: () => setCount(marbleCount / COUNT_STEP),
+    level: () => logPosition(marbleCount, MIN_COUNT, MAX_COUNT),   // ゲージの位置（0..1）
+  },
+  onResize() {
+    updateView();
+    renderer.setSize(innerWidth, innerHeight);
+    updateSceneTargetSize();
+    composer.setSize(innerWidth, innerHeight);
+    if (neededBand() > bandQ) reset();
+  },
+});
+
+// ---- 開始 ----
+updateView();
+reset();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）
-export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot', 'bubbles', 'orrery', 'pixelcity'];
+export const PAGES = ['pipes', 'tube', 'drone', 'ripple', 'campfire', 'jellyfish', 'aurora', 'waterfall', 'lavalamp', 'penguins', 'diamond', 'sandpicture', 'infcastle', 'teapot', 'bubbles', 'orrery', 'pixelcity', 'marbles'];
 
 // 作品ごとの場面の選び方。シーン（scenes）と配色（presets）は別々に選べ、両方を持つ作品は同時に指定できる。
 // ここに無い作品・無い種類は選べない。
