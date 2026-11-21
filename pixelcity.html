@@ -45,11 +45,11 @@ const RIVER_HALF_WIDTH = [0.75, 1.05];  // 川の中心線から、格子点を�
 const RIVER_BEND = 8;          // 川の大きなうねりの振れ幅（タイル）
 const RIVER_MEANDER = 1.3;     // 川の蛇行の振れ幅（タイル）
 const RIVER_WAVELENGTH = 16;   // 川の蛇行の波長（タイル）
-const RIVER_FLAT = 3;          // 川の岸から、丘を置かずに平らにしておく幅（タイル）
-const SKIRT = 10;              // 箱庭の手前の縁の断面の、高さ 0 から下の厚さ（ドット）
-const WATER_SECTION = 5;       // 箱庭の手前の縁の断面で、川と海の水の深さ（ドット）
-const FOREST_SHARE = 0.3;      // 平野と低い丘の林の多さ（林のノイズのしきい値を決める。0..1）
-const SCATTERED_TREES = 0.04;  // 草地に 1〜2 本の木を置く割合（林の近くほど多くする）
+const RIVER_FLAT = 5;          // 川の岸から、丘を置かずに平らにしておく幅（タイル）
+const SKIRT = 12;              // 箱庭の手前の縁の断面の、高さ 0 から下の厚さ（ドット）
+const WATER_SECTION = 6;       // 箱庭の手前の縁の断面で、川と海の水の深さ（ドット）
+const FOREST_SHARE = 0.4;      // 平野と低い丘の林の多さ（林のノイズのしきい値を決める。0..1）
+const SCATTERED_TREES = 0.10;  // 草地に 1〜2 本の木を置く割合（林の近くほど多くする）
 const FOREST_LEVEL = 3;        // 角の高さがこの段以上のタイル（山）はすべて林にし、針葉樹を多くする
 
 // 街
@@ -60,6 +60,7 @@ const CITY_RADIUS = 30;        // 道を格子に通す範囲（街の中心か�
 const OUTSKIRT = 10;           // その外側で、道を間引いて延ばす幅（タイル）
 const ROAD_REACH = 1.8;        // 道を開通させる範囲の、時代ごとの半径に対する倍率（建物より外まで先に伸ばす）
 const ROAD_LEAD = 0.2;         // 道の建設の順番に使う、道をたどった距離の倍率（1 より小さいほど、建物より早く外へ伸びる）
+const BRIDGE_MAX = 3;          // 道の橋の長さの上限（タイル。これより長く川を渡る道は、川の手前で止める。線路には上限を設けない）
 const ROAD_GAP = 2;            // 平行な道を並べない間隔（タイル。これ以内に平行な道を並べない。3 以上にすると、地区の境目の道が多く消える）
 const BUILD_LEAD = [0.5, 1, 1, 1];   // 時代ごとの、新しく建てる建物の順番に使う距離の倍率（開拓の時代は小さくし、道が広がるのと一緒に家もまばらに建ち始める）
 const PAVE_LEAD = 0.5;         // 自動車の時代の、舗装と新しい道の順番に使う、道をたどった距離の倍率（建物の順番は直線の距離。道をたどると 1〜1.4 倍長いので、0.7 より小さければ建物より先に舗装が進む）
@@ -70,7 +71,7 @@ const ARTERIAL_REACH = 24;     // 大通りを、時代ごとの半径より外�
 const REBUILD_SCATTER = 0.45;  // 建て替えの順番のばらつき（0 で中心から順に、1 でランダム）
 const FRINGE = 7;              // 建物の建つ割合がなだらかに下がる範囲を、時代ごとの半径の外へ広げる長さ（タイル）
 const ZONE_COUNT = 7;          // 街区の形を変える地区の数
-const BLOCK_SHAPES = [[4, 4], [4, 5], [5, 4], [4, 6], [6, 4], [5, 5], [5, 6], [6, 5], [4, 7], [7, 4]];   // 地区ごとの道の間隔（x, y）。4 以上にして、街区を 3×3 タイル以上にする
+const BLOCK_SHAPES = [[4, 4], [4, 5], [5, 4], [4, 6], [6, 4], [5, 5], [5, 6], [6, 5]];   // 地区ごとの道の間隔（x, y）。4 以上にして、街区を 3×3 タイル以上にする
 const FIELD_REACH = 16;        // 田畑を作る範囲の、時代ごとの半径より外への広がり（タイル）
 const FIELD_DENSITY = [0.6, 0.6, 0.4, 0];   // 時代ごとに、田畑にできるタイルを田畑にする割合（ノイズのしきい値。同じ所ほど田畑になり、まとまった田園になる）
 const FIELD_PATCH = 5;         // 田畑のまとまりの大きさ（タイル。ノイズの格子の間隔）
@@ -81,48 +82,50 @@ const FRAME_TIME = 0.3;        // 建設のコマ送りの 1 コマ（秒）
 const SCAFFOLD_STEP = 6;       // 足場が 1 コマで伸びる高さ（ドット。1 階ぶん）
 const BRIDGE_HOLD = 4;         // 橋を架ける前に、川の上に足場を組んでおくコマ数
 const CRANE_TYPES = ['office3', 'tower3'];   // 足場ではなく、タワークレーンで数階ずつ積み上げて建てる都市の時代のビル
-const CRANE_STEP = 3;          // クレーンで建てるビルが、1 度に積み上がる階数
-const CRANE_HOLD = 5;          // クレーンで建てるビルが、1 度積み上がってから次に積み上がるまでのコマ数
+const CRANE_STEP = 2;          // クレーンで建てるビルが、1 度に積み上がる階数
+const CRANE_HOLD = 3;          // クレーンで建てるビルが、1 度積み上がってから次に積み上がるまでのコマ数
 const CRANE_HEIGHT = 12;       // タワークレーンのジブ（腕）の、積み上がったてっぺんからの高さ（ドット）
 const CRANE_JIB = 1.0;         // タワークレーンのジブの、マストから先の長さ（タイル）
 const ROAD_LEVEL = 4;          // 舗装した道路の色の段（asphalt の 0..7）。中央線はこれより 1 段だけ明るくし、目立たせない
 const HOLD_TIME = 90;          // 育ちきってから暗転するまで（秒。この間、カメラは街のまわりを一周する）
-const MERGE_SHARE = [0, 0, 0.25, 0.4];   // 時代ごとに、街の中の道（大通り以外）の区間を取り除いて街区をまとめる割合
+const MERGE_SHARE = [0, 0, 0.1, 0.2];   // 時代ごとに、街の中の道（大通り以外）の区間を取り除いて街区をまとめる割合
 const BIG_SITES = [0, 0, 5, 14];   // 時代ごとに建てる、2×2 タイルの大きな建物の数
 const BIG_REACH = 0.75;        // 大きな建物を建てる範囲の、時代ごとの半径に対する割合
 const BIG_SCATTER = 0.6;       // 大きな建物の場所の選び方のばらつき（0 で中心から順に、1 で範囲の中からランダム）
 const BIG_SPACING = 3;         // 大きな建物どうしの間を空けるタイル数（中心に固まらず、ところどころに建つ）
-const OPEN_SHARE = [0, 0, 0.07, 0.17];   // 時代ごとに、街の中の区画を公園・広場・駐車場として空けておく割合（前の時代に空けた所は残す）
+const OPEN_SHARE = [0, 0, 0.07, 0.17];   // 時代ごとに、街の中の区画を公園・駐車場として空けておく割合（前の時代に空けた所は残す）
+const PARK_PATH = 0.09;        // 公園の園路の幅の半分（タイルの幅に対する割合。タイルの中央に十字に通し、隣のタイルとつながる）
+const PARK_TREES = [0.35, 0.6];  // 公園の、園路で分けた 4 区画それぞれに木を置く割合（中心から 8 タイル以内・その外。中心の近くは開けた広場に見せる）
 const OPEN_CELL = 3;           // 空き地をまとめて選ぶ大きさ（タイル。この大きさの升目ごとに、区画をまとめて空ける）
-const INDUSTRY_DIST = [28, 36];  // 工業地区の中心を置く、街の中心からの距離（タイル。都市の時代の半径のあたりから外）
-const INDUSTRY_HALF = 5;         // 工業地区の広がり（タイル。中心から ±5 の正方形）
+const INDUSTRY_DIST = [16, 22];  // 工業地区の中心を置く、街の中心からの距離（タイル。地区が、道を間引かない市街 CITY_RADIUS の中に収まる）
+const INDUSTRY_HALF = 5;         // 工業地区の広がり（タイル。中心から ±5 ほど。縁はノイズで ±INDUSTRY_WOBBLE タイル崩す）
+const INDUSTRY_WOBBLE = 2;       // 工業地区の縁の出入り（タイル。正方形に見せない）
 const INDUSTRY_MIN_FLAT = 0.5;   // 工業地区に要る、平らな陸の割合
-const INDUSTRY_DETOUR = 16;      // 工業地区へ道をたどる距離が、縦横の距離をこれより超えたら遠回りとして選び直す（タイル）
-const INDUSTRY_CORNER = 1.5;     // 工業地区を箱庭の角に寄せる強さ（平らな陸の割合と比べる重み）
-const INDUSTRY_FILL = [0, 0, 0.6, 0.9];   // 時代ごとに、工業地区の区画を工場にする割合（同じ所から順に増やす）
-const INDUSTRY_YARD = 0.7;     // 工業地区の縁（外周 1 タイル）の区画のうち、駐車場・資材置き場にする割合（自動車の時代に作る）
-const INDUSTRY_PARKING = 0.4;  // 駐車場・資材置き場のうち、駐車場にする割合
+const INDUSTRY_CLEAR = [3, 5];   // 工業地区のまわりで、低いビル（4 階まで）までしか建てない範囲（タイル。奥と横・手前）。手前の高い建物は奥の工場を隠すので、手前を広くする
+const INDUSTRY_FIELDS = 0.8;     // 工業地区のまわりで、田畑にできるタイルを田畑にする割合（FIELD_DENSITY の代わり。どの時代も、空いていれば建物より田畑にする）
+const INDUSTRY_FILL = [0, 0, 0.5, 0.8];   // 時代ごとに、工業地区のタイルを工場にする割合（同じ所から順に増やす。都市の時代に工場にしない残りは、自動車の時代に駐車場にする）
 const STATION_FLOORS = 8;      // 駅ビルの階数
 const STATION_CLEAR = 3;       // 駅ビルから、低い建物（4 階まで）だけを建てる範囲（タイル。2×2 の大きな建物はさらに 1 タイル外まで建てない）
-const STATION_PLAZA = 2;       // 駅前広場の奥行き（タイル。幅は駅ビルと同じ）
 const BUILDING_VARIANTS = 32;  // 建物の種類ごとの見た目の数（色・高さ・形の組み合わせ）
 
 // 乗り物（速さはタイル/秒）
 const TRAIN_SPEED = 1.6;
 const TRAIN_WAIT = [3, 10];    // 列車が抜けてから、同じ線路に次の列車が入るまで（秒）
-const FACTORY_SMOKE = [2.5, 6]; // 工場の煙突から煙を 1 つ出す間隔（秒。この範囲で工場ごとにばらつかせる。汽車は 0.22 秒）
+const FACTORY_SMOKE = [2.5, 6]; // 工場の煙突から煙を出す間隔（秒。この範囲で工場ごとにばらつかせる。汽車は 0.22 秒）
+const FACTORY_PUFFS = 2;       // 工場の煙突から 1 回に続けて出す煙の数
+const FACTORY_PUFF_GAP = 0.4;  // 続けて出す煙の間隔（秒）
 const STATION_STOP = 5;        // 列車が駅に停まる時間（秒）
 const CAR_GAP = 0.9;           // 列車の車両の間隔
 const TRACK_OFFSET = 0.2;      // 複線の線路の、中心線からのずれ
 const CAR_SPEED = 1.0;
 const LANE_OFFSET = 0.13;      // 自動車の走る位置の、道路の中心からの左へのずれ
-const ROAD_TILES_PER_CAR = 6;  // 舗装した道路のタイル数あたり 1 台
-const MAX_CARS = 60;
+const ROAD_TILES_PER_CAR = 5;  // 舗装した道路のタイル数あたり 1 台
+const MAX_CARS = 50;
 
 // カメラ
 const CAM_SCREEN_TIME = 30;    // 1 画面ぶん動くのにかける秒数
 const CAM_ERA_SHIFT = 0.25;    // 時代ごとにカメラを街の中心からずらす距離（その時代の半径に対する割合。開拓の時代はずらさない）
-const CAM_FACTORY_LINGER = 10; // 自動車の時代に工場の建設が始まってから、カメラが工業地区を映し続ける秒数
+const CAM_INDUSTRY_VIEW = 0.6; // 自動車の時代に、工業地区の中心を置く範囲（画面の中心から、画面の半分の大きさに対する割合。0..1）
 const CAM_TOUR_RADIUS = 0.45;  // 育ちきったあと、カメラが街のまわりを回る円の半径（都市の時代の半径に対する割合）
 const VIEW_MARGIN = 0.6;       // 画面の中心を置ける範囲を、箱庭の縁から画面の半分の大きさの何倍だけ内側にするか（1 で箱庭の外がまったく映らない）
 
@@ -419,9 +422,10 @@ const railState = new Uint8Array(N * N);  // 0: 無し、1: 敷いている途�
 const platform = new Uint8Array(N * N);   // 駅のホーム
 const reserved = new Uint8Array(N * N);   // 駅・大きな建物の予定地（区画にしない）
 const isLot = new Uint8Array(N * N);      // 建物を建てる区画（道に面したタイル。市街では道から 2 つ目まで）
-const openKind = new Uint8Array(N * N);   // 空き地にすると決めたタイルの地面の種類（G_PARK・G_PLAZA・G_PARKING。0 なら建物を建てる）
-const industry = new Uint8Array(N * N);   // 工業地区の区画（自動車の時代から工場だけを建てる）
-let industryRect = null;                  // 工業地区の範囲 { x0, y0, x1, y1 }（タイル。両端を含む）
+const openKind = new Uint8Array(N * N);   // 空き地にすると決めたタイルの地面の種類（G_PARK・G_PARKING。0 なら建物を建てる）
+const industry = new Uint8Array(N * N);   // 工業地区のタイル（道・線路を除く平らな陸。自動車の時代から工場と駐車場だけにする）
+const industryNear = new Uint8Array(N * N);   // 工業地区とそのまわりの、高い建物を建てない所
+let industryRect = null;                  // 工業地区を選んだ正方形 { x0, y0, x1, y1 }（タイル。両端を含む。地区の形はこれをノイズで崩したもの）
 const isFarm = new Uint8Array(N * N);     // 田畑にできるタイル（道から 3 タイル以内の平らな陸）
 const obj = new Array(N * N).fill(null);  // タイルの上の物（建物・建設中の物）。大きな建物は手前のタイルに置く
 const cover = new Int32Array(N * N);      // 大きな建物に覆われたタイルの、建物を置いたタイル（-1 なら無し）
@@ -436,11 +440,10 @@ let riverAxis = 0;                    // 川が流れる向き（0: x、1: y）
 let landSeed = 0;                     // 土地ごとの乱数の種（道 1 本ごとの伸ばす長さなど、位置から決める見た目のばらつき用）
 const waterMask = new Uint8Array(N * N);   // 川・海のタイルの、水の隅（ビット 0: (0,0)、1: (1,0)、2: (1,1)、3: (0,1)）
 const G_GRASS = 0, G_FOREST = 1, G_DIRT = 2, G_RICE = 3, G_FIELD = 4, G_LOT = 5, G_SAND = 6;
-const G_PARK = 7, G_PLAZA = 8, G_PARKING = 9;   // 街の中の空き地（公園・広場・駐車場）
-const G_YARD = 10;                                // 工業地区の資材置き場
+const G_PARK = 7, G_PARKING = 8;   // 街の中の空き地（公園・駐車場）
 
 // 建設
-const sites = [];                     // 建設中の所 { frames, k, t }
+const sites = [];                     // 建設中の所 { frames: コマごとに呼ぶ関数, k: いまのコマ, t: いまのコマに入ってからの秒 }
 
 // 乗り物
 let trains = [];
@@ -452,8 +455,8 @@ let mainNetSize = 0, mainNetWait = 0;  // そのタイル数と、求め直す�
 let carSpawnWait = 0;
 let puffs = [];                       // 煙（蒸気機関車と工場の煙突）
 
-// カメラ（箱庭の絵の上の、画面の中心）
-const cam = { x: 0, y: 0, tx: 0, ty: 0, pinned: false, factoryTime: -Infinity };   // factoryTime: 自動車の時代に最後に工場の建設を始めた時刻   // pinned なら目標を動かさない（showcase）
+// カメラ（箱庭の絵の上の、画面の中心のドット）。tx・ty は目標の位置、pinned なら目標を動かさない（showcase）
+const cam = { x: 0, y: 0, tx: 0, ty: 0, pinned: false };
 
 // ---- ドット絵の部品 ----
 // 画像はパレット番号の配列。(ox, oy) が箱庭の上の基準の点（地面の高さ 0）の位置
@@ -680,7 +683,7 @@ const BUILDINGS = {
     const wall = (lvl) => (a, z) => (z >= 2 && z < h - 2 && floorBand(z, 3, 6) && a % 5 !== 0 ? col('glass', lvl - 2) : col(mat, lvl));
     return flatBuilding(2, 2, inset(0.15, 2, 2), h, 4, wall);
   },
-  // 都市: 高層ビル（2×2 タイル、15〜24 階）と屋上のヘリポート
+  // 都市: 高層ビル（2×2 タイル、13〜26 階）と屋上のヘリポート
   tower3(r) {
     const h = (13 + Math.floor(r(1) * 14)) * 6 + 2, tint = pick2(['glass', 'steel', 'green', 'teal', 'bronze', 'slate'], r(2));
     const wall = (lvl) => (a, z) => (a % 6 === 0 ? col('concrete', lvl + 1)
@@ -769,20 +772,20 @@ function craneSiteImage(type, vr, fw, fd, c, crane, alongU) {
     const top = full.tiers.find((t) => c >= t[4] && c < t[5]) ?? full.tiers[full.tiers.length - 1];
     const m = 0.08, mu = (top[0] + top[2] - m) / 2, mv = (top[1] + top[3] - m) / 2, zj = c + CRANE_HEIGHT;
     const stripe = (lvl) => (a, z) => (Math.floor(z / 3) % 2 ? col('red', lvl - 1) : col('plaster', lvl + 1));
-    // マストの根元の土台（ジブの向きに長い、低い箱）
+    // マストの根元の土台（ジブの向きに長い、低い箱）。(cu, cv) はマストの中心
     const bu = alongU ? 0.2 : 0.13, bv = alongU ? 0.13 : 0.2, cu = mu + m / 2, cv = mv + m / 2;
     box(s, cu - bu, cv - bv, cu + bu, cv + bv, c, c + 2, col('steel', 4), col('steel', 3), col('steel', 1));
     box(s, mu, mv, mu + m, mv + m, c + 2, zj, col('plaster', 6), stripe(5), stripe(3));
     if (crane < 2) return s;
     const truss = (lvl) => (a, z) => (z === 0 || z === 3 || a % 3 === 0 ? (Math.floor(a / 6) % 2 ? col('red', lvl - 1) : col('plaster', lvl + 1)) : 0);
-    const w = mu + m / 2, vw = mv + m / 2;   // マストの中心
+    // ジブはマストの中心 (cu, cv) を通し、後ろ側におもりを載せる
     const weight = [col('concrete', 5), col('concrete', 4), col('concrete', 2)];
     if (alongU) {
-      faceL(s, w - 0.3, w + CRANE_JIB, vw, zj - 3, zj + 1, truss(5));
-      box(s, w - 0.3, vw - 0.05, w - 0.18, vw + 0.05, zj - 5, zj, ...weight);   // おもり
+      faceL(s, cu - 0.3, cu + CRANE_JIB, cv, zj - 3, zj + 1, truss(5));
+      box(s, cu - 0.3, cv - 0.05, cu - 0.18, cv + 0.05, zj - 5, zj, ...weight);
     } else {
-      faceR(s, vw - 0.3, vw + CRANE_JIB, w, zj - 3, zj + 1, truss(4));
-      box(s, w - 0.05, vw - 0.3, w + 0.05, vw - 0.18, zj - 5, zj, ...weight);
+      faceR(s, cv - 0.3, cv + CRANE_JIB, cu, zj - 3, zj + 1, truss(4));
+      box(s, cu - 0.05, cv - 0.3, cu + 0.05, cv - 0.18, zj - 5, zj, ...weight);
     }
     box(s, mu, mv, mu + m, mv + m, zj + 1, zj + 6, col('red', 5), col('red', 4), col('red', 2));   // 運転室と頂部
     return s;
@@ -857,17 +860,6 @@ function carImage(d, color) {
   return cached(`c:${d}:${color}`, () => {
     const s = new Sprite(32, 26, 16, 18);
     vehicleParts(s, d, [{ a0: -0.16, a1: 0.16, b0: -0.08, b1: 0.08, z0: 0, z1: 4, ...tones(color) }]);
-    return s;
-  });
-}
-// 資材置き場のコンテナ（色の付いた箱 1 つ）。d は向き（0: u の向きに長い、1: v の向きに長い）
-const CONTAINER_COLORS = ['red', 'blue', 'green', 'orange'];
-// コンテナを置く所（数ごと）。長い辺と直角の向きに、この位置へ並べる
-const YARD_SPOTS = [null, [0.5], [0.3, 0.7], [0.2, 0.5, 0.8]];
-function containerImage(d, color) {
-  return cached(`m:${d}:${color}`, () => {
-    const s = new Sprite(40, 30, 20, 22);
-    vehicleParts(s, d, [{ a0: -0.3, a1: 0.3, b0: -0.12, b1: 0.12, z0: 0, z1: 7, ...tones(color, 4) }]);
     return s;
   });
 }
@@ -974,8 +966,8 @@ function waterColor(gx, gy, tick) {
   return WATER_PATTERN[(gy + 4) & 7][(gx - (tick % WATER_FRAMES) * WATER_SHIFT) & 15] === 'o' ? col('water', 5) : col('water', 4);
 }
 
-// タイルの地面の色（u, v はタイルの中の位置、px・py は画像の上の位置）
-function groundColor(i, x, y, u, v, px, py) {
+// タイルの地面の色（u, v はタイルの中の位置）
+function groundColor(i, x, y, u, v) {
   // 川・海
   if (terr[i]) {
     if (road[i] || railState[i]) {
@@ -1004,14 +996,10 @@ function groundColor(i, x, y, u, v, px, py) {
       break;
     }
     case G_LOT: c = M('concrete', 5); break;
-    // 公園: 刈った芝（まわりの草地より 1 段明るい）
-    case G_PARK: c = M('grass', 5); break;
-    // 広場: 4×4 枚の敷石（目地を 1 段明るく）
-    case G_PLAZA: c = (u * 4) % 1 < 0.1 || (v * 4) % 1 < 0.1 ? M('tan', 6) : M('tan', 5); break;
+    // 公園: 刈った芝（まわりの草地より 1 段明るい）に、十字の敷石の園路
+    case G_PARK: c = Math.abs(u - 0.5) < PARK_PATH || Math.abs(v - 0.5) < PARK_PATH ? M('tan', 5) : M('grass', 5); break;
     // 駐車場: 路面に、u の向きに 4 台ぶんの区切りの線（路面より 2 段明るい）
     case G_PARKING: c = (u * 4) % 1 < 0.1 && Math.abs(v - 0.5) > 0.08 && Math.abs(v - 0.5) < 0.42 ? M('asphalt', ROAD_LEVEL + 2) : M('asphalt', ROAD_LEVEL); break;
-    // 資材置き場: コンクリートの地面。縁に柵（1 段暗く）
-    case G_YARD: c = u < 0.05 || v < 0.05 || u > 0.95 || v > 0.95 ? M('steel', 4) : M('concrete', 4); break;
     default: c = M('grass', 4);
   }
   if (railState[i]) {
@@ -1064,7 +1052,7 @@ function makeGround(i) {
       const dhdu = lerp(h[1] - h[0], h[2] - h[3], v), dhdv = lerp(h[3] - h[0], h[2] - h[1], u);
       const shade = clamp(Math.round(dhdu * 1.0 - dhdv * 1.5), -3, 2);
       const px = Math.floor(16 + (u - v) * 16), py = Math.floor(oy + (u + v) * 8 - hh * STEP_H);
-      const c = groundColor(i, x, y, u, v, px, py);
+      const c = groundColor(i, x, y, u, v);
       s.set(px, py, c === WATER_SURFACE ? col('water', 4) : c < 0 ? -c - 1 : RAMP[RAMP_NAMES[c >> 5]] + clamp((c & 31) - 8 + shade, 0, 7));
       if (s.water && px >= 0 && py >= 0 && px < s.w && py < s.h) s.water[py * s.w + px] = c === WATER_SURFACE ? 1 : 0;
     }
@@ -1116,12 +1104,12 @@ const dirtyGround = new Set();   // 描き直すタイル
 let layerTick = -1;              // 地面の層の水面を塗ったコマ
 let layerStale = true;           // 箱庭全体を描き直す（新しい土地）
 
-// タイル i の地面を、地面の層の長方形 [rx0, rx1) × [ry0, ry1) の中だけに描く
 // タイル i の地面の絵と、その左上の、地面の層の上の位置
 function groundPlace(i) {
   const s = groundImage(i), x = i % N, y = (i / N) | 0;
   return [s, (x - y) * 16 + OX - s.ox, (x + y) * 8 + OY - tmin[i] * STEP_H - s.oy];
 }
+// タイル i の地面を、地面の層の長方形 [rx0, rx1) × [ry0, ry1) の中だけに描く
 function drawGroundTile(i, rx0, ry0, rx1, ry1, tick) {
   const [s, dx, dy] = groundPlace(i), x = i % N, y = (i / N) | 0;
   for (const [ry, a, b] of opaqueRuns(s)) {
@@ -1188,15 +1176,8 @@ function setGround(i, g) {
   touchGround(i);
 }
 
-// 高さ（段。小数）。箱庭の外は端の高さ
-function heightAt(u, v) {
-  const x = clamp(Math.floor(u), 0, N - 1), y = clamp(Math.floor(v), 0, N - 1);
-  const fu = clamp(u - x, 0, 1), fv = clamp(v - y, 0, 1);
-  return lerp(lerp(hc[corner(x, y)], hc[corner(x + 1, y)], fu), lerp(hc[corner(x, y + 1)], hc[corner(x + 1, y + 1)], fu), fv);
-}
-
 // ---- 土地を作る ----
-
+// 隣（斜めを含む）の格子点との高さの差を 1 段までに下げる（pinned の格子点は動かさない）。タイルの角の高さの最小・最大も求め直す
 function relaxHeights(pinned) {
   for (let changed = true; changed;) {
     changed = false;
@@ -1226,6 +1207,12 @@ function alignedSlope(x, y, d) {
   const a = hc[corner(x, y)], b = hc[corner(x + 1, y)], c = hc[corner(x + 1, y + 1)], e = hc[corner(x, y + 1)];
   return d % 2 === 0 ? a === e && b === c : a === b && e === c;
 }
+// 高さ（段。小数）。箱庭の外は端の高さ
+function heightAt(u, v) {
+  const x = clamp(Math.floor(u), 0, N - 1), y = clamp(Math.floor(v), 0, N - 1);
+  const fu = clamp(u - x, 0, 1), fv = clamp(v - y, 0, 1);
+  return lerp(lerp(hc[corner(x, y)], hc[corner(x + 1, y)], fu), lerp(hc[corner(x, y + 1)], hc[corner(x + 1, y + 1)], fu), fv);
+}
 
 function generateLand() {
   landSeed = randInt(100000);
@@ -1239,7 +1226,7 @@ function generateLand() {
   const sorted = Float32Array.from(val).sort();
   const thr = sorted[Math.floor(sorted.length * (1 - HILL_SHARE))], top = sorted[sorted.length - 1];
   for (let k = 0; k < val.length; k++) hc[k] = val[k] > thr ? Math.min(MAX_LEVEL, 1 + Math.floor((val[k] - thr) / (top - thr) * MAX_LEVEL)) : 0;
-  // 平野の中の低い丘（草地のままにして、斜面が見えるようにする）
+  // 平野の中の低い丘（高さ 3 段まで）。山と違って林で覆わないので、草地が多く残り、斜面の明暗で起伏が見える
   for (let k = 0; k < PLAIN_HILLS; k++) {
     const a = Math.random() * 6.28, r = rand(8, 22), hx = N / 2 + Math.cos(a) * r, hy = N / 2 + Math.sin(a) * r;
     const rad = rand(...PLAIN_HILL_RADIUS), peak = rand(2, 3.4);
@@ -1398,55 +1385,33 @@ function planTown() {
   openKind.fill(0);
   planRail();
   makeZones();
-  // 工業地区の道が街の道につながらなければ（川や斜面に阻まれる）、離れた別の所を選び直す
-  const tried = [];
-  for (;;) {
-    pickIndustry(tried);
-    planRoads();
-    if (!industryRect || industryLinked()) break;
-    tried.push(industryRect);
-    if (tried.length >= 4) { industryRect = null; planRoads(); break; }
-  }
+  pickIndustry();
+  planRoads();
   planLots();
   markIndustry();
 }
-// 工業地区: 市街地の端のあたりで、箱庭の角に近い（建物が建ちにくい）平らな所を 1 か所選ぶ。道はあとで地区の中まで通す
-function pickIndustry(tried = []) {
+// 工業地区にできる、平らな陸のタイル（砂浜・線路・駅の予定地を除く）
+const industryLand = (i) => !terr[i] && isFlat(i) && gtype[i] !== G_SAND && !railMask[i] && !reserved[i];
+// 工業地区: 市街の外れの、平らな陸が多い所を 1 か所選ぶ。川を渡らずに街の中心から行ける側に限り、
+// 地区の中の道の格子が、橋を回らずに街の道とつながるようにする（大回りでつながると、道の開通が遅れて工場が建たない）
+function pickIndustry() {
   industryRect = null;
   const h = INDUSTRY_HALF, size = (2 * h + 1) ** 2;
-  const ok = (i) => !terr[i] && isFlat(i) && gtype[i] !== G_SAND && !railMask[i] && !reserved[i];
-  const corners = [[0, 0], [N - 1, 0], [0, N - 1], [N - 1, N - 1]];
+  // 街の中心から、水を渡らずに行けるタイル
+  const reach = new Uint8Array(N * N), queue = [at(town.x, town.y)];
+  reach[queue[0]] = 1;
+  for (let q = 0; q < queue.length; q++) for (const j of neighbors(queue[q])) if (!terr[j] && !reach[j]) { reach[j] = 1; queue.push(j); }
   let bestScore = -Infinity;
-  // 平らな所が足りなければ、1 段内側（中心寄り）の範囲から選ぶ
-  for (const [lo, hi] of [INDUSTRY_DIST, [INDUSTRY_DIST[0] - 8, INDUSTRY_DIST[0]]]) {
-    for (let y = h + 1; y < N - h - 1; y++) for (let x = h + 1; x < N - h - 1; x++) {
-      const d = Math.hypot(x - town.x, y - town.y);
-      if (d < lo || d > hi || tried.some((r) => Math.abs(r.x0 + h - x) <= 2 * h && Math.abs(r.y0 + h - y) <= 2 * h)) continue;
-      let flat = 0;
-      for (let b = -h; b <= h; b++) for (let a = -h; a <= h; a++) flat += ok(at(x + a, y + b));
-      if (flat < size * INDUSTRY_MIN_FLAT) continue;
-      const corner = Math.min(...corners.map(([cx, cy]) => Math.hypot(x - cx, y - cy)));
-      const score = flat / size + INDUSTRY_CORNER * (1 - corner / (N / 2)) + hash(x, y, landSeed + 53) * 0.1;
-      if (score > bestScore) { bestScore = score; industryRect = { x0: x - h, y0: y - h, x1: x + h, y1: y + h }; }
-    }
-    if (industryRect) break;
+  for (let y = h + 1; y < N - h - 1; y++) for (let x = h + 1; x < N - h - 1; x++) {
+    const d = Math.hypot(x - town.x, y - town.y);
+    if (d < INDUSTRY_DIST[0] || d > INDUSTRY_DIST[1] || !reach[at(x, y)]) continue;
+    let flat = 0;
+    for (let b = -h; b <= h; b++) for (let a = -h; a <= h; a++) flat += industryLand(at(x + a, y + b));
+    if (flat < size * INDUSTRY_MIN_FLAT) continue;
+    const score = flat / size + hash(x, y, landSeed + 53) * 0.3;
+    if (score > bestScore) { bestScore = score; industryRect = { x0: x - h, y0: y - h, x1: x + h, y1: y + h }; }
   }
 }
-// 工業地区の中に、街の中心から遠回りせずにつながる道があるか（大回りでつながると、道の開通が遅れて工場が建たない）
-function industryLinked() {
-  const { x0, y0, x1, y1 } = industryRect;
-  let n = 0, near = false;
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const i = at(x, y);
-    if (!planRoad[i]) continue;
-    n++;
-    if (roadDist[i] <= Math.abs(x - town.x) + Math.abs(y - town.y) + INDUSTRY_DETOUR) near = true;
-  }
-  return near && n >= 2 * INDUSTRY_HALF;
-}
-// 工業地区の外周 1 タイルか
-const industryEdge = (x, y) => x === industryRect.x0 || x === industryRect.x1 || y === industryRect.y0 || y === industryRect.y1;
-const inIndustry = (x, y) => !!industryRect && x >= industryRect.x0 && x <= industryRect.x1 && y >= industryRect.y0 && y <= industryRect.y1;
 // 道の原則: 平行な道を ROAD_GAP タイル以内に並べない（幅 0〜1 タイルの街区や、道だけが詰まった所を作らない）。道を足す所はすべてこれで確かめる。
 // (x, y) を通る、向き axis（0: x に沿う、1: y に沿う）の道の、横に並ぶ 1〜ROAD_GAP タイルの所
 function besideTiles(x, y, axis) {
@@ -1457,43 +1422,30 @@ function besideTiles(x, y, axis) {
   }
   return list;
 }
-// (x, y) に向き axis の道を足すと、道の予定 cand の平行な道と並ぶか（横の道のタイルが、同じ向きに続いていれば平行な道）
-function besideRoad(cand, x, y, axis) {
-  return besideTiles(x, y, axis).some((j) => {
-    if (!cand[j]) return false;
-    const jx = j % N, jy = (j / N) | 0;
-    return [-1, 1].some((k) => { const nx = jx + (axis === 0 ? k : 0), ny = jy + (axis === 1 ? k : 0); return inMap(nx, ny) && cand[at(nx, ny)]; });
-  });
-}
-// 工業地区の道を、街の側へまっすぐ延ばして、いちばん近い道につなぐ（郊外の間引いた道の間に孤立させない）。
-// 道は自分の向きにだけ延ばすので、地区の中から縁へ出てくる道だけが延びる。平行な道に近づいたらやめる
-function linkIndustryRoads(cand, okTile) {
+// 工業地区のタイルを決める。選んだ正方形の縁を、なめらかなノイズで出入りさせる（正方形に見せない）。
+// まわりの、高い建物を建てない所も決める（奥と横は INDUSTRY_CLEAR[0]、手前（画面の下）は INDUSTRY_CLEAR[1] タイル。手前の高い建物は奥の工場を隠す）
+function markIndustry() {
+  industry.fill(0);
+  industryNear.fill(0);
   if (!industryRect) return;
-  const { x0, y0, x1, y1 } = industryRect;
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    if (!cand[at(x, y)]) continue;
-    for (const d of [Math.sign(town.x - x) < 0 ? 2 : 0, Math.sign(town.y - y) < 0 ? 3 : 1]) {
-      const edge = d === 0 ? x === x1 : d === 1 ? y === y1 : d === 2 ? x === x0 : y === y0;
-      const bx = x - DX[d], by = y - DY[d];
-      if (!edge || !inMap(bx, by) || !cand[at(bx, by)]) continue;
-      const path = [];
-      let nx = x + DX[d], ny = y + DY[d], hit = false;
-      while (inMap(nx, ny)) {
-        const j = at(nx, ny);
-        if (cand[j]) { hit = true; break; }
-        if (terr[j] || !okTile(nx, ny, d % 2) || besideRoad(cand, nx, ny, d % 2)) break;
-        path.push(j);
-        nx += DX[d]; ny += DY[d];
-      }
-      if (hit) for (const j of path) cand[j] = 1;
+  const cx = (industryRect.x0 + industryRect.x1) / 2, cy = (industryRect.y0 + industryRect.y1) / 2;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const i = at(x, y), d = Math.max(Math.abs(x - cx), Math.abs(y - cy));
+    if (d > INDUSTRY_HALF + (hashNoise(x, y, 4, landSeed + 57) - 0.5) * 2 * INDUSTRY_WOBBLE) continue;
+    if (industryLand(i) && !planRoad[i]) industry[i] = 1;
+  }
+  const [c0, c1] = INDUSTRY_CLEAR;
+  for (let j = 0; j < N * N; j++) {
+    if (!industry[j]) continue;
+    const jx = j % N, jy = (j / N) | 0;
+    for (let dy = -c0; dy <= c1; dy++) for (let dx = -c0; dx <= c1; dx++) {
+      if ((dx > c0 || dy > c0) && (dx < 0 || dy < 0)) continue;   // 手前の側だけ広くとる
+      if (inMap(jx + dx, jy + dy)) industryNear[at(jx + dx, jy + dy)] = 1;
     }
   }
 }
-// 工業地区の区画（道に面した平らな陸）を決める
-function markIndustry() {
-  industry.fill(0);
-  for (let i = 0; i < N * N; i++) if (isLot[i] && inIndustry(i % N, (i / N) | 0)) industry[i] = 1;
-}
+// 工業地区とそのまわりの、低いビル（4 階まで）までしか建てず、2×2 の大きな建物も建てない所か（工場がビルに埋もれないように）
+const nearIndustry = (x, y) => industryNear[at(x, y)] === 1;
 function planLots() {
   // 区画: 道に面した平らな陸のタイル（砂浜は除く）。市街では道から 2 つ目のタイル（大きな街区の奥）も区画にする
   isLot.fill(0);
@@ -1505,7 +1457,7 @@ function planLots() {
     if (terr[i] || planRoad[i] || railMask[i] || reserved[i] || !isFlat(i) || gtype[i] === G_SAND) continue;
     const dt = Math.hypot(x - town.x, y - town.y), inCity = dt <= CITY_RADIUS;
     if (toRoad[i] <= 3 && dt <= CITY_RADIUS + OUTSKIRT) isFarm[i] = 1;
-    if (toRoad[i] === 1 || (toRoad[i] === 2 && (inCity || inIndustry(x, y)))) isLot[i] = 1;
+    if (toRoad[i] === 1 || (toRoad[i] === 2 && inCity)) isLot[i] = 1;
   }
 }
 
@@ -1513,7 +1465,7 @@ function planRail() {
   railMask.fill(0);
   platform.fill(0);
   reserved.fill(0);
-  // 線路は川を横切る向きに、町の中心から 2 つずれた行（道の格子の間）をまっすぐ通す。海は川の行く先にあるので、海岸とは平行になる
+  // 線路は川を横切る向きに、街の中心から 2 タイルずれた行（道の格子の間）をまっすぐ通す。海は川の行く先にあるので、海岸とは平行になる
   railAxis = 1 - riverAxis;
   const side = Math.random() < 0.5 ? -2 : 2;
   const row = (railAxis === 0 ? town.y : town.x) + side;
@@ -1532,7 +1484,7 @@ function planRail() {
     railPath.push({ x, y });
     railMask[at(x, y)] = (1 << opposite(fwd)) | (1 << fwd);
   }
-  // 駅: 平らな陸の 3 タイル。町の中心に近い所
+  // 駅: 平らな陸の 3 タイル。街の中心に近い所
   const railTile = (k) => at(railPath[k].x, railPath[k].y);
   const ks = railPath.map((p, k) => k).filter((k) => k > 0 && k + 1 < railPath.length && [-1, 0, 1].every((o) => isFlat(railTile(k + o)) && !terr[railTile(k + o)]));
   const bestK = minBy(ks, (k) => Math.hypot(railPath[k].x - town.x, railPath[k].y - town.y)) ?? -1;
@@ -1578,22 +1530,21 @@ function planRoads() {
   };
   // 横（x に沿う）・縦（y に沿う）の道の候補と、その優先度（大通り 0、地区の番号 + 1）
   const hz = new Uint8Array(N * N), vt = new Uint8Array(N * N), prio = new Uint8Array(N * N);
-  const bridgeOk = (x, y, d) => {
-    // 橋は 3 タイルまで
-    let run = 1;
-    for (const sg of [-1, 1]) for (let k = 1; k < 5; k++) {
-      const nx = x + DX[d] * sg * k, ny = y + DY[d] * sg * k;
-      if (!inMap(nx, ny) || terr[at(nx, ny)] !== 1) break;
-      run++;
+  // 橋: (x, y) から向き d に続く水のタイル（run）と、その両岸のタイル（banks。箱庭の外なら -1）
+  const riverRun = (x, y, d) => {
+    const run = [at(x, y)], banks = [];
+    for (const sg of [-1, 1]) for (let nx = x + DX[d] * sg, ny = y + DY[d] * sg; ; nx += DX[d] * sg, ny += DY[d] * sg) {
+      if (!inMap(nx, ny) || !terr[at(nx, ny)]) { banks.push(inMap(nx, ny) ? at(nx, ny) : -1); break; }
+      run.push(at(nx, ny));
     }
-    return run <= 3;
+    return { run, banks };
   };
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const dt = Math.hypot(x - town.x, y - town.y), mainRow = y === town.y, mainCol = x === town.x;
     // 大通りは箱庭の端（画面外）まで通す。ほかの道は市街のまわりまで
-    if (dt > CITY_RADIUS + OUTSKIRT && !mainRow && !mainCol && !inIndustry(x, y)) continue;
+    if (dt > CITY_RADIUS + OUTSKIRT && !mainRow && !mainCol) continue;
     // 街の外側は道を間引く。中心を通る十字の道（大通り）は途切れさせない
-    const zi = zoneIndex(x, y), z = zones[zi], sparse = dt > CITY_RADIUS && !inIndustry(x, y) ? 3 : 1;
+    const zi = zoneIndex(x, y), z = zones[zi], sparse = dt > CITY_RADIUS ? 3 : 1;
     let onRow = mainRow || mod(y - z.oy, z.sy * sparse) === 0, onCol = mainCol || mod(x - z.ox, z.sx * sparse) === 0;
     // 箱庭の端では、端を横切る向きの道だけを通す（端に沿う道は作らない）
     if (y === 0 || y === N - 1) onRow = false;
@@ -1603,7 +1554,7 @@ function planRoads() {
     prio[i] = zi + 1;
     if (onRow && onCol && terr[i] === 1) {
       // 川の上の交差点は、橋として渡れる向きの道だけを通す（大通り、川を横切る向きの順に選ぶ）。交差点ごと消すと、そこを渡る橋が無くなる
-      const pick = minBy([0, 1].filter((d) => okTile(x, y, d) && bridgeOk(x, y, d)), (d) => ((d === 0 ? mainRow : mainCol) ? 0 : 2) + (d === riverAxis ? 1 : 0));
+      const pick = minBy([0, 1].filter((d) => okTile(x, y, d) && riverRun(x, y, d).run.length <= BRIDGE_MAX), (d) => ((d === 0 ? mainRow : mainCol) ? 0 : 2) + (d === riverAxis ? 1 : 0));
       if (pick === undefined) continue;
       onRow = pick === 0; onCol = pick === 1;
     }
@@ -1612,7 +1563,7 @@ function planRoads() {
       continue;
     }
     const d = onRow ? 0 : 1;
-    if (!okTile(x, y, d) || (terr[i] === 1 && !bridgeOk(x, y, d))) continue;
+    if (!okTile(x, y, d) || (terr[i] === 1 && riverRun(x, y, d).run.length > BRIDGE_MAX)) continue;
     if (onRow) hz[i] = mainRow ? 2 : 1; else vt[i] = mainCol ? 2 : 1;
   }
   // 平行な道が ROAD_GAP タイル以内に並ぶ所（地区の境目）は、優先度の低い方を消す
@@ -1639,24 +1590,17 @@ function planRoads() {
       }
     }
   }
-  // 橋は必ず対岸まで渡す: 川の上の道は、両岸とも陸の道につながる所だけ残す
+  // 橋は必ず対岸まで渡す: 川の上の道は、BRIDGE_MAX タイルまでで、途中も両岸も道の予定がある所だけ残す
   for (let i = 0; i < N * N; i++) {
     if (!cand[i] || terr[i] !== 1) continue;
-    const d = hz[i] ? 0 : 1, run = [i];
-    let ok = true;
-    for (const sg of [-1, 1]) {
-      let x = i % N, y = (i / N) | 0;
-      for (;;) {
-        x += DX[d] * sg; y += DY[d] * sg;
-        const j = at(x, y);
-        if (!inMap(x, y) || !cand[j]) { ok = false; break; }
-        if (!terr[j]) break;
-        run.push(j);
-      }
-    }
-    if (!ok) for (const j of run) cand[j] = 0;
+    const { run, banks } = riverRun(i % N, (i / N) | 0, hz[i] ? 0 : 1);
+    if (run.length > BRIDGE_MAX || !run.every((j) => cand[j]) || !banks.every((j) => j >= 0 && cand[j])) for (const j of run) cand[j] = 0;
   }
-  linkIndustryRoads(cand, okTile);
+  // 斜面で行き止まりになる道は、手前の平らな所まで縮める（坂の途中で道が途切れて見えないように）
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let i = 0; i < N * N; i++) if (cand[i] && !isFlat(i) && degree(i) <= 1) { cand[i] = 0; changed = true; }
+  }
   connectRoads(cand);
 }
 
@@ -1675,8 +1619,8 @@ function connectRoads(cand) {
   }
 }
 
-// 区画整理: 開通している街の中の道（大通り・橋・踏切を除く）を、交差点から交差点までの区間ごとに取り除き、隣り合う街区をまとめる。
-// 道がつながらなくなる区間と、行き止まりができる区間は取り除かない。開通していた道のタイルを返す
+// 区画整理: 開通している街の中の道（大通り・橋・踏切を除く）を交差点から交差点までの区間ごとに取り除き、隣り合う街区をまとめる。両端の交差点で直角に
+// 交わる道が両側とも残る区間だけを取り除き（街区が長方形にまとまり、行き止まりもできない）、道がつながらなくなる区間は残す。開通していた道のタイルを返す
 function mergeBlocks(e) {
   const deg = (i) => roadMask(i % N, (i / N) | 0, planRoad);
   const segments = [];
@@ -1689,9 +1633,9 @@ function mergeBlocks(e) {
       if (!seg.length || !inMap(x, y) || !planRoad[at(x, y)]) continue;
       const mid = seg[seg.length >> 1], mx = mid % N, my = (mid / N) | 0;
       // 取り除くのは、もう開通している道（街区がまとまって見える所）だけにする
-      if (mx === town.x || my === town.y || seg.some((j) => terr[j] || railMask[j] || !road[j])) continue;
+      if (mx === town.x || my === town.y || industryNear[mid] || seg.some((j) => terr[j] || railMask[j] || !road[j])) continue;   // 工業地区のまわりの道は残す
       if (townDist(mx, my) > ERA_RADIUS[e] * 0.8) continue;
-      segments.push({ seg, ends: [i, at(x, y)], d: townDist(mx, my) });
+      segments.push({ seg, ends: [i, at(x, y)], d: townDist(mx, my), cross: d === 0 ? 10 : 5 });   // cross: 直角に交わる道の向きのビット
     }
   }
   // 中心に近い区間ほど選ばれやすく
@@ -1701,7 +1645,7 @@ function mergeBlocks(e) {
   const total = () => planRoad.reduce((n, v) => n + v, 0);
   for (const sg of segments) {
     if (budget <= 0) break;
-    if (sg.seg.some((j) => !planRoad[j]) || sg.ends.some((j) => [0, 1, 2, 3].filter((d) => deg(j) & (1 << d)).length < 3)) continue;
+    if (sg.seg.some((j) => !planRoad[j]) || sg.ends.some((j) => (deg(j) & sg.cross) !== sg.cross)) continue;
     const before = total(), keep = planRoad.slice();
     for (const j of sg.seg) planRoad[j] = 0;
     connectRoads(planRoad.slice());
@@ -1735,24 +1679,6 @@ function stationGap(x, y) {
   return Math.min(...station.building.map((i) => Math.max(Math.abs(x - i % N), Math.abs(y - ((i / N) | 0)))));
 }
 
-// 駅前広場のタイル: 駅ビルの各列から線路と反対の向きへ、駅ビルの正面の道をまたいだ先の区画を STATION_PLAZA タイルまで。
-// 駅舎は線路と道の間に建つので、すぐ正面は道になる。区画でない所（水・斜面・その先の道）に当たったら、その列はそこで止める
-function stationPlaza() {
-  const b = station.building, d = b[0] - station.tiles[0], dx = d === 1 || d === -1 ? d : 0, dy = dx ? 0 : Math.sign(d), list = [];
-  for (const i0 of b) {
-    let n = 0;
-    for (let k = 1; k <= STATION_PLAZA + 1 && n < STATION_PLAZA; k++) {
-      const x = i0 % N + dx * k, y = ((i0 / N) | 0) + dy * k, i = at(x, y);
-      if (!inMap(x, y)) break;
-      if (planRoad[i] && !n) continue;   // 正面の道はまたぐ
-      if (!isLot[i] || terr[i] || industry[i] || !isFlat(i)) break;
-      list.push(i);
-      n++;
-    }
-  }
-  return list;
-}
-
 // 街の中心か駅までの近さ
 function townDist(x, y) {
   let d = Math.hypot(x - town.x, y - town.y);
@@ -1768,11 +1694,8 @@ function planEra(e) {
     if (station) add(-50, { kind: 'station' });
   }
   if (e === 2) {
-    // 駅舎を駅ビルに建て替え、正面（線路と反対の側）に駅前広場を作る
-    if (station?.building) {
-      add(-50, { kind: 'station' });
-      for (const i of stationPlaza()) { openKind[i] = G_PLAZA; add(-45, { kind: 'open', i, plaza: true }); }
-    }
+    // 駅舎を駅ビルに建て替える
+    if (station?.building) add(-50, { kind: 'station' });
     // 舗装は、新しい道と同じく中心から道をたどった距離の順番で進め、舗装した道が中心からひと続きに広がるようにする（飛び地にしない）。
     // 建物より少し先に進めて、建物の建設と混ぜる（先に全部を舗装すると、時代の前半が舗装だけになる）
     for (let i = 0; i < N * N; i++) if (road[i] === 1) add(roadKey(i), { kind: 'pave', i });
@@ -1790,7 +1713,7 @@ function planEra(e) {
       if (!ts.every((i) => isLot[i] && !openKind[i] && !industry[i])) continue;
       // 中心に近いほど選ばれやすいが、ばらつきを持たせて、範囲の中のところどころに建てる
       const d = townDist(x + 1, y + 1);
-      if (stationGap(x, y) <= STATION_CLEAR + 2) continue;   // 駅ビルを埋もれさせない
+      if (stationGap(x, y) <= STATION_CLEAR + 2 || ts.some((i) => nearIndustry(i % N, (i / N) | 0))) continue;   // 駅ビル・工場を埋もれさせない
       if (d <= R * BIG_REACH) sites2.push({ x, y, ts, d, score: lerp(d, hash(x, y, landSeed + e * 17) * R * BIG_REACH, BIG_SCATTER) });
     }
     sites2.sort((a, b) => a.score - b.score);
@@ -1817,18 +1740,14 @@ function planEra(e) {
     if (planRoad[i] && !road[i] && d <= (arterial ? R + ARTERIAL_REACH : (R * ROAD_REACH + 2) * roadReach(x, y))) add(roadKey(i), { kind: 'road', i });
     if (reserved[i] === 2 || openKind[i]) continue;
     // 工業地区は、自動車の時代から工場に変える（家や田畑も取り壊す）。建った工場は建て替えずに残す。
-    // 縁の区画の一部は、駐車場・資材置き場にする
-    if (industry[i] && e === 2 && industryEdge(x, y) && hash(x, y, landSeed + 53) < INDUSTRY_YARD) {
-      openKind[i] = hash(x, y, landSeed + 54) < INDUSTRY_PARKING ? G_PARKING : G_YARD;
-      add(R * (0.3 + 0.5 * hash(x, y, landSeed + 52)), { kind: 'open', i });
-      continue;
-    }
+    // 都市の時代にも工場にしない残りは、自動車の時代に駐車場にして、地区の全体を工場と駐車場で埋める
     if (industry[i] && e >= 2) {
-      const b = obj[i]?.kind === 'bld' ? obj[i] : null;
-      if (cover[i] < 0 && b?.type !== 'factory2' && hash(x, y, landSeed + 51) < INDUSTRY_FILL[e]) add(R * (0.3 + 0.5 * hash(x, y, landSeed + 52)), { kind: 'build', i });
+      const b = obj[i]?.kind === 'bld' ? obj[i] : null, k = hash(x, y, landSeed + 51), key = R * (0.3 + 0.5 * hash(x, y, landSeed + 52));
+      if (e === 2 && k >= INDUSTRY_FILL[3]) { openKind[i] = G_PARKING; add(key, { kind: 'open', i }); }
+      else if (cover[i] < 0 && b?.type !== 'factory2' && k < INDUSTRY_FILL[e]) add(key, { kind: 'build', i });
       continue;
     }
-    // 街の中の区画の一部は、公園・広場・駐車場として空ける（建物があれば取り壊す）
+    // 街の中の区画の一部は、公園・駐車場として空ける（建物があれば取り壊す）
     const open = isLot[i] && d <= R * 0.9 && cover[i] < 0 ? openSpaceAt(x, y, e) : 0;
     if (open) {
       openKind[i] = open;
@@ -1842,13 +1761,15 @@ function planEra(e) {
       if (b.era < e && Math.random() < (e === 3 ? 0.95 : d < R * 0.5 ? 1 : 0.6) * f) add(lerp(d, Math.random() * R, REBUILD_SCATTER), { kind: 'build', i });
       continue;
     }
+    // 工業地区のまわりは、空いた所を建物より田畑にし、田畑は建物に変えない（工場の一角を田園で縁取る）
+    const farmBelt = isFarm[i] && !industry[i] && nearIndustry(x, y) && fieldPatch(x, y) < INDUSTRY_FIELDS;
     // 田畑は、街が来ても一部だけを建物に変え、残りは田畑のまま残す
-    if (isLot[i] && !obj[i] && cover[i] < 0 && (field ? d <= R && Math.random() < FIELD_TO_TOWN * f : Math.random() < DENSITY[e] * f)) {
+    if (isLot[i] && !obj[i] && cover[i] < 0 && (field ? d <= R && Math.random() < FIELD_TO_TOWN * f && !nearIndustry(x, y) : !farmBelt && Math.random() < DENSITY[e] * f)) {
       add(d * BUILD_LEAD[e], { kind: 'build', i });
       continue;
     }
     // 郊外の田畑は、街より先に広く作る
-    if (isFarm[i] && !field && !obj[i] && cover[i] < 0 && d > R * 0.55 && d <= R + FIELD_REACH && fieldPatch(x, y) < FIELD_DENSITY[e]) {
+    if (isFarm[i] && !field && !obj[i] && cover[i] < 0 && (farmBelt || (d > R * 0.55 && d <= R + FIELD_REACH && fieldPatch(x, y) < FIELD_DENSITY[e]))) {
       add(d * ROAD_LEAD, { kind: 'field', i });
       continue;
     }
@@ -1866,7 +1787,7 @@ function planEra(e) {
     }
     return -1;
   };
-  for (const t of list.filter((t) => t.kind === 'build' || t.kind === 'field' || t.kind === 'road')) {
+  for (const t of list.filter((t) => t.kind === 'build' || t.kind === 'field' || t.kind === 'open' || t.kind === 'road')) {
     const x = t.i % N, y = (t.i / N) | 0;
     let j = -1;
     if (t.kind === 'road') j = toCenter(t.i);
@@ -1907,7 +1828,8 @@ function roadReach(x, y) {
 }
 
 // 行き止まりを減らす: この時代の終わりの道（開通済みと予定）で行き止まりになる所は、まっすぐ先 ROAD_LINK タイル以内に道があれば
-// 延ばしてつなぎ、無ければ、予定だけの短い枝（ROAD_STUB タイル以内で分かれ道に戻るもの）を取りやめる。建物・田畑への道は残す
+// 延ばしてつなぎ、無ければ、予定だけの短い枝（ROAD_STUB タイル以内で分かれ道に戻るもの）を取りやめる。建物・田畑への道（keep）は残す。
+// 最後に、斜面で行き止まりになる予定の道を、手前の平らな所まで取りやめる（こちらは建物・田畑への道も取りやめる）
 function reduceDeadEnds(list, add) {
   const future = Uint8Array.from(road, (r) => (r ? 1 : 0)), byTile = new Map();
   for (const t of list) if (t.kind === 'road') { future[t.i] = 1; byTile.set(t.i, t); }
@@ -1941,33 +1863,29 @@ function reduceDeadEnds(list, add) {
       for (const k of chain) { future[k] = 0; byTile.get(k).kind = 'none'; }
     }
   }
+  // 斜面で行き止まりになる予定の道は、手前の平らな所まで取りやめる
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [i, t] of byTile) if (future[i] && !isFlat(i) && links(i).length <= 1) { future[i] = 0; t.kind = 'none'; changed = true; }
+  }
 }
 
 // 空き地にする区画の地面の種類（0 なら空けない）。OPEN_CELL タイルの升目ごとに決め、時代が進むと増やす（前の時代の空き地は残る）
-// 駐車場は 3 割ほど、中心の近くは広場が多く、ほかは公園にする
+// 駐車場は 3 割ほど、ほかは公園にする
 function openSpaceAt(x, y, e) {
   const cx = Math.floor(x / OPEN_CELL), cy = Math.floor(y / OPEN_CELL);
   if (hash(cx, cy, landSeed + 911) >= OPEN_SHARE[e]) return 0;
-  const k = hash(cx, cy, landSeed + 912), dt = Math.hypot(x - town.x, y - town.y);
-  return k < 0.3 ? G_PARKING : k < (dt < 8 ? 0.75 : 0.45) ? G_PLAZA : G_PARK;
+  return hash(cx, cy, landSeed + 912) < 0.3 ? G_PARKING : G_PARK;
 }
 // 空き地の上の物（木と止めた車）。位置から決める
 function openDecor(i, g) {
   const x = i % N, y = (i / N) | 0, r = (k) => hash(x, y, landSeed + 300 + k), list = [];
   if (g === G_PARK) {
-    // 丸い広葉樹を 2〜3 本
-    for (let k = 0; k < TREE_SPOTS.length; k++) {
-      if (r(k) < 0.35) continue;
-      const [u, v] = TREE_SPOTS[k];
-      list.push({ u, v, sprite: treeImage(1, Math.floor(r(k + 10) * 8)) });
-    }
-  } else if (g === G_PLAZA) {
-    if (r(0) < 0.5) list.push({ u: 0.5, v: 0.5, sprite: treeImage(1, Math.floor(r(1) * 8)) });
-  } else if (g === G_YARD) {
-    // コンテナを 2 つほど（1〜3 つ）、同じ向きに並べる（資材のデフォルメ）
-    const n = r(0) < 0.2 ? 1 : r(0) < 0.85 ? 2 : 3, d = r(1) < 0.5 ? 0 : 1;
-    for (const [k, p] of YARD_SPOTS[n].entries()) {
-      list.push({ u: d ? p : 0.5, v: d ? 0.5 : p, sprite: containerImage(d, pick2(CONTAINER_COLORS, r(k + 20))) });
+    // 園路で分けた 4 区画の真ん中に、丸い広葉樹を置く（中心の近くは少なく）
+    const share = PARK_TREES[Math.hypot(x - town.x, y - town.y) < 8 ? 0 : 1];
+    for (let k = 0; k < 4; k++) {
+      if (r(k) >= share) continue;
+      list.push({ u: k % 2 ? 0.75 : 0.25, v: k < 2 ? 0.25 : 0.75, sprite: treeImage(1, Math.floor(r(k + 10) * 8)) });
     }
   } else {
     // 区切りの間に、v の向きに止めた車（半分ほど）
@@ -1980,9 +1898,11 @@ function openDecor(i, g) {
   return list.length ? list : null;
 }
 
+// 高い建物の代わりに建てる低い建物
+const LOW_TYPE = { office3: 'office2', apart3: 'apart2' };
 function chooseType(e, i) {
   const x = i % N, y = (i / N) | 0, near = townDist(x, y) / ERA_RADIUS[e];
-  // 工場は、郊外の工業地区にだけ建てる
+  // 工場は、工業地区にだけ建てる
   const inFactoryZone = industry[i] === 1;
   const nearStation = station && Math.hypot(x - station.x, y - station.y) < 4;
   // 駅ビルのまわりは、駅ビルより低い建物だけにする（埋もれさせない）
@@ -2006,7 +1926,7 @@ function chooseType(e, i) {
 }
 
 // 建設を始める。frames はコマごとに呼ぶ関数
-function startSite(x, y, frames) {
+function startSite(frames) {
   sites.push({ frames, k: 0, t: 0 });
   frames[0]();
 }
@@ -2075,10 +1995,10 @@ function buildFrames(x0, y0, fw, fd, type, eraOf, ground, vr = randInt(BUILDING_
   return frames;
 }
 
-// 道（開通したもの）が、まっすぐ 2 タイル以内にあるか（街区の奥の区画も道から入れる）
+// 道（開通したもの）が、まっすぐ 2 タイル以内（工業地区は、区画でない街区の奥も埋めるので 3 タイル以内）にあるか
 function hasActiveRoadNear(i) {
-  const x = i % N, y = (i / N) | 0;
-  for (let d = 0; d < 4; d++) for (let k = 1; k <= 2; k++) if (inMap(x + DX[d] * k, y + DY[d] * k) && road[at(x + DX[d] * k, y + DY[d] * k)]) return true;
+  const x = i % N, y = (i / N) | 0, reach = industry[i] ? 3 : 2;
+  for (let d = 0; d < 4; d++) for (let k = 1; k <= reach; k++) if (inMap(x + DX[d] * k, y + DY[d] * k) && road[at(x + DX[d] * k, y + DY[d] * k)]) return true;
   return false;
 }
 
@@ -2119,7 +2039,7 @@ function runTask(t) {
         }
         for (const j of span) roadBegun[j] = 1;
         const water = span.filter((j) => terr[j]);
-        startSite(x, y, [...bridgeScaffold(water), () => {
+        startSite([...bridgeScaffold(water), () => {
           clearBridgeScaffold(water);
           for (const j of span) { road[j] = kind; setGround(j, terr[j] ? gtype[j] : G_GRASS); }
         }]);
@@ -2128,21 +2048,21 @@ function runTask(t) {
       roadBegun[i] = 1;
       frames.push(() => { clearObject(x, y, 1, 1); setGround(i, G_DIRT); },
         () => { road[i] = kind; setGround(i, G_GRASS); });
-      startSite(x, y, frames);
+      startSite(frames);
       return true;
     }
     case 'unroad':
       if (!road[i]) return true;
       roadBegun[i] = 0;
-      startSite(x, y, [() => { road[i] = 0; setGround(i, G_DIRT); }, () => setGround(i, G_GRASS)]);
+      startSite([() => { road[i] = 0; setGround(i, G_DIRT); }, () => setGround(i, G_GRASS)]);
       return true;
     case 'pave':
       // 区画整理で先に撤去した道は舗装しない（撤去した所には建物が建つので、建物の下に道路ができる）
       if (road[i] !== 1) return true;
-      startSite(x, y, [() => { road[i] = 2; touchGround(i); }]);
+      startSite([() => { road[i] = 2; touchGround(i); }]);
       return true;
     case 'rail':
-      startSite(x, y, [...(terr[i] ? bridgeScaffold([i]) : []),
+      startSite([...(terr[i] ? bridgeScaffold([i]) : []),
         () => { clearBridgeScaffold(terr[i] ? [i] : []); if (gtype[i] === G_FOREST || trees[i]) setGround(i, G_GRASS); railState[i] = 1; touchGround(i); },
         () => { railState[i] = 2; touchGround(i); railLaid++; }]);
       return true;
@@ -2151,40 +2071,41 @@ function runTask(t) {
       for (const r of station.tiles) { platform[r] = 1; touchGround(r); }
       if (!b) return true;
       const { x0, y0, fw, fd } = bounds(b);
-      startSite(x0, y0, buildFrames(x0, y0, fw, fd, era >= 2 ? 'station2' : 'station1', era, G_LOT));
+      startSite(buildFrames(x0, y0, fw, fd, era >= 2 ? 'station2' : 'station1', era, G_LOT));
       return true;
     }
     case 'big': {
       const ts = [at(t.x, t.y), at(t.x + 1, t.y), at(t.x, t.y + 1), at(t.x + 1, t.y + 1)];
       if (ts.some(onRoad)) return true;
       if (!ts.some(hasActiveRoadNear)) return false;
-      startSite(t.x, t.y, buildFrames(t.x, t.y, 2, 2, t.type, era, G_LOT));
+      startSite(buildFrames(t.x, t.y, 2, 2, t.type, era, G_LOT));
       return true;
     }
     case 'open': {
       if (cover[i] >= 0 || onRoad(i)) return true;
-      if (!t.plaza && !hasActiveRoadNear(i)) return false;   // 駅前広場は駅から入れる
+      if (!hasActiveRoadNear(i)) return false;
       const g = openKind[i];
-      startSite(x, y, [() => { clearObject(x, y, 1, 1); setGround(i, G_DIRT); }, () => { setGround(i, g); trees[i] = openDecor(i, g); }]);
+      startSite([() => { clearObject(x, y, 1, 1); setGround(i, G_DIRT); }, () => { setGround(i, g); trees[i] = openDecor(i, g); }]);
       return true;
     }
     case 'build': {
       if (cover[i] >= 0 || reserved[i] === 2 || openKind[i] || onRoad(i)) return true;
       if (!hasActiveRoadNear(i)) return false;
-      const type = chooseType(era, i);
-      if (type === 'factory2' && era === 2) cam.factoryTime = time;   // 工業地区ができていく所をカメラで映す
-      startSite(x, y, buildFrames(x, y, 1, 1, type, era, era >= 2 ? G_LOT : G_GRASS));
+      // 工業地区のまわりは、高いビル・マンションを低いビル・団地に替える（工場を埋もれさせない）
+      let type = chooseType(era, i);
+      if (nearIndustry(x, y)) type = LOW_TYPE[type] ?? type;
+      startSite(buildFrames(x, y, 1, 1, type, era, era >= 2 ? G_LOT : G_GRASS));
       return true;
     }
     case 'field': {
       if (obj[i] || cover[i] >= 0) return true;
       const g = pick([G_RICE, G_FIELD]);
-      startSite(x, y, [() => setGround(i, G_DIRT), () => setGround(i, g)]);
+      startSite([() => setGround(i, G_DIRT), () => setGround(i, g)]);
       return true;
     }
     case 'clear':
       if (gtype[i] !== G_FOREST) return true;
-      startSite(x, y, [() => setGround(i, G_DIRT), () => setGround(i, G_GRASS)]);
+      startSite([() => setGround(i, G_DIRT), () => setGround(i, G_GRASS)]);
       return true;
   }
   return true;
@@ -2287,16 +2208,18 @@ function updatePuffs(dt) {
     if (p.age > 1.6) puffs.splice(n, 1);
   }
 }
-// 工場の煙突から、ときどき 1 つずつ煙を出す（控えめに。工場ごとに間隔をずらす）
+// 工場の煙突から、ときどき FACTORY_PUFFS 個ずつ続けて煙を出す（控えめに。工場ごとに間隔をずらす）
 function updateFactorySmoke(dt) {
   if (era < 2) return;
   for (let i = 0; i < N * N; i++) {
     const o = obj[i];
     if (o?.kind !== 'bld' || !o.img.chimney) continue;
-    // 間隔は位置と回数から決める（Math.random を引く回数を変えない）
+    // 間隔は位置と時刻から決める（Math.random を引く回数を変えない）
     if (o.smoke === undefined) o.smoke = hash(i, 0, landSeed + 71) * FACTORY_SMOKE[1];
     if ((o.smoke -= dt) > 0) continue;
-    o.smoke = lerp(...FACTORY_SMOKE, hash(i, Math.floor(time), landSeed + 72));
+    const left = (o.puffLeft ?? FACTORY_PUFFS) - 1;   // この回に、あと出す煙の数
+    o.puffLeft = left > 0 ? left : FACTORY_PUFFS;
+    o.smoke = left > 0 ? FACTORY_PUFF_GAP : lerp(...FACTORY_SMOKE, hash(i, Math.floor(time), landSeed + 72));
     const c = o.img.chimney, u = i % N + c.u, v = ((i / N) | 0) + c.v;
     addPuff(u, v, heightAt(u, v) * STEP_H + c.z + 1);
   }
@@ -2382,21 +2305,31 @@ function clampView(x, y) {
   const k = limit / r;
   return [OX + (x - OX) * k, my + (y - my) * k];
 }
-// 時代 e でカメラをずらす向き（ラジアン）。前の時代と 90° 以上違う向きにする。
-// Math.random を引くと街の育ち方が変わるので、土地から決まる乱数で選ぶ
+// 工業地区の中心（タイルの上の位置）
+const industryCenter = () => ({ x: (industryRect.x0 + industryRect.x1 + 1) / 2, y: (industryRect.y0 + industryRect.y1 + 1) / 2 });
+// 時代 e でカメラをずらす向き（ラジアン）。前の時代と 90° 以上違う向きにする。工業地区があれば、自動車の時代は
+// 工業地区の向きにし、鉄道・都市の時代はそこから回す。Math.random を引くと街の育ち方が変わるので、土地から決まる乱数で選ぶ
 function camAngle(e) {
+  const turn = (k) => Math.PI * (0.5 + hash(k, 0, landSeed + 81));
+  if (industryRect) {
+    const f = industryCenter(), a = Math.atan2(f.y - town.y - 0.5, f.x - town.x - 0.5);
+    return e === 1 ? a - turn(2) : e === 3 ? a + turn(3) : a;
+  }
   let a = hash(1, 0, landSeed + 81) * Math.PI * 2;
-  for (let k = 2; k <= e; k++) a += Math.PI * (0.5 + hash(k, 0, landSeed + 81));
+  for (let k = 2; k <= e; k++) a += turn(k);
   return a;
 }
 // カメラの目標: 時代の途中は街の中心からその時代の向きへずらした所に留まり、育ちきったら街のまわりを一周する。
-// 自動車の時代に工場が建ち始めたら、建て続けている間は工業地区を映す
+// 自動車の時代は工業地区の向きへ、工業地区の中心が画面の CAM_INDUSTRY_VIEW の範囲に入るまでずらす（工場が建ち始めるのが見える）
 function camTarget() {
-  if (era === 2 && industryRect && time - cam.factoryTime < CAM_FACTORY_LINGER) {
-    const x = (industryRect.x0 + industryRect.x1 + 1) / 2, y = (industryRect.y0 + industryRect.y1 + 1) / 2;
-    return clampView(worldX(x, y), worldY(x, y, heightAt(x, y) * STEP_H));
-  }
   let a = camAngle(era), d = era ? CAM_ERA_SHIFT * ERA_RADIUS[era] : 0;
+  if (era === 2 && industryRect) {
+    const f = industryCenter(), tx = town.x + 0.5, ty = town.y + 0.5, dist = Math.hypot(f.x - tx, f.y - ty);
+    // 街の中心から工業地区の中心までの、画面の上のずれ（ドット）
+    const sx = Math.abs(worldX(f.x, f.y) - worldX(tx, ty)), sy = Math.abs(worldY(f.x, f.y, 0) - worldY(tx, ty, 0));
+    const rest = Math.min(1, CAM_INDUSTRY_VIEW * W / 2 / (sx || 1), CAM_INDUSTRY_VIEW * H / 2 / (sy || 1));
+    d = Math.max(d, (1 - rest) * dist);
+  }
   if (holdTimer >= 0 && holdTimer <= HOLD_TIME) {
     a += Math.PI * 2 * (1 - holdTimer / HOLD_TIME);
     d = CAM_TOUR_RADIUS * ERA_RADIUS[3];
@@ -2486,6 +2419,7 @@ function render() {
   }
   for (const b of buckets) b.length = 0;
 }
+
 // ---- 新しい土地 ----
 // preset は季節（COLOR_PRESETS の番号）。省くと前と違う季節を、土地の形から決まる乱数で選ぶ
 function newLand(preset) {
@@ -2506,11 +2440,9 @@ function newLand(preset) {
   holdTimer = -1;
   startEra(0);
   cam.pinned = false;
-  cam.factoryTime = -Infinity;
   [cam.x, cam.y] = [cam.tx, cam.ty] = camTarget();
   setColorPreset(preset ?? pickColorPreset(at(town.x, town.y)));
 }
-
 
 // ---- 強度 ----
 function setSpeed(v) {
@@ -2557,7 +2489,7 @@ function showcase(type = 'tower3', vr = 0) {
     if (d < bd && flat(x, y)) { best = [x, y]; bd = d; }
   }
   const [x0, y0] = best;
-  startSite(x0, y0, buildFrames(x0, y0, fw, fd, type, 3, G_LOT, vr));
+  startSite(buildFrames(x0, y0, fw, fd, type, 3, G_LOT, vr));
   cam.x = cam.tx = Math.round(worldX(x0 + fw / 2, y0 + fd / 2));
   cam.y = cam.ty = Math.round(worldY(x0 + fw / 2, y0 + fd / 2, tmin[at(x0, y0)] * STEP_H) - 70);
   cam.pinned = true;
