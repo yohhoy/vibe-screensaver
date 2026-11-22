@@ -40,6 +40,7 @@ export const HIDDEN = {
   infcastle: 'startHiddenRoom',
   bubbles: 'startHeart',
   orrery: 'startComet',
+  marbles: 'startMascot',
 };
 
 // kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）

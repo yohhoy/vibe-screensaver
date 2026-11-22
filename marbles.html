@@ -24,7 +24,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 長さの単位は立方体の一辺（実物の 5cm ほどの見立て）。y が上。格子のマス (i, j) は x = i〜i+1、z = j〜j+1 を占める。
@@ -91,6 +91,21 @@ const TREE_BALL = [0.4, 0.58];    // 丸い木の長球（縦に長い回転楕�
 const TREE_ROUND = 0.03;          // 円錐の底の縁の丸み
 const TREE_AO = [0.6, 0.55];      // 陰の明るさ（幹の根元、葉の下の幹）
 const TREE_TINT = [0.42, 0.3, 0.24];   // 木の色の倍率（線形。積み木より濃い、くるみ材のような色）
+
+// 隠し要素の木のマスコット（Claude Code のマスコットを、木を角材から削り出して組んだおもちゃにしたもの）。無地の柱の上に、カメラの方を向けて置く
+const MASCOT_INTERVAL = [300, 120, 900];   // 次に置くまでの秒数 [平均, 最小, 最大]
+const MASCOT_DOT = [0.055, 0.14]; // ドット絵の 1 ドットの横（と奥行き）・縦の大きさ（胴の幅 12 ドットで立方体の 0.66 個ぶん。縦に伸ばす）
+const MASCOT_BODY_SCALE = 1.2;    // 胴体の高さの倍率（ドット絵の胴体は 4 行。足と腕の太さは変えない）
+const MASCOT_EYE_SIZE = [0.055, 0.11];   // 目の大きさ（縦に伸ばさない）
+const MASCOT_LEG = 0.06;          // 足の長さの増し分（立方体に対する長さ。斜め上から足が見えるように、胴体を持ち上げる）
+const MASCOT_ARM = 2.6;           // 腕の長さ（ドット。胴体の横から出っ張る長さ。向きを回しても柱の上面から出ない長さにする）
+const MASCOT_YAW = 30;            // 正面を、カメラの方から左右どちらかへずらす角度（度。置くたびにランダムに向きを選ぶ）
+const MASCOT_BEVEL = 0.02;        // 胴体の辺の面取りの幅（下の辺と、足・腕・目は面取りしない）
+const MASCOT_TINT = [0.52, 0.19, 0.13];  // 木の色の倍率（線形。レッドシダーのような、赤みのある深い茶色）
+const MASCOT_BELOW = 0.8;         // 置く柱の、画面の下端から外への最小の距離（柱の上面の中心。マスコットの頭が置いたときに見えないように、高さの分だけ外にする）
+const MASCOT_SIDE_MARGIN = 1;     // 置く柱を、画面の左右の端からこれだけ内側にする
+const MASCOT_EXIT_ROWS = 3;       // 柱が、画面の上端からこれだけ上の段（行）まで出たら消す
+const MASCOT_EYE = 0.06;          // 目の明るさ（黒い木の埋め込み）
 
 // 木（無塗装のブナ材）。木目は 1 つの立方体ぶんの 3 次元テクスチャに描き、立方体ごとに向きとずれを変えて貼る
 const WOOD_RGB = [226, 190, 150]; // 地の色（sRGB）
@@ -776,6 +791,86 @@ function buildTree(type) {
   return makeGeometry(positions, normals, colors, indices);
 }
 
+// 木のマスコット。ドット絵（tube.html と同じ形: 胴体・足 4 本・腕 2 本・目 2 つ）の箱を、辺を面取りして組む。
+// 局所座標は柱の上面の中心が原点で、y が上。正面は +x +z の向き（カメラの方）から、dir（-1 か 1）の側へ MASCOT_YAW だけずらす
+function buildMascot(dir) {
+  const [sx, sy] = MASCOT_DOT, positions = [], normals = [], colors = [], indices = [];
+  const c = Math.SQRT1_2;
+  // ドット絵の座標（x は右、z は奥が +）を、正面（-z）が +x +z の向きから dir の側へずれるよう、y 軸のまわりに回す
+  const yaw = (-135 + dir * MASCOT_YAW) * DEG, cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+  const turn = ([x, y, z]) => [x * cosY + z * sinY, y, -x * sinY + z * cosY];
+  // 中心 (cx, cy, cz)・大きさ (w, h, d) の箱。面は縮め、辺は 45° の帯、角は三角形にして、面取りする（bevel が 0 なら 6 面だけ）。
+  // flat なら下の辺と下の角は面取りしない（底の面と側面を下の縁まで広げる。足を付ける所に、面取りの切れ込みを作らないため）
+  const box = (cx, cy, cz, w, h, d, shade, bevel, flat = false) => {
+    const half = [w / 2, h / 2, d / 2], b = Math.min(bevel, ...half.map((v) => v * 0.4));
+    // 面の縁の軸 k・向き s の端までの距離（面取りの分だけ内側。flat の下の端は縁まで）
+    const edge = (k, s, full) => (full || (flat && k === 1 && s < 0) ? half[k] : half[k] - b);
+    const quad = (pts, n) => {
+      const start = positions.length / 3, nn = turn(n);
+      for (const q of pts) { positions.push(...turn([cx + q[0], cy + q[1], cz + q[2]])); normals.push(...nn); colors.push(shade, shade, shade); }
+      indices.push(...(pts.length === 4 ? [0, 1, 2, 0, 2, 3] : [0, 1, 2]).map((k) => start + k));
+    };
+    // 点の並びが、外から見て反時計回りになるよう、法線の向きに合わせて直す
+    const face = (pts, n) => {
+      const u = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
+      const v = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
+      const cr = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      // turn で回すのは位置と法線の両方なので、回す前の向きで比べてよい
+      quad(cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] >= 0 ? pts : [...pts].reverse(), n);
+    };
+    const sg = [-1, 1];
+    // 面: 6 面。面の中心の向き axis と、残る 2 軸
+    for (let axis = 0; axis < 3; axis++) {
+      const [a1, a2] = [0, 1, 2].filter((k) => k !== axis);
+      for (const sign of sg) {
+        const n = [0, 0, 0]; n[axis] = sign;
+        const full = flat && axis === 1 && sign < 0;
+        const pts = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([p, q]) => {
+          const v = [0, 0, 0]; v[axis] = sign * half[axis]; v[a1] = p * edge(a1, p, full); v[a2] = q * edge(a2, q, full); return v;
+        });
+        face(pts, n);
+      }
+    }
+    if (b === 0) return;   // 面取りしない箱は、6 面だけ
+    // 辺: 12 本。2 軸の向き (sa, sb) の角に沿う帯（法線は 2 軸の向きの平均）
+    for (let axis = 0; axis < 3; axis++) {
+      const [a1, a2] = [0, 1, 2].filter((k) => k !== axis);
+      for (const sa of sg) {
+        for (const sb of sg) {
+          if (flat && ((a1 === 1 && sa < 0) || (a2 === 1 && sb < 0))) continue;   // 下の辺
+          const n = [0, 0, 0]; n[a1] = sa * c; n[a2] = sb * c;
+          const pts = [-1, 1].flatMap((t) => [[sa * half[a1], sb * (half[a2] - b)], [sa * (half[a1] - b), sb * half[a2]]].map(([p, q]) => {
+            const v = [0, 0, 0]; v[axis] = t * edge(axis, t); v[a1] = p; v[a2] = q; return v;
+          }));
+          face([pts[0], pts[1], pts[3], pts[2]], n);
+        }
+      }
+    }
+    // 角: 8 つ。3 軸の向きの平均を法線にした三角形
+    for (const ex of sg) {
+      for (const ey of sg) {
+        for (const ez of sg) {
+          if (flat && ey < 0) continue;   // 下の角
+          const k = 1 / Math.sqrt(3);
+          face([[ex * half[0], ey * (half[1] - b), ez * (half[2] - b)], [ex * (half[0] - b), ey * half[1], ez * (half[2] - b)],
+            [ex * (half[0] - b), ey * (half[1] - b), ez * half[2]]], [ex * k, ey * k, ez * k]);
+        }
+      }
+    }
+  };
+  // 足は胴体の正面にそろえ、地面まで伸ばす（奥まっていると、胴体の陰に隠れて見えない）
+  const legH = sy + MASCOT_LEG, bodyH = 4 * sy * MASCOT_BODY_SCALE, top = legH + bodyH;
+  // 胴体の上端から胴体の高さの比 f の所（ドット絵の行の中心。胴体は 4 行）
+  const at = (f) => top - bodyH * f;
+  box(0, legH + bodyH / 2, 0, 12 * sx, bodyH, 6 * sx, 1, MASCOT_BEVEL, true);                   // 胴体
+  // 足の上は、胴体の底（面取りしない）に接する
+  for (const x of [4, 6, 11, 13]) box((x - 8.5) * sx, legH / 2, -2 * sx, sx, legH, 2 * sx, 1, 0);   // 足
+  for (const side of [-1, 1]) box(side * (6 + MASCOT_ARM / 2) * sx, at(2.5 / 4), 0, MASCOT_ARM * sx, sy, 2 * sx, 1, 0);   // 腕（胴体の高さの 5 / 8 の所。胴体の幅は 12 ドット）
+  // 目は、胴体の高さの 3 / 8（ドット絵の 1 行目の中心）の所に、胴体の正面から少しだけ出す
+  for (const x of [5, 12]) box((x - 8.5) * sx, at(1.5 / 4), -3 * sx, MASCOT_EYE_SIZE[0], MASCOT_EYE_SIZE[1], 0.4 * sx, MASCOT_EYE, 0);
+  return makeGeometry(positions, normals, colors, indices);
+}
+
 // ---- 積み木と経路の生成 ----
 // マス: { i, j, h（決まった高さ。経路のマスは最初から決まる）, lo, hi（高さの制約）, fixed（行が確定した）,
 //         node（経路のマス）, piece（上面の模様 { top, rot }）, tun（トンネルが通る立方体の高さ）, open（出口 { level, side }） }
@@ -1191,7 +1286,7 @@ function pieceMesh(key, need) {
   const p = pieces.get(key);
   if (p && p.cap >= need) return p.mesh;
   const cap = Math.max(need, (p?.cap ?? 32) * 2);
-  const base = p?.base ?? (key.startsWith('tree') ? buildTree(+key.slice(5)) : buildPiece(key));
+  const base = p?.base ?? (key.startsWith('mascot') ? buildMascot(+key.slice(7)) : key.startsWith('tree') ? buildTree(+key.slice(5)) : buildPiece(key));
   if (p) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.dispose(); }
   const g = new THREE.BufferGeometry();
   g.setIndex(base.index);
@@ -1310,7 +1405,8 @@ function treeAt(c) {
   return true;
 }
 // 木を置ける柱か。経路も通路も無い無地の柱にだけ、まれに置く（奥の経路を隠してもよい）
-const treeAllowed = (c) => !c.node && !c.piece && !c.open.length && !c.tun.length && treeRank(c) < TREE_CHANCE;
+const treeAllowedBase = (c) => !c.node && !c.piece && !c.open.length && !c.tun.length;
+const treeAllowed = (c) => treeAllowedBase(c) && treeRank(c) < TREE_CHANCE;
 
 // 陰の板（縁で濃く、内へ薄れる）。色を掛け合わせる: 画面の色 × (1 − α + α·色)
 function gradientTexture(size, alphaAt) {
@@ -1346,6 +1442,7 @@ function rebuildInstances() {
     for (const c of ch.cubes) { if (!groups.has(c.key)) groups.set(c.key, []); groups.get(c.key).push(c); }
     decals.push(...ch.decals);
   }
+  if (mascot) groups.set(mascot.key, [mascot]);
   for (const [key, p] of pieces) if (!groups.has(key)) p.mesh.count = 0;
   const m = new THREE.Matrix4();
   for (const [key, list] of groups) {
@@ -1740,6 +1837,7 @@ function updateWorld() {
     if (!chunks.has(index) && finalRow > (index + 1) * CHUNK_ROWS + 1) buildChunk(index);
   }
   const discard = rowTop() - ROW_MARGIN_TOP - CHUNK_ROWS;
+  if (mascot && rowOf(mascot.i, mascot.j) < rowTop() - MASCOT_EXIT_ROWS) { mascot = null; instancesDirty = true; }
   for (const index of chunks.keys()) {
     if ((index + 1) * CHUNK_ROWS < discard) { chunks.delete(index); instancesDirty = true; }
   }
@@ -1759,6 +1857,7 @@ const neededBand = () => Math.ceil((viewW / 2 + BAND_MARGIN) * Math.SQRT2);
 // 起動時と、画面が横に広がって作る範囲が足りなくなったときにも呼ぶ
 function reset() {
   for (const m of [...marbles]) removeMarble(m);
+  mascot = null;
   cells.clear();
   chunks.clear();
   paths = [];
@@ -1780,6 +1879,48 @@ function rebase() {
   instancesDirty = true;
 }
 
+// ---- 隠し要素（木のマスコット） ----
+// 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。置くときは、種を Math.random から取り直す。
+// three.js も物を作るときに Math.random を引くので、マスコットの形は最初に置くときに作る（pieceMesh が作る）
+const mascotRandom = (() => {
+  let s = Date.now() >>> 0;   // mulberry32
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
+  return next;
+})();
+const mascotInterval = ([mean, min, max]) => clamp(-Math.log(1 - mascotRandom()) * mean, min, max);
+
+let mascot = null;                                    // 置いてあれば { key, i, k, j, quat, off, tint }、無ければ null
+let mascotWait = mascotInterval(MASCOT_INTERVAL);     // 次に置くまでの秒数
+
+// 画面のすぐ下の外にある、無地の柱の上に置く。積み木といっしょに下から流れ込み、上へ出たら消える
+function startMascot() {
+  if (mascot || isFading()) return;
+  mascotRandom.reseed();
+  // 画面の下端の外にある、置ける柱を、段（行）ごとに、横が画面の中央にいちばん近いものだけ集める。
+  // 中央から ±1 の柱があれば、それがいちばん近いので第一候補になる。置けるのは、積み木を作ってある段で、横は画面の中に見えるもの
+  const rows = new Map();   // 段 → { c, au }
+  for (const c of cells.values()) {
+    const r = rowOf(c.i, c.j);
+    if (c.h == null || !treeAllowedBase(c) || treeAt(c) || !chunks.has(Math.floor(r / CHUNK_ROWS))) continue;
+    const p = tmpA.set(c.i + 0.5, c.h, c.j + 0.5).sub(camTarget);
+    const u = p.x * SCREEN_RIGHT.x + p.z * SCREEN_RIGHT.z, v = p.dot(SCREEN_UP);   // v は画面の下向きが正（SCREEN_UP は名前と逆に下を向く）
+    if (v < viewH / 2 + MASCOT_BELOW || Math.abs(u) > viewW / 2 - MASCOT_SIDE_MARGIN) continue;
+    if (!rows.has(r) || Math.abs(u) < rows.get(r).au) rows.set(r, { c, au: Math.abs(u) });
+  }
+  if (!rows.size) { mascotWait = 0.5; return; }   // 置ける柱が無ければ、少しあとにやり直す
+  mascotWait = mascotInterval(MASCOT_INTERVAL);
+  // 画面に近い段から順に見て、最初に候補のあった段（可能な限り早く見え始める）に置く
+  const c = rows.get(Math.min(...rows.keys())).c;
+  mascot = { key: `mascot:${mascotRandom() < 0.5 ? -1 : 1}`, i: c.i, k: c.h - 0.5, j: c.j, quat: woodQuats[8], off: mascotRandom(), tint: MASCOT_TINT };
+  instancesDirty = true;
+}
+
 // ---- 強度 ----
 function setCount(value) {
   marbleCount = clamp(value, MIN_COUNT, MAX_COUNT);
@@ -1795,6 +1936,10 @@ function step(dt) {
   updateShadow();
   updateMarbles(dt);
   controlCount();
+  if (!mascot) {
+    mascotWait -= dt;
+    if (mascotWait <= 0) startMascot();   // 暗転している間は出さない（startMascot が何もせず、次のコマにまた試す）
+  }
 }
 
 let last = performance.now();
@@ -1816,6 +1961,7 @@ function tick(now) {
 // ---- 入力・UI ----
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
+  keys: { KeyC: startMascot },   // 隠し要素の木のマスコット（操作ガイドには表示しない）
   // シーン切替（Space・左右スワイプ）。場面の一覧は持たず、暗転している間にリセットする
   changeScene: () => fadeAndRun(reset),
   // 強度（↑↓・上下スワイプ）。画面の中のビー玉の数
