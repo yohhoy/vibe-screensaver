@@ -578,7 +578,7 @@ function buildPiece(key) {
   // アーチは archF の側面に、つなぎ目の下の辺の中点を中心に開ける（ca: その中心の横の位置、sgn: つなぎ目の向き）
   const archJ = +archText - 1, archF = archJ < 0 ? -1 : archJ % 2 === 0 ? 1 : 0;
   const sgn = archJ === 0 || archJ === 1 ? 1 : -1, ca = sgn * 0.5, [AX, AY] = ARCH_SIZE;
-  // アーチの面の格子は、縁の外にも少し足す（縁の外で楕円の輪へ寄せる範囲 3 輪ぶん ≈ 0.07 を覆う幅）
+  // アーチの面の格子は、縁の外にも少し足す（縁の外で縁へ寄せる点を置くため）
   const archPad = 0.08;
   const archLines = [dense(0, AX + archPad, CARVE_STEP).map((t) => ca - sgn * t), dense(-0.5, -0.5 + AY + archPad, CARVE_STEP)];
   const bevelTo = (side) => (side === archJ ? 0.5 : 0.5 - BEVEL);   // 面取りを始める位置（側面 side の向きへ）
@@ -614,14 +614,12 @@ function buildPiece(key) {
         } else if (!onEdge && opening) {
           [u, v] = snapToRings(u, v, OPENING_RINGS);
         } else if (isArch) {
-          // アーチの縁のまわりの点を、楕円の同心の輪の上へ寄せる。角度は 0（下の辺）と 90°（つなぎ目の辺）を含めて等分するので、
-          // 辺の上の点は辺から外れない
+          // アーチの縁に近い点（格子の間隔の 0.75 倍以内）を、楕円の中心からの向きを保って縁の上へ寄せる。縁をまたぐ格子の辺には
+          // 縁の上の点ができ、明るい面と暗い壁が縁で分かれる。向きを保つので、点の並びは入れ替わらず、下の辺・つなぎ目の辺の点は辺から外れない
           const a = horizontalU ? u : v, b = horizontalU ? v : u;
           const p = sgn * (ca - a) / AX, q = (b + 0.5) / AY, r = Math.hypot(p, q), step = 2 * CARVE_STEP / (AX + AY);
-          if (r > 1e-9 && r < 1 + 3 * step) {
-            const r2 = Math.max(0, 1 + Math.round((r - 1) / step) * step), n = Math.max(4, Math.round(Math.PI / 2 * r2 / step));
-            const t = Math.round(Math.atan2(q, p) / (Math.PI / 2) * n) * (Math.PI / 2) / n;
-            const a2 = ca - sgn * AX * r2 * Math.cos(t), b2 = -0.5 + AY * r2 * Math.sin(t);
+          if (Math.abs(r - 1) < 0.75 * step) {
+            const a2 = ca - sgn * AX * p / r, b2 = -0.5 + AY * q / r;
             [u, v] = horizontalU ? [a2, b2] : [b2, a2];
           }
         }
