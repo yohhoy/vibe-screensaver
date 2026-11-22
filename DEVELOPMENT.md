@@ -26,16 +26,16 @@
 | index.html | 作品一覧 |
 | docs/specs/ | 作品ごとの仕様 |
 | docs/images/ | README 用のサムネイル |
-| docs/video.md | 動画の書き出しと、変更前後の比較のツールの使い方 |
+| docs/video.md | 動画・静止画の書き出し、変更前後の比較、撮った画像の確認（切り出し・並べ・差・明るさ）のツールの使い方 |
 | docs/performance.md | GPU 負荷の測り方・比べ方と、値の読み方 |
 | docs/performance-data.md | 全作品の GPU 負荷の基準値（測った条件と、作品ごとの注意） |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
 | tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
-| tools/img.mjs | 撮った静止画・動画から、切り出し・拡大・並べた確認用の画像を作るか、範囲の明るさを測るスクリプト（[docs/video.md](docs/video.md)） |
+| tools/img.mjs | 撮った静止画・動画から、切り出し・拡大・並べた確認用の画像や 2 枚の差の画像を作るか、範囲の明るさを測るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
-| tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
+| tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行（img.mjs も使う）、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
 | .claude/skills/ | Claude Code 用の、作業ごとの手順（新作の追加 new-work、隠し要素の追加 add-hidden、リファクタリングと仕様の整合確認 tidy-work）。この文書の節名を参照しているので、節名を変えたら合わせる |
 

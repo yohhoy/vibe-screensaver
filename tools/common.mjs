@@ -1,4 +1,4 @@
-// tools の下のスクリプトで共通の処理。gpu-bench.mjs・video-export.mjs・video-compare.mjs で使う。
+// tools の下のスクリプトで共通の処理。gpu-bench.mjs・video-export.mjs・video-compare.mjs で使う（img.mjs は run だけを使う）。
 // 作品の一覧と場面の選び方は pages.mjs にある。
 import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
