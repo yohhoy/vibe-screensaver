@@ -521,7 +521,7 @@ const NOTCH_Y_LINES = [0.46, 0.42, 0.38, 0.34, 0.3, 0.1, -0.2];   // 溝が抜�
 const OPENING_LINES = [...dense(-0.28, 0.28, CARVE_STEP), TUNNEL_RADIUS, -TUNNEL_RADIUS];
 // 上面の溝の格子のうち、axis（0: x、1: z）の向きに並ぶ線で残すもの。線の上のどの点でも、深さ・傾き・陰が両隣の線の間で
 // 直線的に変わり、円い縁へも寄せないなら、その線を除いても形と陰影は変わらないので省く（まっすぐな溝の長さの向きの線や、
-// 溝から離れた平らな所の線）
+// 溝から離れた平らな所の線）。穴とそのまわりを通る線は残す
 function carveLines(top, rot, axis) {
   const lines = gridLines(CARVE_LINES), e = 1e-4;
   const at = (c, t) => {
@@ -531,7 +531,8 @@ function carveLines(top, rot, axis) {
   };
   const snapped = (c, t) => {
     const [x, z] = unrotate(axis === 0 ? c : t, axis === 0 ? t : c, rot), [sx, sz] = snapToRings(x, z, top.rings ?? []);
-    return sx !== x || sz !== z;
+    // 穴の内側の点は壁と底へ移すので、穴とそのすぐ外の 1 目は省かない（省くと穴の壁から遠くの点まで細長い三角形になり、暗い筋が出る）
+    return sx !== x || sz !== z || (top.hole && Math.hypot(x, z) < HOLE_RADIUS + CARVE_STEP);
   };
   return lines.slice(2, -2).filter((c, n) => {
     const a = lines[n + 1], b = lines[n + 3], w = (c - a) / (b - a);
