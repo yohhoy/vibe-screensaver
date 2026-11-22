@@ -134,7 +134,7 @@ const RIBBON_COLORS = [['#ff1a1a', '#ffc800', '#0a50ff'], ['#00b050', '#ff1a1a',
   ['#0a50ff', '#00d0ff', '#0a50ff'], ['#b000ff', '#ffc800', '#b000ff']];   // 羽根入りの玉の羽根の色
 const MARBLE_SHADOW_ALPHA = 0.55; // 玉の影の濃さ
 const CAUSTIC = 0.9;              // 影の中の集光の明るさ
-const SPAWN_GAP = [1, 2.5];       // 続けて玉を出すときの間隔（秒）
+const SPAWN_GAP = [0.4, 1];       // 続けて玉を出すときの間隔（秒）。足りない数で割り、足りないほど早く出す
 
 // 強度（画面の中のビー玉の数）
 const BASE_COUNT = 8;
@@ -1674,7 +1674,7 @@ function scatterMarbles(n) {
 function controlCount() {
   const want = Math.round(marbleCount);
   const live = marbles.filter((m) => m.seen ? onScreen(m.pos, 0) : true).length;
-  if (live < want && time >= nextSpawn && spawnMarble()) nextSpawn = time + rand(...SPAWN_GAP);
+  if (live < want && time >= nextSpawn && spawnMarble()) nextSpawn = time + rand(...SPAWN_GAP) / (want - live);
 }
 
 // ---- カメラ ----
