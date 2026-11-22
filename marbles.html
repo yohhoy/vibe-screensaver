@@ -71,6 +71,7 @@ const BORE_WALL = 0.55;           // 穴の格子のうち、壁にする外側�
 const BORE_EASE = 2;              // 壁の輪を下ろす深さの曲線の次数（縁の近くの輪を浅く詰め、縁で明暗が急に変わる帯を細くする）
 const BORE_SHADE = [0.3, 0.04];   // 穴・出口の壁の明るさ（縁の下、奥。奥の蓋も奥の明るさ）
 const CARVE_STEP = 0.048;         // 溝・穴を彫る面の格子の間隔
+const CURVE_SEGMENTS = 12;        // 曲がりの上面を、角度で分ける数（90° を等分）
 const MAX_DRAW_DEPTH = 5;         // 柱の上から何個まで立方体を描くか（それより深い所は見えない）
 
 // 橋（一直線につながった直進溝の 2 個を 1×2 の部材にし、見える長い側面の下をアーチ形にくり抜く。橋にできる組はすべて橋にする）
@@ -442,7 +443,7 @@ const dishDepth = roundedProfile(DISH_SPHERE);
 const Y_ROLL = -GROOVE_DEPTH + MARBLE_RADIUS;          // 溝を転がる玉の中心の、柱の上面からの高さ
 const TUNNEL_Y = 0.5 - TUNNEL_RADIUS + MARBLE_RADIUS;  // トンネルを転がる玉の中心の、立方体の下面からの高さ
 
-// 上面の模様（基準の向き）。depth: 溝・くぼみの深さ。sides: 溝が抜ける側面。
+// 上面の模様（基準の向き）。depth: 溝・くぼみの深さ。sides: 溝が抜ける側面。points: 上面を四角い格子でなく、この関数の点で作る。
 // rings: 円い縁のまわりで、格子の点を同心円 { c: 中心, ref: 通る半径, min〜max: 範囲 } の上へ寄せる（下の snapToRings）。
 //   keep(dx, dz, r) が真の点は寄せない。溝が穴・くぼみにつながる側の、その外にある溝の縁に使う（溝のまっすぐな縁は
 //   格子の線に乗っていて、寄せると線から外れ、つなぎ目に明るい段ができるため）
@@ -455,7 +456,7 @@ const TOPS = {
   curve: {      // 90° の曲がり（−x の側面と −z の側面をつなぐ。中心は (−0.5, −0.5) の角）
     depth: (x, z) => grooveDepth(Math.abs(Math.hypot(x + 0.5, z + 0.5) - 0.5)),
     sides: [2, 3],
-    rings: [{ c: [-0.5, -0.5], ref: 0.5, min: 0.5 - RING_BAND, max: 0.5 + RING_BAND }],
+    points: curvePoints,
   },
   hole: {       // −x の側面から中心の穴へ
     depth: (x, z) => grooveDepth(segDist(x, z, -0.5, 0, 0, 0)),
@@ -477,6 +478,29 @@ function unrotate(x, z, rot) {
 function rotate(x, z, rot) {
   for (let k = 0; k < rot; k++) [x, z] = [-z, x];
   return [x, z];
+}
+// 曲がりの上面の点（rot だけ回した [u, v]。行が角度の線、列が角からの距離の線）。溝の帯は角を中心にした同心円の輪で、
+// 平らな所は角からの正方形（面取りの線と辺）だけで区切り、四角い格子より三角形を減らす。角度の線は、辺・面取りの線と、
+// 90° を等分した半直線（遠い角の面取りの角を通る 2 本を足す）。辺以外の線の点は、面取りの線より外に出るなら、
+// 同じ列の面取りの線の上の点に重ねる（線の途中に点を置くと、溝の中で縦に立つ細い三角形ができ、点状のノイズになる）
+function curvePoints(rot) {
+  // 輪は溝の中心から CARVE_STEP おきと、平らになる RING_BAND に置く（中心から 4 本目が溝の縁のすぐ内側に来て、ほぼ垂直に
+  // 立ち上がる壁の上端を分ける。この輪が無いと、縁の陰影が大きな三角形で途切れて点々に見える）
+  const n = Math.floor(RING_BAND / CARVE_STEP);
+  const offsets = [-RING_BAND, ...Array.from({ length: 2 * n + 1 }, (_, k) => (k - n) * CARVE_STEP), RING_BAND];
+  const rings = offsets.map((t) => [0.5 + t, false]);
+  const dists = [[0, true], [BEVEL, true], ...rings, [1 - BEVEL, true], [1, true]];   // [距離, 正方形か]
+  const corner = Math.atan(1 - BEVEL);
+  const angles = [...dense(0, Math.PI / 2, Math.PI / 2 / CURVE_SEGMENTS), corner, Math.PI / 2 - corner].sort((a, b) => a - b);
+  const lines = [[0, false], ...angles.map((t) => [t, true]), [Math.PI / 2, false]];   // [角度, 面取りの線の内側に収めるか]
+  return lines.map(([t, inside]) => dists.map(([d, square]) => {
+    const c = Math.cos(t), s = Math.sin(t), r = square ? d / Math.max(c, s) : d;
+    let x = r * c, z = r * s;
+    if (inside && z < BEVEL) [x, z] = [Math.max(d, BEVEL), BEVEL];
+    else if (inside && x < BEVEL) [x, z] = [BEVEL, Math.max(d, BEVEL)];
+    const [rx, rz] = rotate(x - 0.5, z - 0.5, rot);
+    return [rz, rx];
+  }));
 }
 // 円い縁のまわりの格子の点を、中心からの距離が ref + 格子の間隔の整数倍で、角度も等分の所へ寄せる。四角い格子のままだと
 // 円い縁を格子がまたぎ、角度が不揃いだと三角形がジグザグになって、縁の陰影と影や、輪ごとに明暗が大きく変わる穴の壁が
@@ -585,7 +609,11 @@ function buildPiece(key) {
   const notchSides = new Set((top?.sides ?? []).map((s) => (s + rot) % 4));
   const positions = [], normals = [], colors = [], indices = [];
   const depthAt = (x, z) => { const [cx, cz] = unrotate(x, z, rot); return top.depth(cx, cz); };
-  const [carveX, carveZ] = top ? [carveLines(top, rot, 0), carveLines(top, rot, 1)] : [[], []];
+  const [carveX, carveZ] = top && !top.points ? [carveLines(top, rot, 0), carveLines(top, rot, 1)] : [[], []];
+  // 上面を点で作るときは、側面の切り欠きの格子の線を、上面のその辺の上の点に揃える
+  const topPoints = top?.points?.(rot);
+  const edgeLines = (face) => topPoints.flat().filter(([u, v]) => Math.abs(u * face.n[2] + v * face.n[0] - 0.5) < 1e-9)
+    .map(([u, v]) => (face.n[0] ? u : v));
 
   for (const face of FACES) {
     if (archJ >= 0 && face.side === archJ) continue;
@@ -596,15 +624,16 @@ function buildPiece(key) {
     let hz = [], vt = [];
     if (isTop) { hz = carveZ; vt = carveX; }
     else {
-      if (notch) { hz = hz.concat(face.n[0] ? carveZ : carveX); vt = vt.concat(NOTCH_Y_LINES); }
+      if (notch) { hz = hz.concat(topPoints ? edgeLines(face) : face.n[0] ? carveZ : carveX); vt = vt.concat(NOTCH_Y_LINES); }
       if (opening) { hz = hz.concat(OPENING_LINES); vt = vt.concat(OPENING_LINES); }
       if (isArch) { hz = hz.concat(archLines[0]); vt = vt.concat(archLines[1]); }
     }
     const us = gridLines(isTop || horizontalU ? hz : vt), vs = gridLines(isTop || horizontalU ? vt : hz);
     const start = positions.length / 3;
     const [nx, ny, nz] = face.n, [ux, uy, uz] = face.u, [vx, vy, vz] = face.v;
-    for (const u0 of us) {
-      for (const v0 of vs) {
+    const grid = isTop && topPoints ? topPoints : us.map((u) => vs.map((v) => [u, v]));
+    for (const row of grid) {
+      for (const [u0, v0] of row) {
         let u = u0, v = v0;
         const onEdge = Math.abs(u) > 0.5 - 1e-6 || Math.abs(v) > 0.5 - 1e-6;
         // 円い縁のまわりの点を同心円の上へ寄せる。面の端の点は、隣の面の点と揃えるために動かさない
@@ -673,8 +702,8 @@ function buildPiece(key) {
       }
     }
     // −x の面はカメラから見えず、光の側を向くので影も落とさない。カメラから縁だけが見える、上の面取りの帯だけを描く
-    const nv = vs.length;
-    for (let a = 0; a < us.length - 1; a++) {
+    const nv = grid[0].length;
+    for (let a = 0; a < grid.length - 1; a++) {
       for (let b = face.side === 2 ? vs.findIndex((y) => y > 0.5 - BEVEL - 1e-6) : 0; b < nv - 1; b++) {
         const i00 = start + a * nv + b, i10 = i00 + nv, i01 = i00 + 1, i11 = i10 + 1;
         // 四角形は短い方の対角線で分ける（輪へ寄せた点で、明るい縁と暗い壁を一気にまたぐ細長い三角形を作らない）
