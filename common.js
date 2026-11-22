@@ -24,10 +24,39 @@
   const randInt = (n) => Math.floor(Math.random() * n);   // 0〜n-1 の整数
   const randSign = () => (Math.random() < 0.5 ? -1 : 1);
   const pick = (arr) => arr[randInt(arr.length)];
-  // 平均 mean の指数分布。ランダムに起こる出来事の待ち時間に使う
-  const randExp = (mean) => -Math.log(1 - Math.random()) * mean;
-  // 指数分布で平均 mean 秒の間隔（min〜max に収める）
-  const randomInterval = ([mean, min, max]) => clamp(randExp(mean), min, max);
+  const randIntIn = ([a, b]) => a + randInt(b - a + 1);   // a〜b の整数
+  // 0〜count-1 の番号から、いまの番号 current 以外を選ぶ（配色を前と違うものにするときなど）
+  const pickOtherIndex = (count, current) => pick(Array.from({ length: count }, (_, i) => i).filter((i) => i !== current));
+  // 重み weightOf(item, index)（既定は item.w）に比例して items から 1 つ選ぶ。重みの合計が 0 以下なら null
+  const pickWeighted = (items, weightOf = (o) => o.w) => {
+    const weights = items.map(weightOf);
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    if (!(total > 0)) return null;
+    let x = Math.random() * total;
+    for (let i = 0; i < items.length; i++) if ((x -= weights[i]) < 0) return items[i];
+    return items[weights.findLastIndex((w) => w > 0)];   // 丸め誤差で外れたときは、重みのある最後の項目
+  };
+  // 平均 mean の指数分布。ランダムに起こる出来事の待ち時間に使う（r は 0〜1 の乱数の元。既定は Math.random）
+  const randExp = (mean, r = Math.random) => -Math.log(1 - r()) * mean;
+  // 指数分布で平均 mean 秒の間隔（min〜max に収める）。r は randExp と同じ
+  const randomInterval = ([mean, min, max], r = Math.random) => clamp(randExp(mean, r), min, max);
+  // 種から作る乱数の列（0〜1。mulberry32。Math.random と別で、同じ種なら毎回同じ列）
+  const seededRandom = (seed) => {
+    let s = seed >>> 0;
+    return () => {
+      s = (s + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+  // Math.random の列を変えないための、別の乱数の列。reseed() で種を Math.random から取り直す（隠し要素が現れるとき）
+  const sideRandom = () => {
+    let next = seededRandom(Date.now());
+    const r = () => next();
+    r.reseed = () => { next = seededRandom(Math.floor(Math.random() * 4294967296)); };
+    return r;
+  };
   // canvas に渡す灰色（v: 0〜255、a: 不透明度）
   const gray = (v, a = 1) => `rgba(${v},${v},${v},${a})`;
   // 粒の器 sys（max・list・carry を持つ）に、1 秒に rate 個のペースで、dt 秒ぶんの粒を spawn() で作って加える。
@@ -200,7 +229,7 @@
   }
 
   window.Common = {
-    TAU, clamp, rand, randIn, randInt, randSign, pick, randExp, randomInterval, gray, emit, compactHdrFormat,
+    TAU, clamp, rand, randIn, randInt, randSign, pick, randIntIn, pickOtherIndex, pickWeighted, randExp, randomInterval, seededRandom, sideRandom, gray, emit, compactHdrFormat,
     IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls,
   };
 })();

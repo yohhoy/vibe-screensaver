@@ -22,7 +22,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randSign, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, IS_TOUCH, fadeAndRun, logPosition, setupControls, pickOtherIndex } = Common;
 
 // ---- 設定 ----
 // 色はすべて画面に出る値 (0..1)。長さの基準はテーブルの上面（y = 0）
@@ -629,7 +629,7 @@ function setColorPreset(index) {
 }
 
 // 前と違う配色の番号を選ぶ
-const pickColorPreset = () => pick(COLOR_PRESETS.map((_, i) => i).filter((i) => i !== colorPresetIndex));
+const pickColorPreset = () => pickOtherIndex(COLOR_PRESETS.length, colorPresetIndex);
 
 // ---- 小物 ----
 // 小物の部品をすべて机の座標に置き、1 つの形にまとめて 1 回で描く
@@ -895,7 +895,7 @@ function createLeaf(length, width, bend, twist, textureOffset) {
     const t = row / LEAF_ROWS;
     const halfWidth = width / 2
       * (0.55 + 0.45 * THREE.MathUtils.smoothstep(t, 0, 0.28))
-      * Math.max(0.002, Math.min(1, (1 - t) / 0.26)) ** 0.85;
+      * clamp((1 - t) / 0.26, 0.002, 1) ** 0.85;
     const angle = twist * t;
     for (let column = 0; column <= LEAF_COLUMNS; column++) {
       const u = column / LEAF_COLUMNS;

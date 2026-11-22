@@ -26,7 +26,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls } = Common;
+const { TAU, clamp, rand, randIn, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls, pickWeighted } = Common;
 
 // ---- 設定 ----
 // 座標: カメラの足もとが原点、y が上、-z が北（正面）。長さの単位は見た目で決めたもの（本物の比率ではない）。
@@ -748,8 +748,7 @@ const curtains = Array.from({ length: Math.ceil(Math.max(...CURTAIN_LEVELS) + SU
 // ---- オーロラの色 ----
 // 配色を chance の確率で 1 つ選び、その番号を返す
 function pickColorPreset() {
-  let r = Math.random();
-  return Math.max(0, COLOR_PRESETS.findIndex((p) => (r -= p.chance) < 0));
+  return COLOR_PRESETS.indexOf(pickWeighted(COLOR_PRESETS, (p) => p.chance));
 }
 
 // 幕全体の平均の色（シェーダーの縦の色を、上の方ほど暗い明るさで粗く平均する）

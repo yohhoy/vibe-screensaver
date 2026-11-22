@@ -44,7 +44,7 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, IS_TOUCH, logPosition, setupControls, compactHdrFormat, pickOtherIndex, randSign } = Common;
 
 // ---- 設定 ----
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど。クロスフェード中は 2 つの時代を描くので抑える）
@@ -1538,12 +1538,12 @@ function setColorPreset(index) {
 }
 
 // 前と違う配色の番号を選ぶ
-const pickColorPreset = () => pick(COLOR_PRESETS.map((_, i) => i).filter((i) => i !== colorPresetIndex));
+const pickColorPreset = () => pickOtherIndex(COLOR_PRESETS.length, colorPresetIndex);
 
 // 配色（前の巡回と違うもの）・主な照明の向きを選び直し、全部の時代に当てる
 function pickVariations() {
   const preset = pickColorPreset();
-  const side = Math.random() < 0.5 ? -1 : 1;
+  const side = randSign();
   lightPos.set(side * rand(...LIGHT_X), rand(...LIGHT_Y), rand(...LIGHT_Z));
   for (const era of eras) for (const l of era.lights) l.position.copy(lightPos);
   setColorPreset(preset);

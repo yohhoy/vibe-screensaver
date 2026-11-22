@@ -23,7 +23,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randIn, randInt, randSign, pick, randomInterval, IS_TOUCH, fadeAndRun, setupControls, compactHdrFormat, randIntIn, pickWeighted } = Common;
 const { smoothstep, lerp, degToRad } = THREE.MathUtils;
 
 // ---- 設定 ----
@@ -627,7 +627,7 @@ function makeNoiseTexture() {
       const crest = (0.6 * fine + 0.4 * broad) * patchy;
       const streak = 0.6 * crest + 0.25 * valueNoise(u * 24 + v * 24, v * 32, 24, 32) + 0.2 * valueNoise(u * 4, v * 8, 4, 8);
       data[i] = streak * 255;
-      data[i + 1] = Math.random() * 255;
+      data[i + 1] = rand(0, 255);
       data[i + 3] = 255;
     }
   }
@@ -1516,18 +1516,12 @@ function startSlide(b) {
 
 // 滑り出すペンギンを選ぶ。下り坂にいるほど選ばれやすい。ヒナは滑らない
 function chooseSlider() {
-  let total = 0;
-  const weights = birds.map((b) => {
+  const b = pickWeighted(birds, (b) => {
     if (b.kind === 1 || b.state !== 'walk' || b.v < walkSpeed * 0.5 || Math.abs(b.p) > halfWidth * 0.95) return 0;
     const w = 1 + SLIDE_DOWNHILL_BIAS * Math.max(0, -slopeAhead(b.p));
-    total += w;
     return w;
   });
-  if (!total) return;
-  let r = Math.random() * total;
-  const index = weights.findIndex((w) => (r -= w) <= 0);
-  if (!weights[index]) return;   // 丸め誤差で、選べないペンギンに当たったとき
-  const b = birds[index];
+  if (!b) return;
   startSlide(b);
   // 後ろのペンギンがつられることがある
   const behind = birds
@@ -1616,7 +1610,7 @@ function updateWalker(b, dt) {
   }
 }
 
-const randBurst = () => SLIDE_BURST[0] + randInt(SLIDE_BURST[1] - SLIDE_BURST[0] + 1);
+const randBurst = () => randIntIn(SLIDE_BURST);
 
 // 助走。前のめりになりながら少し速く歩く
 function updateRun(b, dt) {
@@ -1969,7 +1963,7 @@ function makeFlake() {
     d,
     z: CAM_DISTANCE - d,
     r,
-    alpha: Math.max(0.03, Math.min(1, FLAKE_RADIUS / r)) * rand(0.6, 1),
+    alpha: clamp(FLAKE_RADIUS / r, 0.03, 1) * rand(0.6, 1),
     speed: rand(0.8, 1.2),
     wobble: rand(0, TAU),
     wobbleRate: rand(0.6, 1.6),

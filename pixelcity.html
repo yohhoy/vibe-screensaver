@@ -21,7 +21,7 @@
 <script type="module">
 import * as THREE from 'three';
 // 共通の入力・UI と小さな関数（common.js）
-const { clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
 
 // ---- 設定 ----
 // 長さの単位は、箱庭の上ではタイル、画面の上ではドット（拡大する前の 1 画素）
@@ -1228,7 +1228,7 @@ function generateLand() {
   for (let k = 0; k < val.length; k++) hc[k] = val[k] > thr ? Math.min(MAX_LEVEL, 1 + Math.floor((val[k] - thr) / (top - thr) * MAX_LEVEL)) : 0;
   // 平野の中の低い丘（高さ 3 段まで）。山と違って林で覆わないので、草地が多く残り、斜面の明暗で起伏が見える
   for (let k = 0; k < PLAIN_HILLS; k++) {
-    const a = Math.random() * 6.28, r = rand(8, 22), hx = N / 2 + Math.cos(a) * r, hy = N / 2 + Math.sin(a) * r;
+    const a = rand(0, TAU), r = rand(8, 22), hx = N / 2 + Math.cos(a) * r, hy = N / 2 + Math.sin(a) * r;
     const rad = rand(...PLAIN_HILL_RADIUS), peak = rand(2, 3.4);
     for (let cy = 0; cy <= N; cy++) for (let cx = 0; cx <= N; cx++) {
       const lv = Math.round(peak * Math.exp(-(((cx - hx) ** 2 + (cy - hy) ** 2) / (rad * rad))) - 0.3);
@@ -1272,11 +1272,11 @@ function generateLand() {
     pts.push([lerp(sx, ex, t) + nx * b, lerp(sy, ey, t) + ny * b]);
   }
   // 3 タイルおきの点を横へゆるく揺らしてから角を丸め、なめらかな中心線にする
-  const phase = Math.random() * 6.28;
+  const phase = rand(0, TAU);
   pts = pts.map(([x, y], k) => {
     if (k === 0 || k === pts.length - 1) return [x, y];
     const [ax, ay] = pts[k - 1], [bx, by] = pts[k + 1], l = Math.hypot(bx - ax, by - ay) || 1;
-    const a = RIVER_MEANDER * Math.sin(k * 3 * 6.28 / RIVER_WAVELENGTH + phase);
+    const a = RIVER_MEANDER * Math.sin(k * 3 * TAU / RIVER_WAVELENGTH + phase);
     return [x - (by - ay) / l * a, y + (bx - ax) / l * a];
   });
   // 端は箱庭の外まで延ばす
@@ -1321,7 +1321,7 @@ function generateLand() {
       const j = at(clamp(x + dx, 0, N - 1), clamp(y + dy, 0, N - 1));
       if (!terr[j] && !tmax[j]) flat++;
     }
-    const score = flat - Math.hypot(x - N / 2, y - N / 2) * 0.5 + Math.random() * 8;
+    const score = flat - Math.hypot(x - N / 2, y - N / 2) * 0.5 + rand(0, 8);
     if (score > best) { best = score; town = { x, y }; }
   }
   if (best === -Infinity) town = { x: N >> 1, y: N >> 1 };
@@ -2116,7 +2116,7 @@ const railReady = () => railPath.length > 0 && railLaid >= railPath.length;
 function startEra(e) {
   era = e;
   eraStart = growth;
-  busy = BUSY_SWING.map((a, j) => ({ a, k: BUSY_WAVES[j][0] + Math.floor(hash(e, j, landSeed + 41) * (BUSY_WAVES[j][1] - BUSY_WAVES[j][0] + 1)), ph: hash(e, j, landSeed + 43) * Math.PI * 2 }));
+  busy = BUSY_SWING.map((a, j) => ({ a, k: BUSY_WAVES[j][0] + Math.floor(hash(e, j, landSeed + 41) * (BUSY_WAVES[j][1] - BUSY_WAVES[j][0] + 1)), ph: hash(e, j, landSeed + 43) * TAU }));
   tasks = planEra(e);
   taskIndex = 0;
 }
@@ -2125,7 +2125,7 @@ function startEra(e) {
 // 波の数は整数なので、t = 0・1 で 0・1 になる。振れ幅の和が 1 未満なので、減ることはない
 function busyProgress(t) {
   let p = t;
-  for (const { a, k, ph } of busy) p -= a * (Math.sin(2 * Math.PI * k * t + ph) - Math.sin(ph)) / (2 * Math.PI * k);
+  for (const { a, k, ph } of busy) p -= a * (Math.sin(TAU * k * t + ph) - Math.sin(ph)) / (TAU * k);
   return p;
 }
 
@@ -2315,7 +2315,7 @@ function camAngle(e) {
     const f = industryCenter(), a = Math.atan2(f.y - town.y - 0.5, f.x - town.x - 0.5);
     return e === 1 ? a - turn(2) : e === 3 ? a + turn(3) : a;
   }
-  let a = hash(1, 0, landSeed + 81) * Math.PI * 2;
+  let a = hash(1, 0, landSeed + 81) * TAU;
   for (let k = 2; k <= e; k++) a += turn(k);
   return a;
 }
@@ -2331,7 +2331,7 @@ function camTarget() {
     d = Math.max(d, (1 - rest) * dist);
   }
   if (holdTimer >= 0 && holdTimer <= HOLD_TIME) {
-    a += Math.PI * 2 * (1 - holdTimer / HOLD_TIME);
+    a += TAU * (1 - holdTimer / HOLD_TIME);
     d = CAM_TOUR_RADIUS * ERA_RADIUS[3];
   }
   const x = town.x + 0.5 + Math.cos(a) * d, y = town.y + 0.5 + Math.sin(a) * d;

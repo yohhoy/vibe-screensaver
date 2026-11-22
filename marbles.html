@@ -24,7 +24,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, pick, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat, seededRandom, sideRandom, randomInterval, randIntIn, pickWeighted } = Common;
 
 // ---- 設定 ----
 // 長さの単位は立方体の一辺（実物の 5cm ほどの見立て）。y が上。格子のマス (i, j) は x = i〜i+1、z = j〜j+1 を占める。
@@ -186,7 +186,6 @@ const opposite = (s) => (s + 2) % 4;
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 const rowOf = (i, j) => i + j;
-const randRange = ([a, b]) => a + randInt(b - a + 1);   // a〜b の整数
 const baseHeight = (i, j) => -Math.floor((i + j) / 2);
 
 // 整数の座標から 0〜1 の値（同じ座標なら毎回同じ）
@@ -195,16 +194,6 @@ function hash3(a, b, c) {
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-// 種から作る乱数の列（Math.random と別）
-function seededRandom(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 // なめらかな 2 次元のノイズ（−1..1）。salt で別の模様になる
 function noise2(x, y, salt = 0) {
@@ -221,14 +210,6 @@ function segDist(x, z, x0, z0, x1, z1) {
   return Math.hypot(x - x0 - dx * t, z - z0 - dz * t);
 }
 // 重みに比例して選ぶ（[{ w, ... }]）。すべて 0 なら null
-function pickWeighted(list) {
-  const total = list.reduce((sum, o) => sum + o.w, 0);
-  if (!(total > 0)) return null;
-  let x = Math.random() * total;
-  for (const o of list) if ((x -= o.w) < 0) return o;
-  return list[list.length - 1];
-}
-
 // ---- シェーダー ----
 // シーンの描画先を composer へ写し、周辺を暗くする。明るさを MAX_RADIANCE で抑える（無限大も抑えられる）
 const SCENE_COPY_SHADER = {
@@ -774,7 +755,7 @@ function buildTree(type) {
   for (const profile of profiles) {
     const start = positions.length / 3, P = profile.length;
     for (let m = 0; m <= N; m++) {
-      const phi = m / N * Math.PI * 2, c = Math.cos(phi), sn = Math.sin(phi);
+      const phi = m / N * TAU, c = Math.cos(phi), sn = Math.sin(phi);
       for (const [r, y, nr, ny, shade] of profile) {
         positions.push(r * c, y, r * sn);
         normals.push(nr * c, ny, nr * sn);
@@ -1172,17 +1153,17 @@ function tryDescend(p) {
   p.lastBack = false;
   newLeg(p);
   p.run = 0;
-  p.runLen = randRange(RUN_LENGTH);
+  p.runLen = randIntIn(RUN_LENGTH);
   return true;
 }
 
 // 曲がったあと（下りたあと）の、まっすぐ進む区切りを始める
 function newLeg(p) {
   p.leg = 1;
-  p.legLen = randRange(LEG_LENGTH);
+  p.legLen = randIntIn(LEG_LENGTH);
 }
 function newPath() {
-  const p = { segs: [], base: 0, cur: null, run: 0, runLen: randRange(RUN_LENGTH),
+  const p = { segs: [], base: 0, cur: null, run: 0, runLen: randIntIn(RUN_LENGTH),
     drift: (Math.random() - 0.5) * 2, lastBack: false, maxRow: -Infinity, active: true, ended: false, marbles: [] };
   newLeg(p);
   return p;
@@ -1882,18 +1863,8 @@ function rebase() {
 // ---- 隠し要素（木のマスコット） ----
 // 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。置くときは、種を Math.random から取り直す。
 // three.js も物を作るときに Math.random を引くので、マスコットの形は最初に置くときに作る（pieceMesh が作る）
-const mascotRandom = (() => {
-  let s = Date.now() >>> 0;   // mulberry32
-  const next = () => {
-    s = (s + 0x6D2B79F5) >>> 0;
-    let t = Math.imul(s ^ (s >>> 15), s | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  next.reseed = () => { s = Math.floor(Math.random() * 4294967296) >>> 0; };
-  return next;
-})();
-const mascotInterval = ([mean, min, max]) => clamp(-Math.log(1 - mascotRandom()) * mean, min, max);
+const mascotRandom = sideRandom();
+const mascotInterval = (spec) => randomInterval(spec, mascotRandom);
 
 let mascot = null;                                    // 置いてあれば { key, i, k, j, quat, off, tint }、無ければ null
 let mascotWait = mascotInterval(MASCOT_INTERVAL);     // 次に置くまでの秒数

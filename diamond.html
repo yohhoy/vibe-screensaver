@@ -26,7 +26,7 @@ import { TexturePass } from 'three/addons/postprocessing/TexturePass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, randIn, randInt, randSign, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat, randIntIn } = Common;
 
 // ---- 設定 ----
 // 長さの基準は、回転軸からダイヤモンドのもっとも遠い点までの距離（1）。原点はガードルの中心。色は線形の値
@@ -199,7 +199,6 @@ const BLOOM_THRESHOLD = 1;
 
 // ---- ユーティリティ ----
 const degToRad = THREE.MathUtils.degToRad;
-const randIntIn = ([a, b]) => a + randInt(b - a + 1);   // a〜b の整数
 const glslVec3 = (c) => `vec3(${c.map((v) => v.toFixed(5)).join(', ')})`;
 
 // ---- シェーダー ----
