@@ -501,13 +501,12 @@ const FACES = [
   { n: [-1, 0, 0], u: [0, 0, 1], v: [0, 1, 0], side: 2 },
   { n: [0, 0, -1], u: [0, 1, 0], v: [1, 0, 0], side: 3 },
 ];
-const BEVEL_LINES = [0, 0.423, 0.732, 1];   // 面取りの格子（1 − tan 45°・30°・15°・0°。面取りの円弧を等しい角度で分ける）
-// 面の 1 つの向きの格子（−0.5〜0.5）。interior は面取りの内側に足す線
+// 面の 1 つの向きの格子（−0.5〜0.5）。interior は面取りの内側に足す線。面取りは分けずに 1 マスにする（三角形を減らすため）
 function gridLines(interior) {
-  const lo = BEVEL_LINES.map((f) => -0.5 + BEVEL * f);
+  const lo = [-0.5, -0.5 + BEVEL];
   const hi = lo.map((x) => -x).reverse();
   const mid = [...new Set(interior.map((x) => Math.round(x * 1e5) / 1e5))].sort((a, b) => a - b)
-    .filter((x) => x > lo[3] + 0.004 && x < hi[0] - 0.004);
+    .filter((x) => x > lo[1] + 0.004 && x < hi[0] - 0.004);
   // 近すぎる線を間引く（± の溝の縁などの線は残す）
   const out = [];
   for (const x of mid) if (!out.length || x - out[out.length - 1] > 0.006) out.push(x);
@@ -520,6 +519,25 @@ function dense(a, b, step) {
 const CARVE_LINES = [...dense(-0.5 + BEVEL, 0.5 - BEVEL, CARVE_STEP), GROOVE_HALF, -GROOVE_HALF];
 const NOTCH_Y_LINES = [0.46, 0.42, 0.38, 0.34, 0.3, 0.1, -0.2];   // 溝が抜ける側面の、縦の格子
 const OPENING_LINES = [...dense(-0.28, 0.28, CARVE_STEP), TUNNEL_RADIUS, -TUNNEL_RADIUS];
+// 上面の溝の格子のうち、axis（0: x、1: z）の向きに並ぶ線で残すもの。線の上のどの点でも、深さ・傾き・陰が両隣の線の間で
+// 直線的に変わり、円い縁へも寄せないなら、その線を除いても形と陰影は変わらないので省く（まっすぐな溝の長さの向きの線や、
+// 溝から離れた平らな所の線）
+function carveLines(top, rot, axis) {
+  const lines = gridLines(CARVE_LINES), e = 1e-4;
+  const at = (c, t) => {
+    const [x, z] = unrotate(axis === 0 ? c : t, axis === 0 ? t : c, rot);
+    const d = top.depth(x, z);
+    return [d, d ** 1.5, (top.depth(x + e, z) - top.depth(x - e, z)) / e, (top.depth(x, z + e) - top.depth(x, z - e)) / e];
+  };
+  const snapped = (c, t) => {
+    const [x, z] = unrotate(axis === 0 ? c : t, axis === 0 ? t : c, rot), [sx, sz] = snapToRings(x, z, top.rings ?? []);
+    return sx !== x || sz !== z;
+  };
+  return lines.slice(2, -2).filter((c, n) => {
+    const a = lines[n + 1], b = lines[n + 3], w = (c - a) / (b - a);
+    return lines.some((t) => snapped(c, t) || at(c, t).some((v, k) => Math.abs(v - lerp(at(a, t)[k], at(b, t)[k], w)) > 1e-5));
+  });
+}
 
 // 頂点の並び（x, y, z の繰り返し）の 2 点 a・b の距離の 2 乗
 const dist2 = (p, a, b) => (p[3 * a] - p[3 * b]) ** 2 + (p[3 * a + 1] - p[3 * b + 1]) ** 2 + (p[3 * a + 2] - p[3 * b + 2]) ** 2;
@@ -566,6 +584,7 @@ function buildPiece(key) {
   const notchSides = new Set((top?.sides ?? []).map((s) => (s + rot) % 4));
   const positions = [], normals = [], colors = [], indices = [];
   const depthAt = (x, z) => { const [cx, cz] = unrotate(x, z, rot); return top.depth(cx, cz); };
+  const [carveX, carveZ] = top ? [carveLines(top, rot, 0), carveLines(top, rot, 1)] : [[], []];
 
   for (const face of FACES) {
     if (archJ >= 0 && face.side === archJ) continue;
@@ -574,9 +593,9 @@ function buildPiece(key) {
     const notch = !isTop && notchSides.has(face.side);
     const horizontalU = face.u[1] === 0;
     let hz = [], vt = [];
-    if (isTop) { if (top) hz = vt = CARVE_LINES; }
+    if (isTop) { hz = carveZ; vt = carveX; }
     else {
-      if (notch) { hz = hz.concat(CARVE_LINES); vt = vt.concat(NOTCH_Y_LINES); }
+      if (notch) { hz = hz.concat(face.n[0] ? carveZ : carveX); vt = vt.concat(NOTCH_Y_LINES); }
       if (opening) { hz = hz.concat(OPENING_LINES); vt = vt.concat(OPENING_LINES); }
       if (isArch) { hz = hz.concat(archLines[0]); vt = vt.concat(archLines[1]); }
     }
