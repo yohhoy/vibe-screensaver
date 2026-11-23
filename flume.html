@@ -52,7 +52,7 @@ const GHOST_X = SPOUT_X - 10;   // 落ち口の水路のうち、これより +x
 // 受け口から奥の水路の端までの道筋（中心線の折れ目。流れる順）。最後の点は (SPOUT_X - LIFT, -LIFT)
 const PATH = [[-2, 8], [-2, 34], [44, 34], [44, -40], [4, -40], [4, -100], [SPOUT_X - LIFT, -LIFT]];
 const ARCH_SPAN = 14;      // 水路を支えるアーチの柱の間隔の目安
-// 石積みの苔と蔦（Daylight・Torchlight）。縁を締めるため、水の掛かる所とその下の、壁の根もとと張り出しの上に苔、水路と塔の壁のところどころに蔦を入れる
+// 石積みの苔と蔦（Garden・Mill）。縁を締めるため、水の掛かる所とその下の、壁の根もとと張り出しの上に苔、水路と塔の壁のところどころに蔦を入れる
 const IVY = { channel: 8, tower: 5 };   // 蔦の本数（水路の外壁・塔の壁）
 const MOSS_WET = { range: 8, top: 50 };   // 苔は水の近く（水平の距離 range ボクセル以内で、水面より上へ出ない所）にだけ付ける。高さ top より上の水（塔の上の落ち口）は数えない（屋根の側に苔を付けない）
 
@@ -79,9 +79,9 @@ const ROCK_COUNT = 3;
 const ROCK_R = [3, 5];
 const ROCK_PERIOD = [6, 10];       // 浮き沈みの周期（秒）
 const ROCK_AMP = [1, 2];          // 浮き沈みの振れ幅（ドット）
-const ROCK_TOP_LIGHT = -3;         // Starlight で、岩の上面に残す最低の明るさの段
-const ROCK_DECOR = 3;               // 花（Daylight）・松明（Torchlight）・光るきのこ（Starlight）を載せる岩の数（シーンに入るたびにランダムに選ぶ）
-const CLOUD_SCALE = [56, 14];       // 雲（Daylight・Torchlight）のノイズの大きさ（横・縦のドット。横に長い雲にする）
+const ROCK_TOP_LIGHT = -3;         // Ruins で、岩の上面に残す最低の明るさの段
+const ROCK_DECOR = 3;               // 花（Garden）・松明（Mill）・光るきのこ（Ruins）を載せる岩の数（シーンに入るたびにランダムに選ぶ）
+const CLOUD_SCALE = [56, 14];       // 雲（Garden・Mill）のノイズの大きさ（横・縦のドット。横に長い雲にする）
 const CLOUD_EDGE = 0.6;             // ノイズがこれを超えた所を雲にする（0..1。大きいほど雲が少ない）
 const CLOUD_STEPS = 3;              // 雲の明暗の段の数（煙の色の段 0 から。少なくして、空に淡く溶かす）
 const CLOUD_DRIFT = 0.35;           // 雲が左へ流れる速さ（ドット/秒。数秒に 1 ドット）
@@ -105,14 +105,14 @@ const SPLASH_RATE = 12;            // しぶきの出る数（1 秒あたり。�
 const SPLASH_GRAVITY = 80;         // しぶきを引く重力（ボクセル/秒²）
 
 // 光
-const SUN = [-0.55, 0.15, 1];      // 日の向き（Daylight。z を 1 にした向き）
+const SUN = [-0.55, 0.15, 1];      // 日の向き（Garden。z を 1 にした向き）
 const SHADOW_STEPS = 240;          // 影をたどる歩数（0.5 ボクセルずつ。影の長さの上限。高い中央の塔の影が中庭まで届く長さにする）
 const TORCH_LIGHT = { top: 0, step: 6 };     // 松明の明かり: 光源の段と、段が 1 つ落ちる距離（ボクセル）。短くして、松明ごとの光の輪を見分けさせる
 const LANTERN_LIGHT = { top: 0, step: 7 };   // 塔の上の燭台の明かり
 const ROCK_TORCH_LIGHT = { top: 0, step: 4 }; // 浮かぶ岩に立てた小さな松明の明かり
-const WATER_LIGHT = { top: 0, step: 12 };   // 光る水の明かり（Starlight）。中央の塔の、滝から離れた右の面まで届かせる
+const WATER_LIGHT = { top: 0, step: 12 };   // 光る水の明かり（Ruins）。中央の塔の、滝から離れた右の面まで届かせる
 const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり
-const AMBIENT = { torch: -3, water: -8 };   // 光の届かない所の段（Torchlight は、上の面がかすかに見える暗さ）
+const AMBIENT = { torch: -3, water: -8 };   // 光の届かない所の段（Mill は、上の面がかすかに見える暗さ）
 const FLICK_FPS = 3;         // 松明の照らす範囲が伸び縮みする回数（1 秒あたりの上限）
 const FLICK_CHANCE = 0.3;    // そのたびに、範囲が 1 ボクセル伸びる見込み
 
@@ -125,20 +125,21 @@ const BLINK_INTERVAL = [30, 20, 40];   // ふくろうのまばたき・首か�
 const CAT_EYES_TIME = 2.5;             // 猫が目を開けている秒
 const OWL_BLINK = { fps: 5, chance: 0.04 };   // ふくろうが不規則にまばたきする（1 秒に fps 回、そのたびに chance の見込みで両目を閉じる。平均 5 秒ほどに 1 回）
 const LAUNDRY = [[11, 'LINEN_B'], [18, 'LINEN_R'], [26, 'LINEN_Y']];   // 洗濯物の布（紐の上の x と色。色の並びはシーンに入るたびに替わる）
-const BUTTERFLIES = ['LINEN_Y', 'LINEN_B'];   // 花壇のまわりを飛ぶ蝶の羽の色（Daylight）
+const BUTTERFLIES = ['LINEN_Y', 'LINEN_B'];   // 花壇のまわりを飛ぶ蝶の羽の色（Garden）
 const BUTTERFLY_RANGE = [7, 6, 3];     // 蝶が花壇の上を飛びまわる範囲（x・y・z の振れ幅。ボクセル）
-const FLAP_FPS = 8;                    // 蝶が羽ばたく速さ（コマ/秒）
-const FIREFLIES = 12;             // 蛍の数（Starlight）
-const FIREFLY_ON = -0.6;          // 蛍の明滅の波（-1..1）がこれより上の間は光る（低いほど長く光る）
-const FIREFLY_RANGE = [10, 10, 5];   // 蛍がさまよう範囲（x・y・z の振れ幅。ボクセル）
-const FIREFLY_DARK = 1;           // 蛍の居場所に選ぶ所の、画面でその後ろに映る絵の段の上限（暗い所に出して、光を目立たせる）
-const FIREFLY_TRIES = 400;        // 暗い所を探す回数の上限（見つからなければ、最後に引いた所に出す）
+const FLAP_FPS = 5;                    // 蝶が羽ばたく速さ（コマ/秒）
+const FIREFLIES = 15;                  // 蛍の数（Ruins）
+const FIREFLY_ON = -0.5;               // 蛍の明滅の波（-1..1）がこれより上の間は光る（低いほど長く光る）
+const FIREFLY_RANGE = [8, 8, 1.5];     // 蛍がさまよう範囲（x・y・z の振れ幅。ボクセル。上下は小さくし、地面の上を漂わせる）
+const FIREFLY_HEIGHT = [3, 10];        // 蛍の居場所の、地面からの高さの範囲（ボクセル。真上に物のない、開けた地面の上に置く）
+const FIREFLY_DARK = 1;                // 蛍の居場所に選ぶ所の、画面でその後ろに映る絵の段の上限（暗い所に出して、光を目立たせる）
+const FIREFLY_TRIES = 300;             // 暗い所を探す回数の上限（見つからなければ、最後に引いた所に出す）
 // ときどき出る物（時刻から決まるハッシュで出し、Math.random を引かない）。every: 平均の間隔（秒。その長さの区間ごとに、chance の見込みで 1 回出る）
-const BIRDS = { every: 40, chance: 0.8, speed: 18, fps: 4, slope: 0.15, wave: 4, waveLen: 90 };   // Daylight の鳥の群れ（speed: 横切る速さ（ドット/秒）、fps: 羽ばたきのコマ/秒、slope: 上り下りの傾きの最大、wave・waveLen: ゆるい上下の波の振れ幅と長さ（ドット））
+const BIRDS = { every: 40, chance: 0.8, speed: 18, fps: 4, slope: 0.15, wave: 4, waveLen: 90 };   // Garden・Mill の鳥の群れ（speed: 横切る速さ（ドット/秒）、fps: 羽ばたきのコマ/秒、slope: 上り下りの傾きの最大、wave・waveLen: ゆるい上下の波の振れ幅と長さ（ドット））
 const BIRD_FLOCK = [[0, 0], [-7, -3], [-6, 4]];                 // 群れの中の位置（ドット。先頭からの後ろ・上下）
 const BIRD_FRAMES = [['#...#', '.#.#.', '..#..'], ['..#..', '.#.#.', '#...#']];   // 羽を上げた絵と下げた絵
-const METEORS = { every: 45, chance: 0.7, time: 0.7, speed: 110, len: 7, slope: 0.4 };   // Starlight の流れ星（time: 光っている秒、speed: 横の速さ（ドット/秒）、len: 尾の長さ（ドット）、slope: 浅い傾き（下へ進む量 / 横へ進む量））
-const EMBERS = { slot: 0.3, chance: 0.35, life: 1.0, rise: 4 };   // Torchlight の火の粉（slot 秒ごとに、松明ごとに chance の見込みで出す。life: 消えるまでの秒、rise: 昇る速さ（ボクセル/秒）。昇る高さ rise × life を低く抑えて控えめにする）
+const METEORS = { every: 45, chance: 0.7, time: 0.7, speed: 110, len: 7, slope: 0.4 };   // Ruins の流れ星（time: 光っている秒、speed: 横の速さ（ドット/秒）、len: 尾の長さ（ドット）、slope: 浅い傾き（下へ進む量 / 横へ進む量））
+const EMBERS = { slot: 0.3, chance: 0.35, life: 1.0, rise: 4 };   // Mill の火の粉（slot 秒ごとに、松明ごとに chance の見込みで出す。life: 消えるまでの秒、rise: 昇る速さ（ボクセル/秒）。昇る高さ rise × life を低く抑えて控えめにする）
 
 // ---- ユーティリティ ----
 const mod = (a, n) => ((a % n) + n) % n;
@@ -164,7 +165,7 @@ const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const M = {
   STONE: 1, PAVE: 2, ROCK: 3, GRASS: 4, ROOF: 5, WOOD: 6, WATER: 7, FOAM: 8, LEAF: 9,
   FLOWER_R: 10, FLOWER_Y: 11, FLOWER_W: 12, MOSS: 13, CLOTH: 14, METAL: 15, SOIL: 16, DARK: 17,
-  LINEN_B: 18, LINEN_R: 19, LINEN_Y: 20,   // 洗濯物の布（Daylight）
+  LINEN_B: 18, LINEN_R: 19, LINEN_Y: 20,   // 洗濯物の布（Garden）
   GLASS: 21,   // 灯っていない窓のガラス
   // ここから後は光らない所でも同じ色（自分で光る物と、影絵）
   SIL: 22, FLAME: 23, GLOW: 24, GWATER: 25, MUSH: 26, STAR: 27, FIREFLY: 28, EYE: 29,
@@ -225,7 +226,7 @@ function buildPalette(s) {
 // rightShade: 右の面の段（省くと FACE_SHADE のまま）、curves: 素材ごとの、暗い側の段の寄せ方（省くと 1 で均等）、brightWellRoof: 井戸の屋根を 1 段明るくする
 const SCENES = [
   {
-    name: 'Daylight', lighting: 'sun', dark: 0x2a2440, bright: 0xfffaf0, sil: 0x1c1826,
+    name: 'Garden', lighting: 'sun', dark: 0x2a2440, bright: 0xfffaf0, sil: 0x1c1826,
     colors: {
       STONE: 0xd9ceb2, PAVE: 0xc4b494, ROCK: 0x8c7660, GRASS: 0x82a852, ROOF: 0xb0583c, WOOD: 0x8c5c34,
       WATER: 0x4aa0e0, FOAM: 0xe6f4ff, LEAF: 0x3e8a3c, FLOWER_R: 0xff3c58, FLOWER_Y: 0xffdc28, FLOWER_W: 0xffffff,
@@ -244,7 +245,7 @@ const SCENES = [
     props: 'garden', birds: true,
   },
   {
-    name: 'Torchlight', lighting: 'torch', dark: 0x140806, bright: 0xfff0c8, sil: 0x160a06,
+    name: 'Mill', lighting: 'torch', dark: 0x140806, bright: 0xfff0c8, sil: 0x160a06,
     colors: {
       STONE: 0xcf9d68, PAVE: 0xae7f54, ROCK: 0x6c4c36, GRASS: 0x6c7a34, ROOF: 0x6a5450, WOOD: 0x9c6a3c,
       WATER: 0x3a6a88, FOAM: 0xfff0d0, LEAF: 0x4a5a28, FLOWER_R: 0xc04030, FLOWER_Y: 0xd8b040, FLOWER_W: 0xe8dcc8,
@@ -260,11 +261,11 @@ const SCENES = [
     rightShade: 1,   // 右の面を 1 段暗くして、建物の形を締める
     brightWellRoof: true,   // 井戸の屋根を 1 段明るくして、暗がりから浮かせる
     sky: [0x121220, 0x34262c],   // 夕暮れの空（暗い藍から、くすんだ赤茶へ。島の光の輪より目立たないよう暗く抑える）
-    props: 'workshop', litWindows: true, embers: true,
+    props: 'workshop', litWindows: true, embers: true, birds: true,
     fallGlow: true,   // 滝は光を受けない青だけの色にして、暗がりでもだまし絵の要の滝を見せる（炎を映した橙は入れない）
   },
   {
-    name: 'Starlight', lighting: 'water', dark: 0x04080c, bright: 0xd0fff0, sil: 0x060c10,
+    name: 'Ruins', lighting: 'water', dark: 0x04080c, bright: 0xd0fff0, sil: 0x060c10,
     colors: {
       STONE: 0x8a9a96, PAVE: 0x76847e, ROCK: 0x505a5a, GRASS: 0x3c6c4c, ROOF: 0x4c5660, WOOD: 0x54443a,
       WATER: 0x24a898, FOAM: 0xd8fff8, LEAF: 0x2e6040, FLOWER_R: 0x804050, FLOWER_Y: 0x9a9050, FLOWER_W: 0xa0b0b0,
@@ -330,7 +331,7 @@ let puffs = [];            // 煙突の煙 { x, y, z, vx, vz, age, life }
 let puffWait = 0;          // 次の煙を出すまでの秒
 let chimneyTop = null;     // 煙突の口
 let torches = [];          // 松明・燭台 { x, y, z, top, step, flick, phase, lantern, rock }（top・step は lightFrom の光源、rock は載っている浮かぶ岩の番号）
-let lightSources = [];     // 動かない光源（Starlight の水・きのこ）
+let lightSources = [];     // 動かない光源（Ruins の水・きのこ）
 let creature = null;       // いまのシーンの生き物の状態
 let fireflies = [];
 
@@ -540,7 +541,7 @@ function buildTower(v, t, sc) {
     const z = Math.round(f * fh);
     fill(v, x0 - 1, y0 - 1, z, x1 + 1, y1 + 1, z + 2, (x, y, zz) => vox(M.STONE, zz === z + 1 ? 2 : 1));
   }
-  // 窓（左と右の面に、階ごとに 1 つ。Torchlight では最上階が灯る）
+  // 窓（左と右の面に、階ごとに 1 つ。Mill では最上階が灯る）
   for (let f = 0; f < floors; f++) {
     const zc = Math.round((f + 0.55) * fh), lit = sc.litWindows && f === floors - 1;
     windowOn(v, 'y', Math.floor(cx) - 1, zc - 3, 3, 5, y1 - 1, lit);
@@ -577,7 +578,7 @@ function buildHut(v, h, sc) {
   // 戸口（板の扉）と窓は、左の面 (+y)。窓は 1 階に 1 つ、2 階に 2 つ
   fill(v, x0 + 12, y1 - 1, 0, x0 + 17, y1, 10, (x) => vox(M.WOOD, mod(x, 2)));
   fill(v, x0 + 11, y1 - 1, 10, x0 + 18, y1, 11, vox(M.WOOD, 1));
-  // 窓（Torchlight ではすべて灯る）
+  // 窓（Mill ではすべて灯る）
   windowOn(v, 'y', x1 - 9, 4, 5, 5, y1 - 1, sc.litWindows);
   windowOn(v, 'y', x0 + 4, 19, 5, 5, y1 - 1, sc.litWindows);
   windowOn(v, 'y', x1 - 9, 19, 5, 5, y1 - 1, sc.litWindows);
@@ -671,7 +672,7 @@ function rubble(v, cx, cy, seed) {
 function buildProps(v, sc) {
   torches = [];
   const anchors = {};
-  // 井戸は、どのシーンも同じ所に置く（Starlight では、ほかの石と一緒に苔むし、屋根が少し崩れる）
+  // 井戸は、どのシーンも同じ所に置く（Ruins では、ほかの石と一緒に苔むし、屋根が少し崩れる）
   well(v, WELL.x, WELL.y, sc.ruin, sc.brightWellRoof);
   if (sc.props === 'garden') {
     const seed = randInt(1000);   // 花の付き方は、シーンに入るたびに替わる
@@ -737,7 +738,7 @@ function towerIvy(v, rnd, n, zMin, len0, span) {
     for (let z = z0; z > z0 - len && z > 0; z--) if (!vget(v, x, y, z)) vset(v, x, y, z, leafVox(x, y, z));
   }
 }
-// 石積みの苔と蔦（Daylight・Torchlight）。場所は種を固定した乱数とハッシュで決め、どのシーンも同じ所に出す
+// 石積みの苔と蔦（Garden・Mill）。場所は種を固定した乱数とハッシュで決め、どのシーンも同じ所に出す
 function weatherWorld(v) {
   const { nx, ny, nz, data } = v, sz = nx * ny;
   const moss = (c, h) => (c & GHOST) | vox(M.MOSS, h < 0.3 ? 1 : 0);
@@ -769,7 +770,7 @@ function weatherWorld(v) {
   channelIvy(v, rnd, IVY.channel, 3, 7);
   towerIvy(v, rnd, IVY.tower, 4, 5, 10);
 }
-// 廃墟（Starlight）: 塔と小屋の表面を欠き、苔と蔦で覆う
+// 廃墟（Ruins）: 塔と小屋の表面を欠き、苔と蔦で覆う
 function ruinWorld(v) {
   const rnd = seededRandom(91);
   for (const t of [TOWER_FALL, TOWER_MID, HUT]) {
@@ -831,7 +832,7 @@ function buildWheelVolume(phi, sc) {
   }
   return v;
 }
-// 洗濯物（Daylight）の 1 コマ。k = 1 で下の方が手前へ揺れる
+// 洗濯物（Garden）の 1 コマ。k = 1 で下の方が手前へ揺れる
 function buildLaundryVolume(k, cloths) {
   const v = makeVolume(8, 12, 8, 35, 18, 19);
   for (const [x0, m] of cloths) for (let z = 11; z < 18; z++) for (let x = x0; x < x0 + 5; x++) {
@@ -857,9 +858,9 @@ function buildRockVolume(rock, sc, decor) {
       vset(v, xx, yy, z, z >= 0 ? vox(sc.ruin ? M.MOSS : M.GRASS, hash3(xx, yy, z) < 0.3 ? 2 : 0) : vox(M.ROCK, hash3(xx, yy, z >> 1) < 0.3 ? 1 : 0));
     }
   }
-  // 飾る岩のてっぺんに、Torchlight では小さな松明を立てる（暗闇の中で岩が見えるように）
+  // 飾る岩のてっぺんに、Mill では小さな松明を立てる（暗闇の中で岩が見えるように）
   if (sc.lighting === 'torch' && decor) v.torch = torchHolder(v, x, y, 5);
-  // Daylight では花が咲く
+  // Garden では花が咲く
   if (sc.props === 'garden' && decor) {
     const flowers = [M.FLOWER_R, M.FLOWER_Y, M.FLOWER_W];
     for (let k = 0; k < 5; k++) {
@@ -869,7 +870,7 @@ function buildRockVolume(rock, sc, decor) {
       vset(v, fx, fy, 3, vox(flowers[Math.floor(hash3(k, x + y, 73) * 3)], 2));
     }
   }
-  // Starlight では光るきのこが生える
+  // Ruins では光るきのこが生える
   if (sc.ruin && decor) {
     for (let k = 0; k < 3; k++) {
       const mx = x + Math.round((hash3(k, x, 61) - 0.5) * r), my = y + Math.round((hash3(k, y, 62) - 0.5) * r), h = 1 + (k === 0 ? 1 : 0);
@@ -901,7 +902,7 @@ function lightFrom(srcs, x, y, z, ambient) {
   }
   return best > 0 ? 0 : best;
 }
-// Starlight: 水路・滝・受け口に沿って、光る水の光源を並べる
+// Ruins: 水路・滝・受け口に沿って、光る水の光源を並べる
 function waterLightSources() {
   const src = [];
   const add = (x, y, z) => src.push({ x, y, z, ...WATER_LIGHT });
@@ -914,7 +915,7 @@ function waterLightSources() {
   for (let y = BASIN.y0 + 3; y < BASIN.y1 - 2; y += 5) add(WHEEL.x, y, CH_FLOOR + 2);
   return src;
 }
-// 日の当たらない所か（Daylight）。面から日の向きへたどり、ボクセルに当たれば影
+// 日の当たらない所か（Garden）。面から日の向きへたどり、ボクセルに当たれば影
 function inShadow(x, y, z, face) {
   const px = x + (face === 2 ? 0.01 : 0), py = y + (face === 1 ? 0.01 : 0), pz = z + (face === 0 ? 0.01 : 0);
   for (let k = 1; k <= SHADOW_STEPS; k++) {
@@ -1038,7 +1039,7 @@ function castLayers() {
   laundryFrames = laundryVolumes.map(castLit);
   rockSprites = rockVolumes.map((v, k) => {
     const L = castLit(v);
-    // Starlight では、光る水から遠い岩も、上面の苔だけはかすかに見せる（真っ黒な影にしない）
+    // Ruins では、光る水から遠い岩も、上面の苔だけはかすかに見せる（真っ黒な影にしない）
     if (current.lighting === 'water') for (let j = 0; j < L.mat.length; j++) if (L.mat[j] && L.face[j] === 0) L.light[j] = Math.max(L.light[j], ROCK_TOP_LIGHT);
     L.period = ROCK_PERIOD[0] + hash3(k, 1, 9) * (ROCK_PERIOD[1] - ROCK_PERIOD[0]);
     L.amp = hash3(k, 2, 9) < 0.5 ? ROCK_AMP[0] : ROCK_AMP[1];
@@ -1085,7 +1086,7 @@ function buildStars() {
   const rnd = seededRandom(starSeed), n = W * H;
   stars = Array.from({ length: Math.round(n / 900) }, () => ({ i: Math.floor(rnd() * n), phase: rnd() * TAU, speed: 0.5 + rnd() * 1.5, top: 4 + Math.floor(rnd() * 3) }));
 }
-// 雲（Daylight・Torchlight）: 横に長いノイズの濃い所を、煙の色の段で塗る。段の境目は 4×4 の網点で混ぜる。
+// 雲（Garden・Mill）: 横に長いノイズの濃い所を、煙の色の段で塗る。段の境目は 4×4 の網点で混ぜる。
 // 雲は左へ流れるので、off ドットだけ右の所の模様を描く（網点も雲と一緒に動かす）
 function fillClouds(off) {
   cloudOff = off;
@@ -1115,7 +1116,7 @@ const WATER_BODIES = (() => {
   list.push({ ...segRect([SPOUT_X, 0], [FALL_X1, 0], CH_IN, CH_HALF, 0, CH_FRONT), floor: CH_FLOOR + LIFT, ax: SPOUT_X, ay: 0, dx: -1, dy: 0, u0: u });
   return list;
 })();
-// 水の素材（Starlight では光る水）
+// 水の素材（Ruins では光る水）
 const waterMat = () => (current.glowWater ? M.GWATER : M.WATER);
 const waterLevel = () => 1 + LEVEL_FLOWS.filter((f) => flow >= f).length;
 // 水車の輪の上の、滝の当たる高さ
@@ -1305,7 +1306,7 @@ function updateCreature(dt) {
   c.event = c.kind === 'cat' ? (c.event === 'tail' ? 'eyes' : 'tail') : Math.random() < 0.6 ? 'blink' : 'tilt';
   c.wait = randomInterval(BLINK_INTERVAL);
 }
-// 蝶（Daylight）。花壇の上を、揃わない周期でふらふらと飛びまわる
+// 蝶（Garden）。花壇の上を、揃わない周期でふらふらと飛びまわる
 let butterflies = [];
 function drawButterflies() {
   const [rx, ry, rz] = BUTTERFLY_RANGE;
@@ -1319,6 +1320,11 @@ function drawButterflies() {
 function drawLaundry() {
   if (!laundryFrames.length) return;
   blitLayer(laundryFrames[hash3(Math.floor(time / 0.7), 1, 2) < 0.5 ? 0 : 1]);
+}
+// 地面（z = 0）から蛍の高さの上限までに物がないか（建物や水路の中・上に蛍を置かない）
+function openGround(x, y) {
+  for (let z = 0; z <= FIREFLY_HEIGHT[1] + FIREFLY_RANGE[2] + 1; z++) if (vget(vol, Math.floor(x), Math.floor(y), z)) return false;
+  return true;
 }
 // 蛍の居場所に向く所か。画面でその点の後ろに映る絵が暗く（または空で）、手前の物に隠れない
 function darkSpot(x, y, z) {
@@ -1352,7 +1358,7 @@ function skyDot(px, py, c) {
 function eventStart(o, slot, seed, frac) {
   return hash3(slot, 1, seed) < o.chance ? (slot + hash3(slot, 2, seed) * frac) * o.every : -1;
 }
-// Daylight の鳥: 3 羽の群れが、羽ばたきながら空を横切る。空（と雲）の上にだけ描く（島の後ろを飛ぶ）
+// Garden・Mill の鳥: 3 羽の群れが、羽ばたきながら空を横切る。空（と雲）の上にだけ描く（島の後ろを飛ぶ）
 function drawBirds() {
   const now = time + eventShift, cur = Math.floor(now / BIRDS.every);
   for (let slot = cur - 1; slot <= cur; slot++) {
@@ -1374,7 +1380,7 @@ function drawBirds() {
     });
   }
 }
-// Starlight の流れ星: 空の上の方から斜め下へ、尾を引いて走る。空の上にだけ描く
+// Ruins の流れ星: 空の上の方から斜め下へ、尾を引いて走る。空の上にだけ描く
 function drawMeteors() {
   const now = time + eventShift, cur = Math.floor(now / METEORS.every);
   for (let slot = cur - 1; slot <= cur; slot++) {
@@ -1390,7 +1396,7 @@ function drawMeteors() {
     }
   }
 }
-// Torchlight の火の粉: 松明ごとに、ときどき 1 ドットの火の粉が揺れながら昇り、暗くなって消える
+// Mill の火の粉: 松明ごとに、ときどき 1 ドットの火の粉が揺れながら昇り、暗くなって消える
 function drawEmbers() {
   const now = time + eventShift, cur = Math.floor(now / EMBERS.slot), n = Math.ceil(EMBERS.life / EMBERS.slot);
   torches.forEach((t, k) => {
@@ -1478,8 +1484,8 @@ function setScene(index) {
   const rnd = seededRandom(randInt(1e6));   // 蛍と蝶の動きは、シーンに入るたびに替わる
   fireflies = current.fireflies ? Array.from({ length: FIREFLIES }, () => {
     let x, y, z, tries = 0;
-    do { x = ISLAND.cx + (rnd() - 0.5) * ISLAND.rx * 1.6; y = ISLAND.cy + (rnd() - 0.5) * ISLAND.ry * 1.6; z = 6 + rnd() * 22; }
-    while (islandD(Math.floor(x), Math.floor(y)) > 0.85 || (++tries < FIREFLY_TRIES && !darkSpot(x, y, z)));
+    do { x = ISLAND.cx + (rnd() - 0.5) * ISLAND.rx * 1.6; y = ISLAND.cy + (rnd() - 0.5) * ISLAND.ry * 1.6; z = FIREFLY_HEIGHT[0] + rnd() * (FIREFLY_HEIGHT[1] - FIREFLY_HEIGHT[0]); }
+    while (islandD(Math.floor(x), Math.floor(y)) > 0.85 || !openGround(x, y) || (++tries < FIREFLY_TRIES && !darkSpot(x, y, z)));
     return { x, y, z, w1: 0.2 + rnd() * 0.3, w2: 0.2 + rnd() * 0.3, w3: 0.3 + rnd() * 0.4, p1: rnd() * TAU, p2: rnd() * TAU, p3: rnd() * TAU, blink: 1 + rnd() * 1.5, phase: rnd() * TAU };
   }) : [];
   const brnd = seededRandom(randInt(1e6));
@@ -1512,7 +1518,7 @@ function step(dt) {
   }
   for (const p of splashes) { p.vz -= SPLASH_GRAVITY * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
   splashes = splashes.filter((p) => p.z > p.z0 - 10);
-  // 煙（Daylight・Torchlight）: 煙突の口から、ゆっくり昇りながら左上へ流れる
+  // 煙（Garden・Mill）: 煙突の口から、ゆっくり昇りながら左上へ流れる
   if (current.smoke) {
     if ((puffWait -= dt) <= 0) {
       puffWait = rand(SMOKE_INTERVAL[0], SMOKE_INTERVAL[1]);
@@ -1546,7 +1552,7 @@ function tick(now) {
 // ---- 入力・UI ----
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
-  // シーン切替（Space・左右スワイプ）。次の明かりへ
+  // シーン切替（Space・左右スワイプ）。次の景色へ
   changeScene: nextScene,
   // 強度（↑↓・上下スワイプ）。水量
   intensity: {
