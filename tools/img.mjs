@@ -238,6 +238,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(e.message);
+  console.error(`Error: ${e.message}`);
   process.exit(1);
 });
