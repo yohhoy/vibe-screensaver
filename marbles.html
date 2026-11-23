@@ -282,7 +282,9 @@ const SCENE_COPY_SHADER = {
     }`,
 };
 // 積み木の素材（標準の素材）に、模様の 3 次元テクスチャ（木目・脈・粒）を足す。blockRot（四元数）で立方体の中の位置を
-// テクスチャの向きへ回し、blockOff だけ x の向きにずらして引く（金属では、立方体ごとの値 vBlockSeed にも使う）。木口（繊維の向きに面した面）は少し暗くする
+// テクスチャの向きへ回し、blockOff の小数部だけ x の向きにずらして引く（金属では、立方体ごとの値 vBlockSeed にも使う）。
+// blockOff の整数部は橋の 2 個の別（奥が −1、手前が +1、橋でなければ 0）で、立方体の中の位置を x の向きに半個ずつずらし、
+// 2 個で 1 つの部材の中の位置にする（金属の削り出しの跡と映り込みの明るさの流れが、つなぎ目で続く）。木口（繊維の向きに面した面）は少し暗くする
 const BLOCK_VERTEX_PARS = `
 attribute vec4 blockRot;
 attribute float blockOff;
@@ -292,9 +294,9 @@ varying vec3 vObjPos;
 varying vec3 vBlockNormal;
 vec3 rotateByQuat(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }`;
 const BLOCK_VERTEX = `
-vBlockSeed = blockOff;
+vBlockSeed = fract(blockOff);
 vObjPos = position;
-vBlockPos = rotateByQuat(blockRot, position) + 0.5 + vec3(blockOff, 0.0, 0.0);
+vBlockPos = rotateByQuat(blockRot, position) + 0.5 + vec3(vBlockSeed + 0.5 * floor(blockOff), 0.0, 0.0);
 vBlockNormal = rotateByQuat(blockRot, objectNormal);`;
 const BLOCK_FRAGMENT_PARS = `
 uniform highp sampler3D blockTex;
@@ -1522,14 +1524,15 @@ function bridgePair(c, n, s) {
   }
   return true;
 }
-// 柱のいちばん上の立方体が橋の片方なら、つなぎ目の側面と、2 個で揃える木目（繊維を橋の向きにして、つなぎ目で続ける）
+// 柱のいちばん上の立方体が橋の片方なら、つなぎ目の側面と、2 個で揃える模様（x の向きを橋の向きにし、off の整数部で
+// 2 個の位置をずらして、つなぎ目で続ける。金属は上面を上に保ち、橋の向きにだけ回す）
 function bridgeAt(c) {
   for (const s of [0, 1]) {
     const [dx, dz] = DIRS[s], b = cells.get(cellKey(c.i - dx, c.j - dz));
     const a = bridgeStart(c, s) ? c : b && bridgeStart(b, s) ? b : null;
     if (!a) continue;
-    const w = blockParams(a.i, a.h, a.j);
-    return { junction: a === c ? s : opposite(s), params: { ...w, quat: blockQuats[s * 4 + Math.floor(hash3(a.i, a.h, a.j) * 4)] } };
+    const w = blockParams(a.i, a.h, a.j), roll = mat.flat ? 0 : Math.floor(hash3(a.i, a.h, a.j) * 4);
+    return { junction: a === c ? s : opposite(s), params: { ...w, quat: blockQuats[s * 4 + roll], off: w.off + (a === c ? -1 : 1) } };
   }
   return null;
 }
