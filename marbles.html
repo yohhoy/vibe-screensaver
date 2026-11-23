@@ -1951,9 +1951,8 @@ function findEntry(path) {
     for (let k = 0; k < samples; k++) {
       const s = seg.type === 'roll' ? seg.len * k / samples : 0;
       const p = seg.type === 'roll' ? rollPoint(seg, s) : seg.a;
-      // 画面の中の通路から出すと、何もない所から玉が湧いて見えるので、その経路からは出さない
-      if (seg.hidden && onScreen(tmpA.set(...p), 0)) return null;
-      const inside = !seg.hidden && onScreen(tmpA.set(...p), -MARBLE_RADIUS * 2);
+      // 玉が少しでも画面にかかる点の手前で出す（玉の全体が画面の外にある所で作り、縁で湧いて見えないようにする）
+      const inside = !seg.hidden && onScreen(tmpA.set(...p), MARBLE_RADIUS);
       if (inside) return last ? { ...last, at: [...p] } : null;
       last = { seg: path.base + n, s };
     }
