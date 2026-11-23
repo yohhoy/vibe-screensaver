@@ -26,6 +26,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // 共通の入力・UI と小さな関数（common.js）
 const { TAU, clamp, rand, randInt, pick, gray, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat, seededRandom, sideRandom, randomInterval } = Common;
 
@@ -254,7 +255,7 @@ const COMET_GLOW = { active: [0.6, 0.12], head: { size: 0.014, color: [2.2, 2.5,
 
 const MAX_PIXEL_RATIO = { pc: 1.5, touch: 1 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 const MAX_FPS = 60;               // 1 秒に描く回数の上限（120Hz などの画面での CPU と GPU の負荷を抑える）
-const MSAA_SAMPLES = 4;           // シーンを描く描画先の MSAA
+const TAA = { blend: 0.8, samples: 8 };   // blend: 前のコマを残す割合、samples: カメラをずらす位置の数（Halton 列）
 const BLOOM = { strength: 0.45, radius: 0.8, threshold: 1.3, scale: 0.5, sigma: 0.4 };   // scale: ブルームを描く解像度の倍率、sigma: ぼかしの標準偏差（ぼかしの半径に対する割合）
 // シーンの明るさの上限（光の強さそのまま）。艶の鋭い照り返しは半精度の上限（約 65000）を超えることがあり、
 // Android などの GPU は無限大として書き込む。ブルームがそれをぼかすと、ぼかしの範囲いっぱいの四角い光になる。
@@ -370,6 +371,28 @@ const SCENE_COPY_SHADER = {
       gl_FragColor = vec4(min(texture2D(tScene, vUv).rgb, vec3(maxRadiance)), 1.0);
     }`,
 };
+// 時間方向のアンチエイリアス。カメラを毎コマ 1 画素未満ずらして描き、前のコマと混ぜる。
+// 前のコマの色は、いまのコマの近傍（上下左右）の範囲に収めてから混ぜる（動く物の残像を出さないため）
+const TAA_SHADER = {
+  uniforms: { tScene: { value: null }, tHistory: { value: null }, texel: { value: new THREE.Vector2() },
+    blend: { value: TAA.blend }, maxRadiance: { value: MAX_RADIANCE } },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: `
+    uniform sampler2D tScene, tHistory;
+    uniform vec2 texel;
+    uniform float blend, maxRadiance;
+    varying vec2 vUv;
+    vec3 fetch(vec2 offset) {
+      return min(texture2D(tScene, vUv + offset * texel).rgb, vec3(maxRadiance));
+    }
+    void main() {
+      vec3 c = fetch(vec2(0.0));
+      vec3 a = fetch(vec2(1.0, 0.0)), b = fetch(vec2(-1.0, 0.0)), d = fetch(vec2(0.0, 1.0)), e = fetch(vec2(0.0, -1.0));
+      vec3 lo = min(min(min(a, b), min(d, e)), c), hi = max(max(max(a, b), max(d, e)), c);
+      vec3 history = clamp(texture2D(tHistory, vUv).rgb, lo, hi);
+      gl_FragColor = vec4(mix(c, history, blend), 1.0);
+    }`,
+};
 const VIGNETTE_SHADER = {
   uniforms: { tDiffuse: { value: null }, amount: { value: VIGNETTE } },
   vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
@@ -384,6 +407,39 @@ const VIGNETTE_SHADER = {
 };
 
 // ---- three.js 初期化 ----
+// シーンの描画先を前のコマと混ぜる。混ぜた結果は次のコマのために 2 枚の描画先で交互に持ち、composer へ写す scenePass の入力にする
+class TemporalAAPass extends Pass {
+  constructor(sceneTexture, outputPass) {
+    super();
+    this.needsSwap = false;   // composer の描画先には描かない
+    this.outputPass = outputPass;
+    this.history = [0, 1].map(() => new THREE.WebGLRenderTarget(1, 1,
+      { type: THREE.HalfFloatType, ...compactHdrFormat(renderer), depthBuffer: false }));
+    this.index = 0;
+    this.mix = new THREE.ShaderMaterial({ ...TAA_SHADER, uniforms: THREE.UniformsUtils.clone(TAA_SHADER.uniforms), blending: THREE.NoBlending });
+    this.mix.uniforms.tScene.value = sceneTexture;
+    this.quad = new FullScreenQuad(null);
+  }
+  setSize(width, height) {
+    this.history.forEach((target) => target.setSize(width, height));
+    this.mix.uniforms.texel.value.set(1 / width, 1 / height);
+  }
+  render(renderer) {
+    const current = this.history[this.index], previous = this.history[1 - this.index];
+    this.mix.uniforms.tHistory.value = previous.texture;
+    this.quad.material = this.mix;
+    renderer.setRenderTarget(current);
+    this.quad.render(renderer);
+    this.outputPass.uniforms.tScene.value = current.texture;
+    this.index = 1 - this.index;
+  }
+  dispose() {
+    this.history.forEach((target) => target.dispose());
+    this.mix.dispose();
+    this.quad.dispose();
+  }
+}
+
 // シーンは別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
@@ -398,9 +454,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(BACKGROUND);
 const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.05, 20);
 
-// マルチサンプルにするのはシーンを描く描画先だけ。色の形式は compactHdrFormat（common.js）で選ぶ
-const sceneTarget = new THREE.WebGLRenderTarget(1, 1,
-  { type: THREE.HalfFloatType, ...compactHdrFormat(renderer, MSAA_SAMPLES), samples: MSAA_SAMPLES });
+// シーンを描く描画先。MSAA は使わず、縁は TemporalAAPass（前のコマとの平均）と最後の SMAA でならす（MSAA を切ると、全画面の処理が軽くなる）。
+// 色の形式は compactHdrFormat（common.js）で選ぶ
+const sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, ...compactHdrFormat(renderer) });
 function updateSceneTargetSize() {
   const pr = renderer.getPixelRatio();
   sceneTarget.setSize(Math.round(innerWidth * pr), Math.round(innerHeight * pr));
@@ -430,7 +486,7 @@ for (const material of bloom.separableBlurMaterials) {
 composer.addPass(bloom);
 composer.addPass(new ShaderPass(VIGNETTE_SHADER));
 composer.addPass(new OutputPass());
-// MSAA は明るさがそのままの状態で縁をならすので、炎や照り返しのような明るい物と暗い背景の境目には段差が残り、
+// TemporalAAPass は明るさがそのままの状態で縁をならすので、炎や照り返しのような明るい物と暗い背景の境目には段差が残り、
 // ゆっくり動くとちらつく。トーンマッピングのあとの絵で、もう一度縁をならす
 composer.addPass(new SMAAPass(innerWidth, innerHeight));
 
@@ -2065,6 +2121,18 @@ function step(dt) {
   updateComet(dt);   // 尾の帯をカメラに向けるので、カメラを動かしたあとに
 }
 
+// カメラを毎コマ 1 画素未満ずらす（TemporalAAPass が混ぜる）。ずらす位置は Halton 列（底 2 と 3）
+function halton(index, base) {
+  let f = 1, r = 0;
+  for (let i = index; i > 0; i = Math.floor(i / base)) { f /= base; r += f * (i % base); }
+  return r;
+}
+let jitterFrame = 0;
+function jitterCamera() {
+  const i = jitterFrame++ % TAA.samples + 1;
+  camera.setViewOffset(sceneTarget.width, sceneTarget.height, halton(i, 2) - 0.5, halton(i, 3) - 0.5, sceneTarget.width, sceneTarget.height);
+}
+
 let last = performance.now();
 let nextDraw = 0;            // 次に描いてよい時刻 (ms)
 function tick(now) {
@@ -2075,6 +2143,7 @@ function tick(now) {
   const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   last = now;
   step(dt);
+  jitterCamera();
   renderer.setRenderTarget(sceneTarget);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
@@ -2106,6 +2175,8 @@ setupControls({
 // 起動のたびに、惑星の並びが違う所から始める
 earthAngle = rand(0, EARTH_ANGLE_WRAP);
 setScene(randInt(SCENES.length));   // 時代はランダムに選ぶ（ほかの乱数をすべて引いたあとに引く）
+// three.js が物を作るときに Math.random を引くので、起動時の乱数をすべて引いたあとに、composer の先頭へ挿入する（配置の乱数の列を変えないため）
+composer.insertPass(new TemporalAAPass(sceneTarget.texture, scenePass), 0);
 renderer.setAnimationLoop(tick);
 </script>
 </body>
