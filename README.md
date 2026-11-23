@@ -230,18 +230,18 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 新しい土地 / 強度: 成長の速さ
 
-## [ビー玉の積み木](https://yohhoy.github.io/vibe-screensaver/marbles.html)
+## [ビー玉の段々道](https://yohhoy.github.io/vibe-screensaver/marbles.html)
 
-[<img src="docs/images/marbles.jpg" width="480" alt="ビー玉の積み木">](https://yohhoy.github.io/vibe-screensaver/marbles.html)
+[<img src="docs/images/marbles.jpg" width="480" alt="ビー玉の段々道">](https://yohhoy.github.io/vibe-screensaver/marbles.html)
 
-溝と穴を彫った木の積み木を、斜め上から眺めます。積み木は手前へ段々に下がりながら果てしなく続き、ガラスのビー玉が溝を転がり、段を飛び降り、穴をくぐって 1 段ずつ下っていきます。ところどころに、アーチの橋や木のおもちゃの木が並びます。
+溝が彫られた様々な素材の積み木が、手前へ段々に下がりながら続きます。ビー玉が溝を転がり、段差から飛び降り、穴をくぐって、1 段ずつ下っていきます。
 
-シーン切替: リセット / 強度: ビー玉の数
+シーン切替: 次の材質 / 強度: ビー玉の数
 
 <details>
 <summary>隠し要素（ネタバレ注意）</summary>
 
-ときどき、積み木の上に、木で作った Claude Code のマスコットがちょこんと置かれています。**C** キーですぐに呼び出せます。
+ときどき、積み木の上に、積み木と同じ材質で作った Claude Code のマスコットがちょこんと置かれています。**C** キーですぐに呼び出せます。
 
 </details>
 

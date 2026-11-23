@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Marble Run</title>
+<title>Marble Trail</title>
 <link rel="stylesheet" href="common.css">
 <script src="common.js"></script>
 <script type="importmap">
@@ -15,8 +15,9 @@
 </head>
 <body>
 <div id="hud">
-  <span class="pc-only">Space: リセット / F・ダブルクリック: 全画面 / ↑↓: ビー玉の数</span>
-  <span class="touch-only">左右スワイプ: リセット / 上下スワイプ: ビー玉の数</span>
+  Scene: <span id="scene-name"></span><br>
+  <span class="pc-only">Space: 次の材質 / F・ダブルクリック: 全画面 / ↑↓: ビー玉の数</span>
+  <span class="touch-only">左右スワイプ: 次の材質 / 上下スワイプ: ビー玉の数</span>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -90,9 +91,9 @@ const TREE_CONES = [              // 円錐の木・段々の木の円錐（[底
 const TREE_BALL = [0.4, 0.58];    // 丸い木の長球（縦に長い回転楕円体）の横と縦の半径（上端が TREE_HEIGHT）
 const TREE_ROUND = 0.03;          // 円錐の底の縁の丸み
 const TREE_AO = [0.6, 0.55];      // 陰の明るさ（幹の根元、葉の下の幹）
-const TREE_TINT = [0.42, 0.3, 0.24];   // 木の色の倍率（線形。積み木より濃い、くるみ材のような色）
+const TREE_TINT = [0.42, 0.3, 0.24];   // 木材のシーンの色の倍率（線形。積み木より濃い、くるみ材のような色）。ほかのシーンは SCENES
 
-// 隠し要素の木のマスコット（Claude Code のマスコットを、木を角材から削り出して組んだおもちゃにしたもの）。無地の柱の上に、カメラの方を向けて置く
+// 隠し要素のマスコット（Claude Code のマスコットを、角材から削り出して組んだおもちゃにしたもの）。無地の柱の上に、カメラの方を向けて置く
 const MASCOT_INTERVAL = [300, 120, 900];   // 次に置くまでの秒数 [平均, 最小, 最大]
 const MASCOT_DOT = [0.055, 0.14]; // ドット絵の 1 ドットの横（と奥行き）・縦の大きさ（胴の幅 12 ドットで立方体の 0.66 個ぶん。縦に伸ばす）
 const MASCOT_BODY_SCALE = 1.2;    // 胴体の高さの倍率（ドット絵の胴体は 4 行。足と腕の太さは変えない）
@@ -101,13 +102,13 @@ const MASCOT_LEG = 0.06;          // 足の長さの増し分（立方体に対�
 const MASCOT_ARM = 2.6;           // 腕の長さ（ドット。胴体の横から出っ張る長さ。向きを回しても柱の上面から出ない長さにする）
 const MASCOT_YAW = 30;            // 正面を、カメラの方から左右どちらかへずらす角度（度。置くたびにランダムに向きを選ぶ）
 const MASCOT_BEVEL = 0.02;        // 胴体の辺の面取りの幅（下の辺と、足・腕・目は面取りしない）
-const MASCOT_TINT = [0.52, 0.19, 0.13];  // 木の色の倍率（線形。レッドシダーのような、赤みのある深い茶色）
+const MASCOT_TINT = [0.52, 0.19, 0.13];  // 木材のシーンの色の倍率（線形。レッドシダーのような、赤みのある深い茶色）。ほかのシーンは SCENES
 const MASCOT_BELOW = 0.8;         // 置く柱の、画面の下端から外への最小の距離（柱の上面の中心。マスコットの頭が置いたときに見えないように、高さの分だけ外にする）
 const MASCOT_SIDE_MARGIN = 1;     // 置く柱を、画面の左右の端からこれだけ内側にする
 const MASCOT_EXIT_ROWS = 3;       // 柱が、画面の上端からこれだけ上の段（行）まで出たら消す
-const MASCOT_EYE = 0.06;          // 目の明るさ（黒い木の埋め込み）
+const MASCOT_EYE = 0.06;          // 目の明るさ（黒い材の埋め込み）
 
-// 木（無塗装のブナ材）。木目は 1 つの立方体ぶんの 3 次元テクスチャに描き、立方体ごとに向きとずれを変えて貼る
+// 木材のシーン（無塗装のブナ材）。木目は 1 つの立方体ぶんの 3 次元テクスチャに描き、立方体ごとに向きとずれを変えて貼る
 const WOOD_RGB = [226, 190, 150]; // 地の色（sRGB）
 const WOOD_RES = { nx: 64, ny: 128, nz: 128 };   // テクスチャの大きさ（x が木の繊維の向き）
 const WOOD_SEED = 7;              // 木目の乱数の種
@@ -126,6 +127,37 @@ const BEVEL_AO = 0.14;            // 面取りの暗さ
 const CONTACT_COLOR = [0.25, 0.18, 0.12];   // 柱が接する所の陰の色（線形）
 const CONTACT_ALPHA = 0.5;        // その濃さ
 const CONTACT_WIDTH = 0.22;       // その幅
+
+// 石（白大理石）と金属（ブラスト仕上げのアルミ）。立方体ごとの模様は、木と同じ 3 次元テクスチャで引く
+const STONE_RGB = [212, 206, 194];   // 白大理石の地の色（sRGB）
+const STONE_RES = 80;             // テクスチャの大きさ（一辺）
+const STONE_SEED = 11;            // 脈の乱数の種
+const STONE_VEIN_FREQ = 2.2;      // 脈の筋の細かさ（1 マスあたりの本数）
+const STONE_TURB = 0.9;           // 脈のうねり（乱れの大きさ）
+const STONE_VEIN_DARK = 0.6;      // 脈の暗さ
+const METAL_RGB = [196, 200, 206];   // アルミの地の色（sRGB）
+const METAL_RES = 32;             // テクスチャの大きさ（一辺。繰り返して引く）
+const METAL_GRAIN = 0.05;         // ブラストの粒の濃淡
+const METAL_GRAIN_SCALE = 3;      // 粒の細かさ（テクスチャを立方体の中で繰り返す回数）
+const TOOL_MARK_FREQ = 113;       // 溝・くぼみの刃物跡の細かさ（同心円の間隔の逆数、1 マスあたり）
+const TOOL_MARK_STRENGTH = 0.1;   // 刃物跡の濃淡
+const MILL_FREQ = 60;             // 上面の円弧状の刃跡の細かさ（1 マスあたり 60 / 2π 本）
+const LATHE_FREQ = 90;            // 旋盤挽きの線の細かさ（高さ 1 マスあたり 90 / 2π 本）
+const FEED_FREQ = 90;             // 側面の平行な筋の細かさ（同上）
+
+// 石の玉（青・緑・橙・水色・紫・赤。ラピスラズリ・マラカイト・カーネリアン・アマゾナイト・アメジスト・ジャスパー）。縁が透けて見える玉は、縁を明るくする
+const STONE_COLORS = ['#1c3f9e', '#1f8f52', '#d9642a', '#4fc3c0', '#8a52c8', '#b8302e'];
+const STONE_GLOW = [2, 4];        // 縁を少し明るくする玉（カーネリアン、アメジスト）
+const STONE_PALE = 0.55;          // マーブルの玉の地（石の色を白へ寄せる割合。大きいほど白い）
+const STONE_DEEP = 0.55;          // 筋の色（石の色に掛ける倍率。小さいほど暗い）
+const STONE_WARP = 1.2;           // 筋のうねり（ノイズでゆがめる量）
+const STONE_STREAKS = 3.2;        // 筋の本数の目安（大きいほど細かい）
+const STONE_STREAK_EDGE = [0.3, 0.7];   // 筋の太さ（等値線の値がこの範囲で、地から筋の色へ変わる）
+const STONE_ROUGHNESS = 0.16;     // 磨いた石の玉の粗さ
+const STONE_MARBLE_ENV = 0.7;     // 石の玉の映り込みの強さ
+const METAL_MARBLE_ROUGHNESS = 0.34;   // アルマイトの玉の粗さ
+const METAL_MARBLE_ENV = 1.14;    // 金属の玉の映り込みの強さ
+const TITANIUM = ['#e0b030', '#8a3cb8', '#2f62e0'];   // 焼き色チタンの帯の色（金→紫→青）
 
 // ビー玉
 const MARBLE_RADIUS = 0.17;
@@ -179,6 +211,29 @@ const VIGNETTE = 0.35;            // 周辺減光の強さ（画面の隅で暗�
 const EXPOSURE = 1.0;             // トーンマッピングの露出
 const REBASE_STEP = 256;          // 座標の原点を戻す間隔（マス）
 
+// シーン（積み木の材質）。起動時はランダムに選び、シーン切替のたびに、木材 → 石材 → 金属 の順に次へ進む。積み木のほか、飾りの木・マスコット（accent）、環境、玉の影も組で変わる
+// shadowEnv: 太陽の影の中の映り込みの割合、reflectGrad: 面の中の反射のグラデーション、flat: 立方体ごとにテクスチャを回さない、shift: 繊維の向きにずらす、endGrain: 木口の暗さ、scale: テクスチャを繰り返す回数、tool: 刃物跡
+// accent: 飾りの木とマスコットの共通の質感（invert: 白黒を反転する。黒大理石の白い脈）。tree・mascot: それぞれの色の倍率 tint（線形）と、上書きする値（lathe: 旋盤挽きの線、veinContrast: 模様の明暗差の倍率）。shadow: 玉の影（alpha: 濃さ、dark: 玉の色を暗くする割合、
+//   caustic: 明るみの強さ、shift: 明るみを影の中心から光と反対へずらす量（負なら光の側）、size: 明るみの大きさ）
+const SCENES = [
+  { name: 'Wood', rgb: WOOD_RGB, makeTexture: buildWoodTexture, flat: false, shift: true, endGrain: END_GRAIN_DARK, scale: 1, tool: 0,
+    roughness: WOOD_ROUGHNESS, metalness: 0, env: WOOD_ENV,
+    accent: { invert: 0, roughness: WOOD_ROUGHNESS, metalness: 0, env: WOOD_ENV }, tree: { tint: TREE_TINT }, mascot: { tint: MASCOT_TINT },
+    sky: ENV_SKY, ground: ENV_GROUND, contact: [CONTACT_COLOR, CONTACT_ALPHA], marble: 'glass',
+    shadow: { alpha: MARBLE_SHADOW_ALPHA, dark: 0.55, caustic: CAUSTIC, shift: 0.35, size: 1 } },
+  { name: 'Stone', rgb: STONE_RGB, makeTexture: buildStoneTexture, flat: false, shift: false, endGrain: 0, scale: 1, tool: 0,
+    roughness: 0.3, metalness: 0, env: 0.5,
+    accent: { invert: 1, roughness: 0.3, metalness: 0, env: 0.5 }, tree: { tint: [0.65, 0.65, 0.68] },
+    mascot: { tint: [1.8, 0.3, 0.25], veinContrast: 0.4, texGround: 0.15 },
+    sky: [0.95, 0.95, 0.96], ground: [0.8, 0.78, 0.74], contact: [[0.3, 0.3, 0.32], 0.4], marble: 'stone',
+    shadow: { alpha: 0.72, dark: 0.8, caustic: 0, shift: 0, size: 1 } },
+  { name: 'Metal', rgb: METAL_RGB, makeTexture: buildMetalTexture, flat: true, shift: true, endGrain: 0, scale: METAL_GRAIN_SCALE, tool: 0.3,
+    roughness: 0.06, metalness: 1, env: 1.4, shadowEnv: 0.45, reflectGrad: 0.35,
+    accent: { invert: 0, roughness: 0.06, metalness: 1, env: 1.4, tool: 0, reflectGrad: 0 }, tree: { tint: [1.25, 0.95, 0.38], lathe: 1.5 }, mascot: { tint: [1.6, 0.63, 0.43] },
+    sky: [0.92, 0.92, 0.96], ground: [0.17, 0.18, 0.21], band: 1.6, contact: [[0.25, 0.25, 0.28], 0.45], marble: 'metal',
+    shadow: { alpha: 0.72, dark: 0.8, caustic: 0.25, shift: -1, size: 1.8 } },
+];
+
 // ---- ユーティリティ ----
 const DEG = Math.PI / 180;
 const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];   // 側面の向き（0: +x、1: +z、2: −x、3: −z）
@@ -226,26 +281,76 @@ const SCENE_COPY_SHADER = {
       gl_FragColor = vec4(c * (1.0 - vignette * smoothstep(0.1, 0.75, dot(d, d) * 2.0)), 1.0);
     }`,
 };
-// 木の素材（標準の素材）に、木目の 3 次元テクスチャを足す。woodRot（四元数）で立方体の中の位置をテクスチャの向きへ回し、
-// woodOff だけ繊維の向きにずらして引く。木口（繊維の向きに面した面）は少し暗くする
-const WOOD_VERTEX_PARS = `
-attribute vec4 woodRot;
-attribute float woodOff;
-varying vec3 vWood;
-varying vec3 vWoodNormal;
+// 積み木の素材（標準の素材）に、模様の 3 次元テクスチャ（木目・脈・粒）を足す。blockRot（四元数）で立方体の中の位置を
+// テクスチャの向きへ回し、blockOff だけ x の向きにずらして引く（金属では、立方体ごとの値 vBlockSeed にも使う）。木口（繊維の向きに面した面）は少し暗くする
+const BLOCK_VERTEX_PARS = `
+attribute vec4 blockRot;
+attribute float blockOff;
+varying vec3 vBlockPos;
+varying float vBlockSeed;
+varying vec3 vObjPos;
+varying vec3 vBlockNormal;
 vec3 rotateByQuat(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }`;
-const WOOD_VERTEX = `
-vWood = rotateByQuat(woodRot, position) + 0.5 + vec3(woodOff, 0.0, 0.0);
-vWoodNormal = rotateByQuat(woodRot, objectNormal);`;
-const WOOD_FRAGMENT_PARS = `
-uniform highp sampler3D woodTex;
+const BLOCK_VERTEX = `
+vBlockSeed = blockOff;
+vObjPos = position;
+vBlockPos = rotateByQuat(blockRot, position) + 0.5 + vec3(blockOff, 0.0, 0.0);
+vBlockNormal = rotateByQuat(blockRot, objectNormal);`;
+const BLOCK_FRAGMENT_PARS = `
+uniform highp sampler3D blockTex;
 uniform float endGrainDark;
-varying vec3 vWood;
-varying vec3 vWoodNormal;`;
-const WOOD_FRAGMENT = `
-vec4 wood = texture(woodTex, vWood);
-float endGrain = abs(normalize(vWoodNormal).x);
-diffuseColor.rgb *= wood.rgb * (1.0 - endGrainDark * endGrain * endGrain);`;
+uniform float texScale;
+uniform float invertTex;
+uniform float toolMark;
+uniform float shadowEnv;
+uniform float reflectGrad;
+uniform float latheMark;
+uniform float veinContrast;
+uniform float texGround;
+varying vec3 vObjPos;
+varying vec3 vBlockPos;
+varying float vBlockSeed;
+varying vec3 vBlockNormal;`;
+// 太陽の影の中では、環境の映り込みも暗くする（金属は拡散光が無く、映り込みは影に関係なく明るいままで、影が弱く見えるため）。
+// shadowEnv は影の中の映り込みの割合（1 なら暗くしない）。光に背を向けた面は、影の判定が常に影になるので、対象にしない
+const SUN_SHADOW_ENV = `
+#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+if ( shadowEnv < 1.0 && receiveShadow ) {
+  float sunShadow = getShadow( directionalShadowMap[ 0 ], directionalLightShadows[ 0 ].shadowMapSize, directionalLightShadows[ 0 ].shadowBias, directionalLightShadows[ 0 ].shadowRadius, vDirectionalShadowCoord[ 0 ] );
+  reflectedLight.indirectSpecular *= mix( 1.0, mix( shadowEnv, 1.0, sunShadow ), smoothstep( 0.0, 0.15, dot( geometryNormal, directionalLights[ 0 ].direction ) ) );
+}
+#endif`;
+// invertTex: 明るさを反転して濃くする（黒大理石では、白地が黒に、灰色の脈が明るい脈になる）。veinContrast: 模様の明暗差の倍率（1 ならそのまま、
+// 0 なら texGround の一様な色。赤大理石の脈と地の明暗差を控えめにする）。latheMark: 旋盤挽きの、軸のまわりを回る細い線（飾りの木の真鍮）。
+// toolMark: 金属の削り出しの跡。溝・くぼみの面（外面より下で、上を向く）には、立方体の中心か角を中心にした同心円の刃物跡、
+// 外面の上面には、平面フライスの円弧状の刃跡（中心は立方体の外で、立方体ごとに変える）、側面には、送りの向きの平行な筋。
+// 立方体ごとの値 vBlockSeed（0..1）で変える。映り込みの変化は、色と粗さの濃淡で近似する
+const BLOCK_FRAGMENT = `
+vec4 texel = texture(blockTex, vBlockPos * texScale);
+if (invertTex > 0.0) texel.rgb = mix(texel.rgb, vec3(pow(1.0 - dot(texel.rgb, vec3(0.3333)), 2.0)), invertTex);
+if (veinContrast < 1.0) texel.rgb = mix(vec3(texGround), texel.rgb, veinContrast);
+vec3 blockN = normalize(vBlockNormal);
+float endGrain = abs(blockN.x);
+float toolWave = 0.0;
+float reflectWave = 0.0;
+if (toolMark > 0.0 || latheMark > 0.0 || reflectGrad != 0.0) {
+  vec3 blockP = vBlockPos - 0.5 - vec3(vBlockSeed, 0.0, 0.0);
+  float seedAngle = vBlockSeed * 6.2832;
+  if (toolMark > 0.0) {
+    float toolR = length(blockP.xz);
+    float toolCut = smoothstep(0.455, 0.43, blockP.y) * step(0.3, blockN.y) * sin((toolR < 0.36 ? toolR : length(0.5 - abs(blockP.xz))) * TOOL_MARK_FREQ);
+    float millArc = step(0.95, blockN.y) * step(0.495, blockP.y) * sin(length(blockP.xz - 1.6 * vec2(cos(seedAngle), sin(seedAngle))) * MILL_FREQ + vBlockSeed * 50.0);
+    float feedLine = step(abs(blockN.y), 0.05) * sin((blockP.y + 0.02 * sin(9.0 * (blockP.x + blockP.z) + vBlockSeed * 30.0)) * FEED_FREQ);
+    toolWave = toolMark * (toolCut + millArc + feedLine);
+  }
+  if (latheMark > 0.0) toolWave += latheMark * sin(vObjPos.y * LATHE_FREQ);
+  // reflectGrad: 面の中の反射のグラデーション（金属で、ゆがみのある実物のように、面の中で映り込みの明るさが流れる。立方体ごとに向きを変える）
+  if (reflectGrad != 0.0) {
+    float reflectTop = step(0.95, blockN.y);
+    reflectWave = reflectGrad * mix(blockP.y * 1.6 + (blockP.x + blockP.z) * 0.8, dot(blockP.xz, vec2(cos(seedAngle), sin(seedAngle))) * 1.8, reflectTop);
+  }
+}
+diffuseColor.rgb *= texel.rgb * (1.0 - endGrainDark * endGrain * endGrain) * (1.0 + TOOL_MARK_STRENGTH * toolWave) * (1.0 + reflectWave);`;
 
 // ---- three.js 初期化 ----
 // シーンは別の描画先に描くので、画面側のアンチエイリアスは効かない。無駄なので切る
@@ -300,15 +405,16 @@ sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 80;
 scene.add(sun, sun.target);
 
-// 映り込みの環境。上半分が明るい部屋のような淡い灰色、下半分が木の色で、明かりの所が明るい（まわりの積み木は映さない）
-function buildEnvironment() {
+// 映り込みの環境。上半分が明るい部屋のような淡い灰色、下半分が積み木の材質の色で、明かりの所が明るい（まわりの積み木は映さない）。
+// band: 地平の明るい帯（金属で、溝や面取りに光る筋を映す）。材質を替えるたびに作り直す
+function buildEnvironment(sky, ground, band = 0) {
   const env = new THREE.Scene();
   const sphere = new THREE.SphereGeometry(50, 48, 24);
   const colors = [];
   const pos = sphere.attributes.position;
   for (let k = 0; k < pos.count; k++) {
     const t = smooth(-0.15, 0.25, pos.getY(k) / 50);
-    colors.push(...ENV_GROUND.map((g, c) => lerp(g, ENV_SKY[c], t)));
+    colors.push(...ground.map((g, c) => lerp(g, sky[c], t) + band * Math.exp(-(((pos.getY(k) / 50 + 0.05) / 0.12) ** 2))));
   }
   sphere.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   env.add(new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
@@ -318,11 +424,11 @@ function buildEnvironment() {
   lamp.lookAt(0, 0, 0);
   env.add(lamp);
   const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment?.dispose();
   scene.environment = pmrem.fromScene(env, 0.02).texture;
   pmrem.dispose();
   env.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
 }
-buildEnvironment();
 
 // ---- 状態 ----
 let time = 0;                // 経過秒
@@ -330,8 +436,10 @@ let marbleCount = BASE_COUNT;   // 画面の中のビー玉の数（強度。四
 let camK = 0;                // 見る点の、格子の対角に沿った位置（マス。見る点は (camK, −camK, camK) の近く）
 const origin = new THREE.Vector3();   // 描く座標の原点（世界の座標から引く）。ときどき REBASE_STEP ずつ進める
 let bandQ = 0;               // 積み木を作る横の範囲（|q| ≤ bandQ）
+let sceneIndex = 0;          // 今のシーン（SCENES の番号。積み木の材質）
+let mat = SCENES[0];         // 今のシーン
 
-// ---- 木目 ----
+// ---- 積み木の模様 ----
 // 1 つの立方体ぶんの木目（線形の色と粗さ）。年輪の中心は立方体の外の遠くにあり、年輪は大きな弧の一部として見える。
 // 繊維の向き（x）には周期的につながるので、立方体ごとに x へずらして貼れる
 function buildWoodTexture() {
@@ -386,31 +494,85 @@ function buildWoodTexture() {
       }
     }
   }
+  return texture3D(data, nx, ny, nz, false);
+}
+// 3 次元テクスチャ（色と粗さ）。repeat なら 3 方向とも繰り返す（木は繊維の向き x だけ繰り返す）
+function texture3D(data, nx, ny, nz, repeat) {
   const texture = new THREE.Data3DTexture(data, nx, ny, nz);
   texture.format = THREE.RGBAFormat;
   texture.type = THREE.UnsignedByteType;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = texture.wrapR = THREE.ClampToEdgeWrapping;
+  texture.wrapT = texture.wrapR = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   texture.generateMipmaps = true;
   texture.needsUpdate = true;
   return texture;
 }
+// 3 次元のなめらかなノイズ（−1..1）。period が正なら、その周期で繰り返す
+function noise3(x, y, z, salt = 0, period = 0) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const fx = x - xi, fy = y - yi, fz = z - zi;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
+  const w = (v) => (period ? ((v % period) + period) % period : v);
+  const h = (a, b, c) => hash3(w(a), w(b) * 3 + salt, w(c)) * 2 - 1;
+  const at = (c) => lerp(lerp(h(xi, yi, c), h(xi + 1, yi, c), sx), lerp(h(xi, yi + 1, c), h(xi + 1, yi + 1, c), sx), sy);
+  return lerp(at(zi), at(zi + 1), sz);
+}
+// 白大理石: 立方体ぶんの 3 次元テクスチャ。ある向きに並んだ細い灰色の脈を、乱れ（うねり）でゆがめる
+function buildStoneTexture() {
+  const rnd = seededRandom(STONE_SEED), n = STONE_RES;
+  const d = [rnd() - 0.5, rnd() - 0.5, rnd() - 0.5], dl = Math.hypot(...d), phase = rnd() * 10;
+  const base = STONE_RGB.map((c) => (c / 255) ** 2.2);
+  const data = new Uint8Array(n ** 3 * 4);
+  for (let iz = 0; iz < n; iz++) for (let iy = 0; iy < n; iy++) for (let ix = 0; ix < n; ix++) {
+    const x = (ix + 0.5) / n, y = (iy + 0.5) / n, z = (iz + 0.5) / n;
+    let turb = 0;
+    for (let o = 0, f = 3, a = 1; o < 3; o++, f *= 2, a /= 2) turb += a * Math.abs(noise3(x * f, y * f, z * f, o));
+    const t = (x * d[0] + y * d[1] + z * d[2]) / dl * STONE_VEIN_FREQ + STONE_TURB * turb + phase;
+    const vein = (1 - Math.abs(Math.sin(Math.PI * t))) ** 7;   // 細い線
+    const cloud = 0.03 * noise3(x * 5, y * 5, z * 5, 7);
+    const k = 1 - STONE_VEIN_DARK * vein + cloud;
+    const o = (ix + n * (iy + n * iz)) * 4;
+    for (let c = 0; c < 3; c++) data[o + c] = Math.min(255, Math.round(base[c] * k * 255));
+    data[o + 3] = 128;
+  }
+  return texture3D(data, n, n, n, false);
+}
+// ブラスト仕上げのアルミ: ごく細かな粒の濃淡と粗さのばらつき（繰り返して使う）
+function buildMetalTexture() {
+  const n = METAL_RES, base = METAL_RGB.map((c) => (c / 255) ** 2.2);
+  const data = new Uint8Array(n ** 3 * 4);
+  for (let iz = 0; iz < n; iz++) for (let iy = 0; iy < n; iy++) for (let ix = 0; ix < n; ix++) {
+    const g = noise3(ix / 4, iy / 4, iz / 4, 0, n / 4) + 0.5 * noise3(ix / 2, iy / 2, iz / 2, 1, n / 2);
+    const o = (ix + n * (iy + n * iz)) * 4;
+    for (let c = 0; c < 3; c++) data[o + c] = Math.min(255, Math.round(base[c] * (1 + METAL_GRAIN * g) * 255));
+    data[o + 3] = Math.round(128 * (1 + 0.25 * g));
+  }
+  return texture3D(data, n, n, n, true);
+}
 
-const woodTexture = buildWoodTexture();
-const woodMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: WOOD_ROUGHNESS, envMapIntensity: WOOD_ENV });
-woodMaterial.onBeforeCompile = (shader) => {
-  shader.uniforms.woodTex = { value: woodTexture };
-  shader.uniforms.endGrainDark = { value: END_GRAIN_DARK };
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', `#include <common>\n${WOOD_VERTEX_PARS}`)
-    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WOOD_VERTEX}`);
-  shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>\n${WOOD_FRAGMENT_PARS}`)
-    .replace('#include <map_fragment>', WOOD_FRAGMENT)
-    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= wood.a * 2.0;');
-};
+// 積み木・飾りの木の素材。テクスチャと質感は材質を替えるたびに差し替える（applyScene）
+function blockMaterial() {
+  const uniforms = { blockTex: { value: null }, endGrainDark: { value: 0 }, texScale: { value: 1 }, invertTex: { value: 0 }, toolMark: { value: 0 }, shadowEnv: { value: 1 }, reflectGrad: { value: 0 }, latheMark: { value: 0 }, veinContrast: { value: 1 }, texGround: { value: 0 } };
+  const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+  material.userData.uniforms = uniforms;
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n${BLOCK_VERTEX_PARS}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${BLOCK_VERTEX}`);
+    shader.fragmentShader = `#define TOOL_MARK_FREQ ${TOOL_MARK_FREQ.toFixed(1)}\n#define TOOL_MARK_STRENGTH ${TOOL_MARK_STRENGTH.toFixed(3)}\n#define MILL_FREQ ${MILL_FREQ.toFixed(1)}\n#define FEED_FREQ ${FEED_FREQ.toFixed(1)}\n#define LATHE_FREQ ${LATHE_FREQ.toFixed(1)}\n` + shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${BLOCK_FRAGMENT_PARS}`)
+      .replace('#include <map_fragment>', BLOCK_FRAGMENT)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= texel.a * 2.0 * (1.0 + 0.3 * toolWave);')
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${SUN_SHADOW_ENV}`);
+  };
+  return material;
+}
+const cubeMaterial = blockMaterial();     // 立方体
+const treeMaterial = blockMaterial();     // 飾りの木
+const mascotMaterial = blockMaterial();   // マスコット
 
 // ---- 立方体の形 ----
 // 局所座標は中心が原点、一辺 1（−0.5〜0.5）。上面の模様は基準の向きで決め、rot（0〜3）だけ 90° ずつ回す
@@ -772,7 +934,7 @@ function buildTree(type) {
   return makeGeometry(positions, normals, colors, indices);
 }
 
-// 木のマスコット。ドット絵（tube.html と同じ形: 胴体・足 4 本・腕 2 本・目 2 つ）の箱を、辺を面取りして組む。
+// マスコット。ドット絵（tube.html と同じ形: 胴体・足 4 本・腕 2 本・目 2 つ）の箱を、辺を面取りして組む。
 // 局所座標は柱の上面の中心が原点で、y が上。正面は +x +z の向き（カメラの方）から、dir（-1 か 1）の側へ MASCOT_YAW だけずらす
 function buildMascot(dir) {
   const [sx, sy] = MASCOT_DOT, positions = [], normals = [], colors = [], indices = [];
@@ -1272,9 +1434,9 @@ function pieceMesh(key, need) {
   const g = new THREE.BufferGeometry();
   g.setIndex(base.index);
   for (const name of ['position', 'normal', 'color']) g.setAttribute(name, base.getAttribute(name));
-  g.setAttribute('woodRot', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
-  g.setAttribute('woodOff', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1));
-  const mesh = new THREE.InstancedMesh(g, woodMaterial, cap);
+  g.setAttribute('blockRot', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
+  g.setAttribute('blockOff', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1));
+  const mesh = new THREE.InstancedMesh(g, key.startsWith('mascot') ? mascotMaterial : key.startsWith('tree') ? treeMaterial : cubeMaterial, cap);
   mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
   mesh.castShadow = mesh.receiveShadow = true;
   mesh.frustumCulled = false;
@@ -1284,8 +1446,8 @@ function pieceMesh(key, need) {
   return mesh;
 }
 
-// 立方体ごとの木目の向き・ずれと色味（座標から決める）
-const woodQuats = (() => {
+// 立方体ごとの模様の向き・ずれと色味（座標から決める）。金属は向きを回さない（flat）
+const blockQuats = (() => {
   const align = [new THREE.Quaternion(),   // 繊維が x
     new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2),    // z
     new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)];  // y
@@ -1295,12 +1457,12 @@ const woodQuats = (() => {
   }
   return list;
 })();
-function woodParams(i, k, j) {
+function blockParams(i, k, j) {
   const h = (salt) => hash3(i * 7 + salt, k * 13 - salt, j * 5 + salt * 3);
   const axis = h(1) < 0.45 ? 0 : h(1) < 0.9 ? 1 : 2;   // 繊維の向き（x・z が多く、y はまれ）
-  const quat = woodQuats[axis * 4 + Math.floor(h(2) * 4)];
+  const quat = blockQuats[axis * 4 + Math.floor(h(2) * 4)];
   const bright = 1 + (h(3) - 0.5) * 2 * WOOD_TINT, warm = (h(4) - 0.5) * 2 * WOOD_TINT;
-  return { quat, off: h(5), tint: [bright * (1 + warm * 0.5), bright, bright * (1 - warm)] };
+  return { quat: mat.flat ? blockQuats[0] : quat, off: mat.shift ? h(5) : 0, tint: [bright * (1 + warm * 0.5), bright, bright * (1 - warm)] };
 }
 
 function buildChunk(index) {
@@ -1319,13 +1481,13 @@ function buildChunk(index) {
         const top = k === H - 1 && c.piece ? c.piece : null;
         const bridge = k === H - 1 ? bridgeAt(c) : null;
         cubes.push({ key: `${top ? top.top : 'plain'}:${top ? top.rot : 0}:${open}:${bridge ? bridge.junction + 1 : 0}`, i, k, j,
-          ...woodParams(i, k, j), ...bridge?.wood });
+          ...blockParams(i, k, j), ...bridge?.params });
       }
       if (treeAt(c)) {
         // 繊維を縦にして、縦に長い木でもテクスチャの繰り返す向き（繊維の向き）で引く
-        const w = woodParams(i, H, j), type = Math.floor(hash3(i * 5, H, j + 7) * 3);
-        cubes.push({ key: `tree:${type}`, i, k: H - 0.5, j, ...w, quat: woodQuats[8 + Math.floor(hash3(i, H, j * 3 + 1) * 4)],
-          tint: w.tint.map((v, n) => v * TREE_TINT[n]) });
+        const w = blockParams(i, H, j), type = Math.floor(hash3(i * 5, H, j + 7) * 3);
+        cubes.push({ key: `tree:${type}`, i, k: H - 0.5, j, ...w, quat: blockQuats[8 + Math.floor(hash3(i, H, j * 3 + 1) * 4)],
+          tint: w.tint.map((v, n) => v * mat.tree.tint[n]) });
       }
       // 柱が接する所の陰: 隣の柱が高ければ、この柱の上面の縁と、隣の柱の見える側面の付け根
       for (let s = 0; s < 4; s++) {
@@ -1366,8 +1528,8 @@ function bridgeAt(c) {
     const [dx, dz] = DIRS[s], b = cells.get(cellKey(c.i - dx, c.j - dz));
     const a = bridgeStart(c, s) ? c : b && bridgeStart(b, s) ? b : null;
     if (!a) continue;
-    const w = woodParams(a.i, a.h, a.j);
-    return { junction: a === c ? s : opposite(s), wood: { ...w, quat: woodQuats[s * 4 + Math.floor(hash3(a.i, a.h, a.j) * 4)] } };
+    const w = blockParams(a.i, a.h, a.j);
+    return { junction: a === c ? s : opposite(s), params: { ...w, quat: blockQuats[s * 4 + Math.floor(hash3(a.i, a.h, a.j) * 4)] } };
   }
   return null;
 }
@@ -1428,7 +1590,7 @@ function rebuildInstances() {
   const m = new THREE.Matrix4();
   for (const [key, list] of groups) {
     const mesh = pieceMesh(key, list.length);
-    const rot = mesh.geometry.attributes.woodRot, off = mesh.geometry.attributes.woodOff;
+    const rot = mesh.geometry.attributes.blockRot, off = mesh.geometry.attributes.blockOff;
     list.forEach((c, n) => {
       m.makeTranslation(c.i + 0.5 - origin.x, c.k + 0.5 - origin.y, c.j + 0.5 - origin.z);
       mesh.setMatrixAt(n, m);
@@ -1509,6 +1671,72 @@ const glassMaterial = (color, attenuationDistance, opacity) => {
 };
 const clearGlass = glassMaterial(new THREE.Color(1, 1, 1), Infinity, CLEAR_GLASS_OPACITY);
 const colorGlass = GLASS_COLORS.map((c) => glassMaterial(new THREE.Color(c), GLASS_ATTENUATION, 1));
+// 石と金属の玉は不透明で、屈折せず、環境を反射で引く（標準の素材）。回る模様の玉は、球の縦（v）に並んだ縞の絵を貼り、
+// 玉ごとにランダムに傾けて転がすと縞が回る。素材は最初に使うときに作り、使い回す
+const sharedMarbleMaterials = new Set([clearGlass, ...colorGlass]);
+function stripeTexture(draw) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 4;
+  canvas.height = 256;
+  draw(canvas.getContext('2d'), 256);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+// 乳白のマーブルの玉の絵（経度・緯度の絵。球面の 3 次元ノイズから作るので、継ぎ目が出ない）。ゆがめたノイズの等値線が、白に寄せた地へ、
+// 濃い色の太い筋になって流れる。玉は小さいので、筋は太く、うねりも大きくする
+function marbleTexture(color) {
+  const W = 256, H = 128, canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const g = canvas.getContext('2d'), image = g.createImageData(W, H);
+  const base = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+  const pale = base.map((v) => lerp(v, 240, STONE_PALE)), deep = base.map((v) => v * STONE_DEEP);
+  const n = (d, f, salt) => noise3(d[0] * f + salt, d[1] * f, d[2] * f);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const lon = (x + 0.5) / W * TAU, lat = (0.5 - (y + 0.5) / H) * Math.PI;
+      const d = [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
+      const w = [d[0] + STONE_WARP * n(d, 1.3, 9), d[1] + STONE_WARP * n(d, 1.3, 21), d[2] + STONE_WARP * n(d, 1.3, 33)];
+      const v = Math.abs(Math.sin(STONE_STREAKS * (n(w, 1.2, 0) * 0.7 + n(w, 2.4, 11) * 0.3)));
+      const t = smooth(STONE_STREAK_EDGE[0], STONE_STREAK_EDGE[1], v);
+      image.data.set([...pale.map((c, i) => Math.round(lerp(c, deep[i], t))), 255], (y * W + x) * 4);
+    }
+  }
+  g.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+const marbleSets = {};
+function marbleSet(kind) {
+  if (marbleSets[kind]) return marbleSets[kind];
+  const plain = [], pattern = [];
+  if (kind === 'stone') {
+    STONE_COLORS.forEach((color, k) => {
+      const glow = STONE_GLOW.includes(k), c = new THREE.Color(color);
+      plain.push(new (glow ? THREE.MeshPhysicalMaterial : THREE.MeshStandardMaterial)({
+        color, roughness: STONE_ROUGHNESS, envMapIntensity: STONE_MARBLE_ENV,
+        ...(glow && { sheen: 1, sheenColor: c.clone().lerp(new THREE.Color(1, 1, 1), 0.5), sheenRoughness: 0.4 }) }));
+      // 回る模様: 乳白のマーブル（白に寄せた地に、濃い色の筋が流れる）
+      pattern.push(new THREE.MeshStandardMaterial({ roughness: STONE_ROUGHNESS, envMapIntensity: STONE_MARBLE_ENV, map: marbleTexture(color) }));
+    });
+  } else {
+    GLASS_COLORS.forEach((color, k) => {
+      plain.push(new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: METAL_MARBLE_ROUGHNESS, envMapIntensity: METAL_MARBLE_ENV }));
+      // 焼き色チタン: 金 → 紫 → 青の帯を何回か繰り返す。玉ごとに、帯の位置と幅を変える
+      const rnd = seededRandom(200 + k);
+      pattern.push(new THREE.MeshStandardMaterial({ metalness: 0.9, roughness: 0.3, envMapIntensity: METAL_MARBLE_ENV, map: stripeTexture((g, h) => {
+        const gradient = g.createLinearGradient(0, 0, 0, h), N = (2 + Math.floor(rnd() * 2)) * TITANIUM.length, start = Math.floor(rnd() * TITANIUM.length);
+        for (let i = 0; i < N; i++) gradient.addColorStop(i / (N - 1), TITANIUM[(i + start) % TITANIUM.length]);
+        g.fillStyle = gradient;
+        g.fillRect(0, 0, 4, h);
+      }) }));
+    });
+  }
+  for (const m of [...plain, ...pattern]) sharedMarbleMaterials.add(m);
+  return (marbleSets[kind] = { plain, pattern });
+}
 const shadowAlpha = gradientTexture(32, (u, v) => 1 - smooth(0.25, 1, Math.hypot(u - 0.5, v - 0.5) * 2));
 const causticAlpha = gradientTexture(32, (u, v) => (1 - smooth(0, 1, Math.hypot(u - 0.5, v - 0.5) * 2)) ** 2);
 const decalGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
@@ -1517,7 +1745,11 @@ const LIGHT_FLAT = new THREE.Vector2(LIGHT_DIR.x, LIGHT_DIR.z).normalize();
 function createMarble(path, seg, s) {
   const group = new THREE.Group();
   let tint;
-  if (Math.random() < RIBBON_CHANCE) {
+  if (mat.marble !== 'glass') {
+    const set = marbleSet(mat.marble), k = randInt(GLASS_COLORS.length);
+    group.add(new THREE.Mesh(marbleGeometry, (Math.random() < RIBBON_CHANCE ? set.pattern : set.plain)[k]));
+    tint = new THREE.Color(mat.marble === 'stone' ? STONE_COLORS[k] : GLASS_COLORS[k]);
+  } else if (Math.random() < RIBBON_CHANCE) {
     group.add(Object.assign(new THREE.Mesh(marbleGeometry, clearGlass), { renderOrder: 1 }));
     const colors = pick(RIBBON_COLORS);
     colors.forEach((color, b) => {
@@ -1533,16 +1765,21 @@ function createMarble(path, seg, s) {
   }
   group.quaternion.setFromAxisAngle(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize(), rand(0, TAU));
   scene.add(group);
-  // 影はガラスの色を帯び、中ほどに明かりが集まる
-  const shadowColor = tint.clone().lerp(new THREE.Color(0, 0, 0), 0.55);
-  const shadow = new THREE.Mesh(decalGeometry, multiplyMaterial([shadowColor.r, shadowColor.g, shadowColor.b], shadowAlpha, MARBLE_SHADOW_ALPHA));
-  const caustic = new THREE.Mesh(decalGeometry, new THREE.MeshBasicMaterial({
-    color: new THREE.Color(LIGHT_COLOR).lerp(tint, 0.6).multiplyScalar(CAUSTIC), alphaMap: causticAlpha, transparent: true,
+  // 影は玉の色を帯びる。木の玉（ガラス）は、中ほどに明かりが集まる。金属の玉は、光の側の縁に淡い明るみを置く。石の玉は集光が無い
+  const look = mat.shadow;
+  const shadowColor = tint.clone().lerp(new THREE.Color(0, 0, 0), look.dark);
+  const shadow = new THREE.Mesh(decalGeometry, multiplyMaterial([shadowColor.r, shadowColor.g, shadowColor.b], shadowAlpha, look.alpha));
+  const caustic = look.caustic ? new THREE.Mesh(decalGeometry, new THREE.MeshBasicMaterial({
+    color: new THREE.Color(LIGHT_COLOR).lerp(tint, 0.6).multiplyScalar(look.caustic), alphaMap: causticAlpha, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
-  }));
-  shadow.rotation.y = caustic.rotation.y = Math.atan2(-LIGHT_FLAT.y, LIGHT_FLAT.x);
-  scene.add(shadow, caustic);
-  const m = { path, seg, s, t: 0, v: SPEED_MIN * 1.1, v0: 0, pos: new THREE.Vector3(), group, shadow, caustic,
+  })) : null;
+  shadow.rotation.y = Math.atan2(-LIGHT_FLAT.y, LIGHT_FLAT.x);
+  scene.add(shadow);
+  if (caustic) {
+    caustic.rotation.y = shadow.rotation.y;
+    scene.add(caustic);
+  }
+  const m = { path, seg, s, t: 0, v: SPEED_MIN * 1.1, v0: 0, pos: new THREE.Vector3(), group, shadow, caustic, look,
     seen: false, age: 0, bounce: null, axis: new THREE.Vector3(1, 0, 0), spin: 0, done: false };
   if (path.segs[seg - path.base].type === 'fall') m.v0 = m.v;
   positionOf(m, m.pos);
@@ -1554,10 +1791,11 @@ function createMarble(path, seg, s) {
   return m;
 }
 function removeMarble(m) {
-  scene.remove(m.group, m.shadow, m.caustic);
-  m.group.traverse((o) => { if (o.isMesh && o.material !== clearGlass && !colorGlass.includes(o.material)) o.material.dispose(); });
+  scene.remove(m.group, m.shadow);
+  if (m.caustic) scene.remove(m.caustic);
+  m.group.traverse((o) => { if (o.isMesh && !sharedMarbleMaterials.has(o.material)) o.material.dispose(); });
   m.shadow.material.dispose();
-  m.caustic.material.dispose();
+  m.caustic?.material.dispose();
   marbles.splice(marbles.indexOf(m), 1);
   m.path.marbles.splice(m.path.marbles.indexOf(m), 1);
 }
@@ -1683,7 +1921,8 @@ function updateMarbles(dt) {
 function placeMarbleShadow(m) {
   const seg = m.path.segs[m.seg - m.path.base];
   const visible = !seg.hidden;
-  m.shadow.visible = m.caustic.visible = visible;
+  m.shadow.visible = visible;
+  if (m.caustic) m.caustic.visible = visible;
   if (!visible) return;
   const gy = seg.type === 'roll' ? seg.pts[0][1] - MARBLE_RADIUS * 0.6 : seg.b[1] - MARBLE_RADIUS * 0.6;
   const lift = Math.max(0, m.pos.y - MARBLE_RADIUS * 0.4 - gy);
@@ -1692,9 +1931,11 @@ function placeMarbleShadow(m) {
   const spread = 1 + lift * 0.8, fade = 1 / (1 + lift * 2.5);
   m.shadow.position.copy(tmpB);
   m.shadow.scale.set(2.4 * MARBLE_RADIUS / LIGHT_DIR.y * spread, 1, 2.4 * MARBLE_RADIUS * spread);
-  m.shadow.material.opacity = MARBLE_SHADOW_ALPHA * fade;
-  m.caustic.position.set(tmpB.x - LIGHT_FLAT.x * MARBLE_RADIUS * 0.35, tmpB.y + 0.001, tmpB.z - LIGHT_FLAT.y * MARBLE_RADIUS * 0.35);
-  m.caustic.scale.set(MARBLE_RADIUS * 1.1 * spread, 1, MARBLE_RADIUS * 0.8 * spread);
+  m.shadow.material.opacity = m.look.alpha * fade;
+  if (!m.caustic) return;
+  const { shift, size } = m.look;
+  m.caustic.position.set(tmpB.x - LIGHT_FLAT.x * MARBLE_RADIUS * shift, tmpB.y + 0.001, tmpB.z - LIGHT_FLAT.y * MARBLE_RADIUS * shift);
+  m.caustic.scale.set(MARBLE_RADIUS * 1.1 * size * spread, 1, MARBLE_RADIUS * 0.8 * size * spread);
   m.caustic.material.opacity = fade * fade;
 }
 
@@ -1735,7 +1976,7 @@ function spawnMarble() {
   if (o) createMarble(o.path, o.e.seg, o.e.s);
   return !!o;
 }
-// 起動時とリセットのときは、画面の中の溝に散らして置く
+// 起動時と、シーン切替・作り直しのときは、画面の中の溝に散らして置く
 function scatterMarbles(n) {
   const options = [];
   for (const path of paths) {
@@ -1834,9 +2075,38 @@ function updateWorld() {
 
 // 積み木を作る横の範囲（|q|）。画面の幅に BAND_MARGIN を足す
 const neededBand = () => Math.ceil((viewW / 2 + BAND_MARGIN) * Math.SQRT2);
-// リセット: 積み木と経路を作り直し、ビー玉を画面の中の溝に散らして置く。カメラは進み続ける。
-// 起動時と、画面が横に広がって作る範囲が足りなくなったときにも呼ぶ
-function reset() {
+// シーンの見た目に切り替える。積み木・飾りの木・マスコットの素材、環境、背景、柱の接する所の陰を、その材質のものにする
+const sceneNameEl = document.getElementById('scene-name');
+const matTextures = {};
+function applyScene(index) {
+  sceneIndex = (index + SCENES.length) % SCENES.length;
+  mat = SCENES[sceneIndex];
+  sceneNameEl.textContent = mat.name;
+  const texture = (matTextures[mat.name] ??= mat.makeTexture());
+  for (const [material, spec] of [[cubeMaterial, mat], [treeMaterial, { ...mat, ...mat.accent, ...mat.tree }], [mascotMaterial, { ...mat, ...mat.accent, ...mat.mascot }]]) {
+    const u = material.userData.uniforms;
+    u.blockTex.value = texture;
+    u.endGrainDark.value = spec.endGrain;
+    u.texScale.value = spec.scale;
+    u.invertTex.value = spec.invert ?? 0;
+    u.toolMark.value = spec.tool;
+    u.shadowEnv.value = spec.shadowEnv ?? 1;
+    u.reflectGrad.value = spec.reflectGrad ?? 0;
+    u.latheMark.value = spec.lathe ?? 0;
+    u.veinContrast.value = spec.veinContrast ?? 1;
+    u.texGround.value = spec.texGround ?? 0;
+    material.roughness = spec.roughness;
+    material.metalness = spec.metalness;
+    material.envMapIntensity = spec.env;
+  }
+  scene.background.setRGB(...mat.rgb.map((c) => (c / 255) ** 2.2 * 0.3));
+  contactMaterial.color.setRGB(...mat.contact[0]);
+  contactMaterial.opacity = mat.contact[1];
+  buildEnvironment(mat.sky, mat.ground, mat.band);
+}
+// 作り直し: 積み木と経路を作り直し、ビー玉を画面の中の溝に散らして置く。カメラは進み続ける。
+// 起動時と、画面が横に広がって作る範囲が足りなくなったとき（シーンはそのまま）にも呼ぶ
+function rebuild() {
   for (const m of [...marbles]) removeMarble(m);
   mascot = null;
   cells.clear();
@@ -1854,13 +2124,19 @@ function reset() {
   scatterMarbles(Math.round(marbleCount));
 }
 
+// シーン（積み木の材質）を替えて、作り直す
+function setScene(index) {
+  applyScene(index);
+  rebuild();
+}
+
 function rebase() {
   if (camK - origin.x < REBASE_STEP) return;
   origin.add(new THREE.Vector3(REBASE_STEP, -REBASE_STEP, REBASE_STEP));
   instancesDirty = true;
 }
 
-// ---- 隠し要素（木のマスコット） ----
+// ---- 隠し要素（マスコット） ----
 // 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）。置くときは、種を Math.random から取り直す。
 // three.js も物を作るときに Math.random を引くので、マスコットの形は最初に置くときに作る（pieceMesh が作る）
 const mascotRandom = sideRandom();
@@ -1888,7 +2164,7 @@ function startMascot() {
   mascotWait = mascotInterval(MASCOT_INTERVAL);
   // 画面に近い段から順に見て、最初に候補のあった段（可能な限り早く見え始める）に置く
   const c = rows.get(Math.min(...rows.keys())).c;
-  mascot = { key: `mascot:${mascotRandom() < 0.5 ? -1 : 1}`, i: c.i, k: c.h - 0.5, j: c.j, quat: woodQuats[8], off: mascotRandom(), tint: MASCOT_TINT };
+  mascot = { key: `mascot:${mascotRandom() < 0.5 ? -1 : 1}`, i: c.i, k: c.h - 0.5, j: c.j, quat: blockQuats[8], off: mascotRandom(), tint: mat.mascot.tint };
   instancesDirty = true;
 }
 
@@ -1932,9 +2208,9 @@ function tick(now) {
 // ---- 入力・UI ----
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
-  keys: { KeyC: startMascot },   // 隠し要素の木のマスコット（操作ガイドには表示しない）
-  // シーン切替（Space・左右スワイプ）。場面の一覧は持たず、暗転している間にリセットする
-  changeScene: () => fadeAndRun(reset),
+  keys: { KeyC: startMascot },   // 隠し要素のマスコット（操作ガイドには表示しない）
+  // シーン切替（Space・左右スワイプ）。暗転している間に、次のシーン（材質）にして作り直す
+  changeScene: () => fadeAndRun(() => setScene(sceneIndex + 1)),
   // 強度（↑↓・上下スワイプ）。画面の中のビー玉の数
   intensity: {
     up: () => setCount(marbleCount * COUNT_STEP),
@@ -1946,13 +2222,13 @@ setupControls({
     renderer.setSize(innerWidth, innerHeight);
     updateSceneTargetSize();
     composer.setSize(innerWidth, innerHeight);
-    if (neededBand() > bandQ) reset();
+    if (neededBand() > bandQ) rebuild();
   },
 });
 
 // ---- 開始 ----
 updateView();
-reset();
+setScene(randInt(SCENES.length));
 renderer.setAnimationLoop(tick);
 </script>
 </body>
