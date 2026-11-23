@@ -329,10 +329,10 @@ function setColorPreset(index) {
   paletteTex.needsUpdate = true;
 }
 
-// 前と違う季節の番号を選ぶ。Math.random を引くと、そのあとの街の育ち方がすべて変わるので、土地の位置から決まる乱数で選ぶ
+// 次の季節の番号を選ぶ。起動時は土地の位置から決まる乱数で選び、あとは COLOR_PRESETS の定義順に循環する。Math.random を引くと、そのあとの街の育ち方がすべて変わるので、土地の位置から決まる乱数を使う
 function pickColorPreset(seed) {
   if (colorPresetIndex < 0) return Math.floor(hash(seed, 1, 7) * COLOR_PRESETS.length);
-  return (colorPresetIndex + 1 + Math.floor(hash(seed, 2, 7) * (COLOR_PRESETS.length - 1))) % COLOR_PRESETS.length;
+  return (colorPresetIndex + 1) % COLOR_PRESETS.length;
 }
 
 // ---- シェーダー ----
@@ -2421,7 +2421,7 @@ function render() {
 }
 
 // ---- 新しい土地 ----
-// preset は季節（COLOR_PRESETS の番号）。省くと前と違う季節を、土地の形から決まる乱数で選ぶ
+// preset は季節（COLOR_PRESETS の番号）。省くと次の季節を選ぶ（起動時は土地の形から決まる乱数、あとは定義順に循環）
 function newLand(preset) {
   generateLand();
   road.fill(0);
