@@ -59,13 +59,19 @@ const MOSS_WET = { range: 8, top: 50 };   // 苔は水の近く（水平の距�
 // 水車（軸は x の向きで、+x の面が見える。手前から見て時計回りに回る）
 // r: 半径、half: 軸の向きの半幅、paddles: 羽根の数、frames: 羽根 1 枚ぶんの角度を分けるコマ数、period: 最初の水量で 1 周する秒
 const WHEEL = { x: -2, y: 9, z: CH_FLOOR + 17, r: 16, half: 4, paddles: 10, frames: 8, period: 12 };
+const WHEEL_PITCH = TAU / WHEEL.paddles;   // 羽根 1 枚ぶんの角度（ラジアン。水車の絵は、この角度ごとに元に戻る）
+const WHEEL_WATER_ARC = [0.9, 3.0];  // 水が乗る羽根の角度の範囲（ラジアン。+y から +z の向きへ測る。てっぺんの少し手前から、滝を受けた少し先まで）
+const WHEEL_WATER_X = [2.5, 0.5].map((a) => WHEEL.x + a);   // 羽根の上で水が乗る列（羽根の幅 6 のうち 2 列）
+const WHEEL_WATER_LAYERS = [[3.5, 6], [5, 5]];   // 水の層（羽根の先からの深さと段）。上の層ほど明るい
+const WHEEL_SPILL_END = 4.1;   // 水を運び終えた羽根（WHEEL_WATER_ARC の終わりから）が、受け口へ水をこぼす角度の上限（ラジアン。WHEEL_WATER_ARC と同じ測り方。4.71 が真下）
 const BASIN = { x0: WHEEL.x - 7, x1: WHEEL.x + 7, y0: WHEEL.y - WHEEL.r - 3, y1: WHEEL.y + WHEEL.r + 3 };   // 受け口
 
 // 建物（ボクセルの範囲。top は本体の上端、loggia は屋根を支える柱の高さ、floors は階の数）
 const TOWER_FALL = { x0: 16, x1: 31, y0: -7, y1: 8, top: CH_FLOOR + LIFT - CH_SLAB, loggia: 19, floors: 3 };
 // gate がある塔は、水路の上を柱だけで跨ぎ、柱の上（gate から top まで）に部屋を載せる
-const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 48, loggia: 0, gate: 32, eave: 0.5, square: true, round: 0.45, pitch: 1.45 };   // eave: 屋根の張り出し（省くと 2.5）、square: 屋根を四角錐にする（省くと円錐）、round: 1 より小さいと頂上を丸める（省くと 1）、pitch: 屋根の高さと底の半径の比（省くと 1.9）
+const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 51, loggia: 0, gate: 32, eave: 0.5, square: true, round: 1.8, pitch: 1.2 };   // eave: 屋根の張り出し（省くと 2.5）、square: 屋根を四角錐にする（省くと円錐）、round: 1 より大きいと屋根全体を丸く膨らませる（2 で楕円。省くと 1）、pitch: 屋根の高さと底の半径の比（省くと 1.9）
 const WELL = { x: 62, y: 6 };   // 屋根付きの井戸の中心
+const WHEELBARROW = { garden: [-60, 8], workshop: [-58, 11], ruin: [58, -22] };   // 手押し車の荷台の奥の角（x・y の小さい側）。シーンごとに替える: Garden は小屋から離した左、Mill はそのわずかに手前、Ruins は井戸の右奥
 const HUT = { x0: -36, x1: -10, y0: -2, y1: 18, wall: 30 };   // 2 階建て。水車（直径 32）と釣り合う高さにする
 // 浮島（中心、半径、形の丸さの指数、下側の岩の深さ、下側のすぼまり方の指数（小さいほど縁の近くまで深く、左右に太る））
 const ISLAND = { cx: 4, cy: 0, rx: 71, ry: 54, power: 3, depth: 50, taper: 0.85 };   // 奥の縁は、右奥の低い塔の陰から地面の角が細く覗かない所に置く
@@ -81,6 +87,7 @@ const ROCK_PERIOD = [6, 10];       // 浮き沈みの周期（秒）
 const ROCK_AMP = [1, 2];          // 浮き沈みの振れ幅（ドット）
 const ROCK_TOP_LIGHT = -3;         // Ruins で、岩の上面に残す最低の明るさの段
 const ROCK_DECOR = 3;               // 花（Garden）・松明（Mill）・光るきのこ（Ruins）を載せる岩の数（シーンに入るたびにランダムに選ぶ）
+// 空
 const CLOUD_SCALE = [56, 14];       // 雲（Garden・Mill）のノイズの大きさ（横・縦のドット。横に長い雲にする）
 const CLOUD_EDGE = 0.6;             // ノイズがこれを超えた所を雲にする（0..1。大きいほど雲が少ない）
 const CLOUD_STEPS = 3;              // 雲の明暗の段の数（煙の色の段 0 から。少なくして、空に淡く溶かす）
@@ -88,10 +95,8 @@ const CLOUD_DRIFT = 0.35;           // 雲が左へ流れる速さ（ドット/�
 const SKY_HATCH = 0.3;              // 空の帯の境目を網点で混ぜる幅（境目の上下それぞれ、帯の高さに対する割合）
 // 4×4 の網点の閾値（0..1）
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
-const WHEEL_WATER_ARC = [0.9, 3.0];  // 水が乗る羽根の角度の範囲（ラジアン。+y から +z の向きへ測る。てっぺんの少し手前から、滝を受けた少し先まで）
-const WHEEL_WATER_X = [2.5, 0.5].map((a) => WHEEL.x + a);   // 羽根の上で水が乗る列（羽根の幅 6 のうち 2 列）
-const WHEEL_WATER_LAYERS = [[3.5, 6], [5, 5]];   // 水の層（羽根の先からの深さと段）。上の層ほど明るい
-const WHEEL_SPILL_END = 4.1;   // 水を運び終えた羽根（WHEEL_WATER_ARC の終わりから）が、受け口へ水をこぼす角度の上限（ラジアン。WHEEL_WATER_ARC と同じ測り方。4.71 が真下）
+
+// 煙突の煙
 const SMOKE_INTERVAL = [0.5, 0.9];  // 煙突の煙のかたまりを出す間隔（秒）
 const SMOKE_LIFE = [4, 5.5];        // 煙のかたまりが消えるまでの秒
 const SMOKE_GROW = 2.5;             // 煙のかたまりが消えるまでに広がる半径（ドット）
@@ -136,8 +141,8 @@ const FLOW_STEPS = [
 ];
 const FLOW_START = 3;   // 最初の段
 
-// 生き物の出る間隔（[平均, 最短, 最長] 秒）
-const BLINK_INTERVAL = [30, 20, 40];   // 猫が目を開けてしっぽを振る
+// 生き物と、ときどき出る物
+const BLINK_INTERVAL = [30, 20, 40];   // 猫が目を開けてしっぽを振る間隔（[平均, 最短, 最長] 秒）
 const CAT_EYES_TIME = 5;               // 猫が目を開けている秒
 const OWL_IVY_CLEAR = 6;     // ふくろうの左右この幅（ドット）には、奥の水路の蔦を垂らさない（ふくろうの幅は 7）
 const OWL_BLINK = { fps: 5, chance: 0.04 };   // ふくろうが不規則にまばたきする（1 秒に fps 回、そのたびに chance の見込みで両目を閉じる。平均 5 秒ほどに 1 回）
@@ -371,8 +376,10 @@ let puffWait = 0;          // 次の煙を出すまでの秒
 let chimneyTop = null;     // 煙突の口
 let torches = [];          // 松明と塔の最上階の明かり { x, y, z, top, step, flick, phase, hidden, rock }（top・step は lightFrom の光源、rock は載っている浮かぶ岩の番号）
 let lightSources = [];     // 動かない光源（Ruins の水・きのこ）
+let anchors = {};          // 小物が決めた居場所（猫・ふくろう・蝶。buildProps の返り値）
 let creature = null;       // いまのシーンの生き物の状態
 let fireflies = [];
+let butterflies = [];
 
 // 画面（低い解像度）。originX・originY は世界の原点が映る画素
 let W = 0, H = 0, originX = 0, originY = 0;
@@ -524,11 +531,11 @@ function buildArcade(v, a, b, floor) {
     }
   }
 }
-// 円錐（square なら四角錐）の屋根。屋根板の段ごとに暗い筋を入れる。round が 1 より小さいと、頂上の近くで急に細り、頂上が丸くなる。
+// 円錐（square なら四角錐）の屋根。屋根板の段ごとに暗い筋を入れる。round が 1 より大きいと、屋根の線が外へ膨らみ、全体が丸くなる（2 で断面が楕円）。
 // bright なら、筋と地の段をどちらも 1 段明るい段（0 と 2）にする
 function cone(v, cx, cy, z0, r0, h, ruin, square = false, round = 1, bright = false) {
   for (let z = z0; z < z0 + h; z++) {
-    const r = Math.max(0.6, r0 * (1 - (z - z0) / h) ** round);
+    const r = Math.max(0.6, r0 * (1 - ((z - z0) / h) ** round) ** (1 / round));
     for (let y = Math.floor(cy - r0); y <= cy + r0; y++) for (let x = Math.floor(cx - r0); x <= cx + r0; x++) {
       const dd = square ? Math.max(Math.abs(x + 0.5 - cx), Math.abs(y + 0.5 - cy)) : Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
       if (dd >= r) continue;
@@ -662,19 +669,24 @@ function torchHolder(v, x, y, z) {
   vset(v, x, y, z, vox(M.METAL));
   return { x: x + 0.5, y: y + 0.5, z: z + 1 };
 }
+// 薬草の花壇（Garden）: 石の縁で囲んだ土に、葉と花を植える
 function herbBed(v, x0, y0, x1, y1, seed) {
   fill(v, x0, y0, 0, x1, y1, 2, masonry);
   fill(v, x0 + 1, y0 + 1, 1, x1 - 1, y1 - 1, 2, vox(M.SOIL));
+  plants(v, x0 + 1, y0 + 1, x1 - 1, y1 - 1, 2, seed);
+}
+// 土の上（高さ z）に、葉と花をまだらに植える（花壇・手押し車の荷台）
+function plants(v, x0, y0, x1, y1, z, seed) {
   const flowers = [M.FLOWER_R, M.FLOWER_Y, M.FLOWER_W];
-  for (let y = y0 + 1; y < y1 - 1; y++) for (let x = x0 + 1; x < x1 - 1; x++) {
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
     const h = hash3(x, y, seed);
     if (h < 0.6) {
-      vset(v, x, y, 2, vox(M.LEAF, h < 0.2 ? 2 : 0));
-      if (h < 0.3) vset(v, x, y, 3, h < 0.14 ? vox(flowers[Math.floor(hash3(x, y, seed + 1) * 3)], 2) : vox(M.LEAF, 1));
+      vset(v, x, y, z, vox(M.LEAF, h < 0.2 ? 2 : 0));
+      if (h < 0.3) vset(v, x, y, z + 1, h < 0.14 ? vox(flowers[Math.floor(hash3(x, y, seed + 1) * 3)], 2) : vox(M.LEAF, 1));
     }
   }
 }
-// 井戸: 石の井桁、2 本の柱と横木、吊った桶、柱に載せた切妻の屋根（棟は x の向き）
+// 井戸: 石の井桁、2 本の柱と横木、柱に載せた切妻の屋根（棟は x の向き）
 function well(v, cx, cy, ruin, bright) {
   cylinder(v, cx, cy, 0, 6, 6, masonry);
   cylinder(v, cx, cy, 2, 6, 4, 0);
@@ -682,8 +694,6 @@ function well(v, cx, cy, ruin, bright) {
   fill(v, cx - 6, cy, 6, cx - 5, cy + 1, 17, vox(M.WOOD));
   fill(v, cx + 5, cy, 6, cx + 6, cy + 1, 17, vox(M.WOOD));
   fill(v, cx - 6, cy, 16, cx + 6, cy + 1, 17, vox(M.WOOD, 2));
-  fill(v, cx, cy, 11, cx + 1, cy + 1, 16, vox(M.CLOTH, 1));
-  fill(v, cx - 1, cy - 1, 8, cx + 2, cy + 1, 11, vox(M.WOOD, 1));
   for (let k = 0; k < 5; k++) {
     fill(v, cx - 7, cy - 4 + k, 17 + k, cx + 7, cy + 5 - k, 18 + k, (x, y, z) => {
       // 廃墟では、屋根の右手前の一部が崩れて、横に渡した垂木がのぞく
@@ -694,7 +704,7 @@ function well(v, cx, cy, ruin, bright) {
     });
   }
 }
-// aged なら、年月を経て黒ずみ、ところどころ苔むした樽にする（Ruins）
+// 樽（z0 は底の高さ。積むときは上の段の z0 を 7 にする）。aged なら、年月を経て黒ずみ、ところどころ苔むした樽にする（Ruins）
 function barrel(v, cx, cy, z0 = 0, aged = false) {
   // 胴より上下の縁を細くして、積んだときに 1 つずつ分かれて見えるようにする
   const stave = (x, y, z) => {
@@ -706,11 +716,57 @@ function barrel(v, cx, cy, z0 = 0, aged = false) {
   cylinder(v, cx, cy, z0, z0 + 7, 2.5, stave);
   cylinder(v, cx, cy, z0 + 1, z0 + 6, 3, stave);
 }
+// 地面に置いた桶。中心は升目の真ん中（x.5）に置き、丸く見せる。両側の板を高く伸ばし、上に手で持つ棒を渡す。
+// aged なら、年月を経て黒ずみ、ところどころ苔むした桶にする（Ruins）
+function bucket(v, cx, cy, aged) {
+  const H = 5;   // 胴の高さ
+  cylinder(v, cx, cy, 0, H, 2.3, (x, y, z) => {
+    const h = hash3(x, y, z * 7 + 9);
+    if (aged && h < 0.15) return vox(M.MOSS, h < 0.05 ? 1 : 0);
+    if (z === 2) return vox(M.METAL, aged ? 1 : 0);
+    return vox(M.WOOD, aged ? 1 + (mod(x + y, 2) ? 2 : 0) : mod(x + y, 2));
+  });
+  cylinder(v, cx, cy, 1, H, 1.3, (x, y, z) => z < H - 2 ? vox(M.WATER) : 0);
+  const x0 = Math.floor(cx) - 2, x1 = Math.floor(cx) + 2, y = Math.floor(cy), wood = vox(M.WOOD, aged ? 1 : 0);
+  fill(v, x0, y, H, x0 + 1, y + 1, H + 5, wood);
+  fill(v, x1, y, H, x1 + 1, y + 1, H + 5, wood);
+  fill(v, x0 + 1, y, H + 3, x1, y + 1, H + 4, vox(M.WOOD, aged ? 3 : 1));
+}
+// 手押し車（(x0, y0) は荷台の奥の角）。荷台の長い辺を y の向き（画面の右上から左下）にし、+y の端の下に車輪、-y の端（右上）に柄と脚を付ける。
+// load が 'flowers' なら荷台に土を入れて花を咲かせ（Garden）、'sack' なら粉袋を寝かせて載せる（Mill）。
+// aged なら、年月を経て黒ずみ、ところどころ苔むす（Ruins）
+function wheelbarrow(v, x0, y0, aged, load) {
+  const L = 10, W = 6, dark = vox(M.WOOD, aged ? 3 : 1);   // 荷台の長さと幅
+  for (let z = 0; z < 5; z++) for (let y = y0 + L - 2; y < y0 + L + 3; y++) {
+    const d = Math.hypot(y + 0.5 - (y0 + L + 0.5), z + 0.5 - 2.5);
+    if (d < 2.6) vset(v, x0 + 2, y, z, d > 1.5 ? dark : vox(M.WOOD, aged ? 1 : 0));
+  }
+  const plank = (x, y, z) => {
+    const h = hash3(x, y, z * 7 + 11);
+    if (aged && h < 0.15) return vox(M.MOSS, h < 0.05 ? 1 : 0);
+    return vox(M.WOOD, aged ? 1 + (mod(y, 2) ? 2 : 0) : mod(y, 2));
+  };
+  fill(v, x0, y0, 3, x0 + W, y0 + L, 7, plank);
+  fill(v, x0 + 1, y0 + 1, 4, x0 + W - 1, y0 + L - 1, 7, 0);
+  for (const x of [x0, x0 + W - 1]) {
+    fill(v, x, y0 - 5, 5, x + 1, y0, 6, dark);       // 柄
+    fill(v, x, y0 + 1, 0, x + 1, y0 + 2, 3, dark);   // 脚
+  }
+  if (load === 'flowers') {
+    fill(v, x0 + 1, y0 + 1, 4, x0 + W - 1, y0 + L - 1, 6, vox(M.SOIL));
+    plants(v, x0 + 1, y0 + 1, x0 + W - 1, y0 + L - 1, 6, 7);
+  }
+  if (load === 'sack') {
+    blob(v, x0 + 3, y0 + 4.5, 7, 2.6, 4, 2.6, vox(M.CLOTH, 2));
+    fill(v, x0 + 2, y0 + 8, 6, x0 + 4, y0 + 10, 8, vox(M.CLOTH, 3));   // 縛った口は暗くして、袋の形を読ませる
+  }
+}
 // 粉袋（麻袋）。ずんぐりした胴の上に、縛った口を 1 つ突き出す
 function sack(v, cx, cy) {
   blob(v, cx, cy, 3.7, 3.8, 3.8, 4, vox(M.CLOTH, 2));   // 生成りの布を 1 段明るくして、暗がりに沈ませない
   fill(v, Math.floor(cx), Math.floor(cy), 7, Math.floor(cx) + 1, Math.floor(cy) + 1, 10, vox(M.CLOTH, 3));   // 口は暗くして、袋の形を読ませる
 }
+// 光るきのこの群れ（Ruins）: (cx, cy) のまわり 8 ボクセル四方に、高さの違う 5 本を生やす
 function mushrooms(v, cx, cy, seed) {
   for (let k = 0; k < 5; k++) {
     const x = cx + Math.floor((hash3(k, seed, 1) - 0.5) * 8), y = cy + Math.floor((hash3(k, seed, 2) - 0.5) * 8), h = 1 + Math.floor(hash3(k, seed, 3) * 3);
@@ -725,6 +781,9 @@ function buildProps(v, sc) {
   const anchors = {};
   // 井戸は、どのシーンも同じ所に置く（Ruins では、ほかの石と一緒に苔むし、屋根が少し崩れる）
   well(v, WELL.x, WELL.y, sc.ruin, sc.brightWellRoof);
+  bucket(v, WELL.x - 0.5, WELL.y + 10.5, sc.ruin);   // 井戸の手前に置いた桶
+  // 手押し車は、シーンごとに置き場所と荷台の中身を替える
+  wheelbarrow(v, ...WHEELBARROW[sc.props], sc.ruin, { garden: 'flowers', workshop: 'sack' }[sc.props]);
   if (sc.props === 'garden') {
     const seed = randInt(1000);   // 花の付き方は、シーンに入るたびに替わる
     herbBed(v, -44, 18, -32, 25, seed);       // 小屋の左手前の花壇（小屋寄り）
@@ -733,6 +792,7 @@ function buildProps(v, sc) {
     fill(v, 8, 14, 0, 9, 15, 20, vox(M.WOOD));          // 左の柱
     fill(v, 34, 14, 0, 35, 15, 20, vox(M.WOOD));        // 右の柱
     fill(v, 9, 14, 18, 34, 15, 19, vox(M.CLOTH, 3));    // 紐
+    barrel(v, 13, 8);   // 中庭の、滝の脇の塔の左手前の角に、樽を 1 つ寄せて置く（塔の際で一部が隠れてよい）
     // 蝶は 2 つの花壇の上を飛びまわる
     anchors.butterflies = { x: -38, y: 26.5, z: 6 };
   } else if (sc.props === 'workshop') {
@@ -758,8 +818,8 @@ function buildProps(v, sc) {
     // 中庭の、滝の脇の塔の左手前の角に、Mill と同じに積んだ樽が、黒ずんで苔むしたまま残る
     barrel(v, 11, 6, 0, true); barrel(v, 11, 12, 0, true);   // 下の段の 2 つ
     barrel(v, 11, 9, 7, true);                               // 上の段の 1 つ
-    // 光るきのこの群れ。小屋の左手前・右奥の低い塔の足元の右・小屋の左奥
-    for (const [x, y, s] of [[-40, 30, 41], [57, -38, 43], [-52, 2, 44]]) {
+    // 光るきのこの群れ。小屋の左手前・朽ちた手押し車の右手前・小屋の左奥
+    for (const [x, y, s] of [[-40, 30, 41], [68, -15, 43], [-52, 2, 44]]) {
       mushrooms(v, x, y, s);
       lightSources.push({ x: x + 0.5, y: y + 0.5, z: 2, ...MUSH_LIGHT });
     }
@@ -816,9 +876,9 @@ function weatherWorld(v) {
       if (!ex && !ey) continue;
       const wx = x + v.x0, wy = y + v.y0, wz = z + v.z0, h = hash3(wx, wy, wz * 7 + 3);
       if (!isWet(wx, wy, wz)) continue;
-      // 壁の根もと: 地面から 1〜3 段に苔の帯（ところどころ土の汚れ）
+      // 壁の根もと: 地面から 1〜3 段に苔の帯
       if (wz >= 0 && wz < 1 + Math.floor(hash3(wx, wy, 17) * 3) && islandD(wx, wy) < 1) {
-        if (h < 0.6) data[i] = moss(c, h); else if (h < 0.68) data[i] = (c & GHOST) | vox(M.SOIL, 1);
+        if (h < 0.6) data[i] = moss(c, h);
       }
       // 張り出しの上: 縁・帯・笠石の上面に、苔がまだらに付く
       else if (et && noise2(wx * 0.3 + wz, wy * 0.3, 41) > 0.62) data[i] = moss(c, h);
@@ -871,7 +931,7 @@ function ruinWorld(v) {
 function buildWheelVolume(phi, sc) {
   const { x: wx, y: wy, z: wz, r: R, half, paddles } = WHEEL;
   const v = makeVolume(wx - 9, wy - R - 1, wz - R - 1, wx + half + 1, wy + R + 2, wz + R + 2);
-  const pitch = TAU / paddles;
+  const pitch = WHEEL_PITCH;
   for (let z = v.z0; z < v.z0 + v.nz; z++) for (let y = v.y0; y < v.y0 + v.ny; y++) for (let x = v.x0; x < v.x0 + v.nx; x++) {
     const a = x - wx, dy = y + 0.5 - wy, dz = z + 0.5 - wz, r = Math.hypot(dy, dz);
     const ang = Math.atan2(dz, dy) - phi;
@@ -1124,7 +1184,6 @@ function lightLayer(L) {
 // ---- 世界を作る ----
 let wheelFrames = [], laundryFrames = [], rockSprites = [];
 let wheelVolumes = [], laundryVolumes = [], rockVolumes = [];
-let anchors = {};
 function buildWorld(sc) {
   vol.data.fill(0);
   lightSources = sc.lighting === 'water' ? waterLightSources() : [];
@@ -1132,8 +1191,7 @@ function buildWorld(sc) {
   buildStructures(vol, sc);
   anchors = buildProps(vol, sc);
   if (sc.ruin) ruinWorld(vol); else weatherWorld(vol);
-  const pitch = TAU / WHEEL.paddles;
-  wheelVolumes = Array.from({ length: WHEEL.frames }, (_, k) => buildWheelVolume(k * pitch / WHEEL.frames, sc));
+  wheelVolumes = Array.from({ length: WHEEL.frames }, (_, k) => buildWheelVolume(k * WHEEL_PITCH / WHEEL.frames, sc));
   // シーンに入るたびに、洗濯物の布の色の並び（ときどき 1 枚少ない）と、飾る浮かぶ岩をランダムに替える
   const colors = shuffle(LAUNDRY.map(([, c]) => c)), drop = Math.random() < 0.4 ? randInt(3) : -1;
   const cloths = LAUNDRY.map(([x0], k) => [x0, M[colors[k]]]).filter((_, k) => k !== drop);
@@ -1244,6 +1302,8 @@ const waterMat = () => (current.glowWater ? M.GWATER : M.WATER);
 const flowLevel = () => FLOW_STEPS[flowStep];   // いまの強度の段
 // 水路の流れの速さ（ボクセル/秒）。水量の平方根ほどにとどめる（速くすると、筋がちらついて流れに見えない）
 const flowSpeed = () => FLOW_SPEED * Math.sqrt(flowLevel().rate);
+// 水車の絵のいまのコマの番号（羽根 1 枚ぶんの角度を WHEEL.frames に分けた、いまの角度の区分）
+const wheelFrame = () => Math.min(WHEEL.frames - 1, Math.floor(wheelAngle / WHEEL_PITCH * WHEEL.frames));
 // 水車の輪の上の、滝の当たる高さ
 const contactZ = (y) => WHEEL.z + Math.sqrt(Math.max(0, WHEEL.r ** 2 - (y + 0.5 - WHEEL.y) ** 2));
 
@@ -1263,6 +1323,7 @@ function plot(x, y, z, m, s, bias = 0) {
   return put(i, m, s, x + y + z + bias, x, y, z) ? i : -1;
 }
 
+// 水路と受け口の水面。水路は明るい筋とさざ波が流れ、受け口は波立つ
 function drawWater() {
   const { depth: lv, trickle } = flowLevel(), half = trickle ?? CH_IN, mat = waterMat();
   const tick = Math.floor(time * FOAM_FPS);
@@ -1313,6 +1374,7 @@ function drawWater() {
   }
 }
 
+// 滝: 落ち口の縁から水車の輪まで落ちる、厚みのある縦の帯
 function drawFall() {
   const { depth: lv, fall: [w, th], drip } = flowLevel();
   const xa = FALL_X1 - th, xb = FALL_X1, ya = -Math.floor(w / 2), yb = ya + w;
@@ -1347,8 +1409,8 @@ function drawFall() {
 // 水車の上の方の羽根に乗った水（1 枚に、WHEEL_WATER_LAYERS の層 × WHEEL_WATER_X の列のドット）。滝を受けたあたりの羽根だけに、手前の輪に隠れない深さで描く。
 // 運び終えて下がっていく羽根からは、羽根の端からあふれた水が、途切れ途切れの細い流れになって受け口へこぼれ落ちる（運んだ水が消えて見えないように）
 function drawWheelWater() {
-  const { x: wx, y: wy, z: wz, r: R, paddles, frames } = WHEEL, pitch = TAU / paddles;
-  const phi = Math.min(frames - 1, Math.floor(wheelAngle / pitch * frames)) * pitch / frames;   // 水車の絵と同じ角度
+  const { x: wx, y: wy, z: wz, r: R, paddles, frames } = WHEEL, pitch = WHEEL_PITCH;
+  const phi = wheelFrame() * pitch / frames;   // 水車の絵と同じ角度
   const mat = waterMat(), surf = CH_FLOOR + flowLevel().depth;
   for (let j = 0; j < paddles; j++) {
     const a = mod(j * pitch + phi, TAU) + 0.12;   // 羽根の上側
@@ -1416,6 +1478,7 @@ function drawSmoke() {
     }
   }
 }
+// 松明の炎を数コマの絵でゆらめかせ、照らす範囲の伸び縮み（flick）を決める
 function drawFlames() {
   for (const t of torches) {
     const k = Math.floor(time * 8 + t.phase), f = FLAME_FRAMES[Math.floor(hash3(k, t.phase * 10, 3) * 4)];
@@ -1424,6 +1487,7 @@ function drawFlames() {
     if (!t.hidden) drawBitmap(f, t.x, t.y, t.z - 1 - torchDy(t), FLAME_COLORS, 3);   // 塔の最上階の明かりは、照らすだけで炎は描かない
   }
 }
+// 影絵の生き物（Mill の猫・Ruins のふくろう）
 function drawCreatures() {
   const c = creature;
   if (!c) return;
@@ -1447,7 +1511,6 @@ function updateCreature(dt) {
   c.wait = randomInterval(BLINK_INTERVAL);
 }
 // 蝶（Garden）。花壇の上を、揃わない周期でふらふらと飛びまわる
-let butterflies = [];
 function drawButterflies() {
   const [rx, ry, rz] = BUTTERFLY_RANGE;
   for (const b of butterflies) {
@@ -1457,6 +1520,7 @@ function drawButterflies() {
     drawBitmap(BUTTERFLY[k], x, y, z, { w: [M[b.color], 6], b: [M.WOOD, 1] }, 2);
   }
 }
+// 洗濯物（Garden）。2 コマの絵を、ときどき入れ替えて揺らす
 function drawLaundry() {
   if (!laundryFrames.length) return;
   blitLayer(laundryFrames[hash3(Math.floor(time / 0.7), 1, 2) < 0.5 ? 0 : 1]);
@@ -1474,6 +1538,7 @@ function darkSpot(x, y, z) {
   if (!m) return true;
   return x + y + z > base.depth[j] && m < EMISSIVE && base.shade[j] + base.light[j] <= FIREFLY_DARK;
 }
+// 蛍（Ruins）: 地面の上を低くさまよいながら明滅する
 function drawFireflies() {
   for (const f of fireflies) {
     const b = Math.sin(time * f.blink + f.phase);
@@ -1634,7 +1699,7 @@ function render() {
   written = 0;
   if (current.lighting === 'torch') fPos.set(base.pos);
   for (const r of rockSprites) blitLayer(r, rockDy(r));
-  blitLayer(wheelFrames[Math.min(WHEEL.frames - 1, Math.floor(wheelAngle / (TAU / WHEEL.paddles) * WHEEL.frames))]);
+  blitLayer(wheelFrames[wheelFrame()]);
   drawWheelWater();
   drawLaundry();
   drawWater();
@@ -1704,8 +1769,8 @@ function setFlowStep(k) {
 // ---- メインループ ----
 function step(dt) {
   time += dt;
-  const pitch = TAU / WHEEL.paddles, { rate } = flowLevel();
-  wheelAngle = mod(wheelAngle + dt * rate * TAU / WHEEL.period, pitch);
+  const { rate } = flowLevel();
+  wheelAngle = mod(wheelAngle + dt * rate * TAU / WHEEL.period, WHEEL_PITCH);
   // 筋の模様は進んだ距離のハッシュで決めるので、巻き戻さない（巻き戻すと模様が一斉に入れ替わる。JS の倍精度なので長く動かしても荒れない）
   flowPhase += dt * flowSpeed();
   fallPhase += dt * FALL_SPEED;
