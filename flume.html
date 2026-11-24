@@ -122,6 +122,7 @@ const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり
 const AMBIENT = { torch: -2, water: -8 };   // 光の届かない所の段（Mill は、塔の上・屋根・中庭の形が読め、松明の光の輪とも見分けられる暗さ）
 const FLICK_FPS = 3;         // 松明の照らす範囲が伸び縮みする回数（1 秒あたりの上限）
 const FLICK_CHANCE = 0.3;    // そのたびに、範囲が 1 ボクセル伸びる見込み
+const TORCH_TILE = 8;        // 松明の明かりを求めるとき、光の届く松明を絞るマスの大きさ（ドット。見た目は変わらない）
 
 // 強度（水量）の段。段ごとに水路の水面を 1 ドットずつ上げ下げするか、底を伝う細い流れの幅を変え、滝はそれに合わせて太らせる。
 // rate: 水量（水車の回る速さ・泡としぶきの量の倍率）、depth: 水路の水の深さ（ボクセル。CH_WALL で縁まで満ちる）、
@@ -380,6 +381,7 @@ let cloudBuf;              // 雲の色（パレットの番号。0 は雲の無
 let base = null;           // 動かない物を描いた層
 // 毎コマ描く作業用の層（画素ごとの素材・段・奥行き・光・位置）
 let fMat, fShade, fDepth, fLight, fPos;
+let writtenAt, written = 0;   // 動かない層を写したあとに、動く物を書いた画素の番号と、その数（松明の明かりを付け直す画素）
 let stars = [];
 let cloudOff = null;       // いまの雲の流れた量（ドット。雲の絵を作り直すかを決める）
 // シーンに入るたびにランダムに選び直す: 雲の模様のずれ（ドット）、星を散らす種、鳥・流れ星・火の粉の時刻のずれ（秒）
@@ -944,6 +946,55 @@ function lightFrom(srcs, x, y, z, ambient) {
   }
   return best > 0 ? 0 : best;
 }
+// Mill: 画面を TORCH_TILE ドット角のマスに分け、マスごとに、そこに映る点へ光が届きうる松明を並べておく（層を作るとき）。
+// 光の届く球の中の点は、画面では横 ±√2 倍・縦 ±√1.5 倍の矩形の中に映るので、矩形が掛かるマスに入れる（揺らぎで伸びる 1 ボクセルも含める）
+// 動かない層の明かりは、範囲が伸びていない（flick が 0 の）ときの段を base.light に求めておく。範囲が伸びると 1 段明るくなる画素
+// （段の境目の厚さ 1 の殻）だけを、[画素, 松明の番号, 伸びたときの段] の並びにしておき、毎コマはそこだけを見る
+let torchTiles = [], torchTilesW = 0, torchTilesH = 0, torchShell = [];
+const torchTile = (x, y, z) => {   // 点が映るマスの松明の一覧（画面の外に映る点は、すべての松明）
+  const tx = Math.floor((originX + x - y) / TORCH_TILE), ty = Math.floor((originY + (x + y) / 2 - z) / TORCH_TILE);
+  return tx >= 0 && ty >= 0 && tx < torchTilesW && ty < torchTilesH ? torchTiles[ty * torchTilesW + tx] : torches;
+};
+function buildTorchLight() {
+  torchTilesW = Math.ceil(W / TORCH_TILE); torchTilesH = Math.ceil(H / TORCH_TILE);
+  torchTiles = Array.from({ length: torchTilesW * torchTilesH }, () => []);
+  torchShell = [];
+  for (const s of torches) {
+    const r = (s.top - AMBIENT.torch) * s.step + 1, cx = originX + s.x - s.y, cy = originY + (s.x + s.y) / 2 - s.z;
+    const tx0 = Math.max(0, Math.floor((cx - r * 1.415) / TORCH_TILE)), tx1 = Math.min(torchTilesW - 1, Math.floor((cx + r * 1.415) / TORCH_TILE));
+    const ty0 = Math.max(0, Math.floor((cy - r * 1.225) / TORCH_TILE)), ty1 = Math.min(torchTilesH - 1, Math.floor((cy + r * 1.225) / TORCH_TILE));
+    for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) torchTiles[ty * torchTilesW + tx].push(s);
+  }
+  if (current.lighting !== 'torch') return;
+  for (let j = 0; j < base.mat.length; j++) {
+    if (!base.mat[j] || base.mat[j] >= EMISSIVE) continue;
+    const x = base.pos[j * 3], y = base.pos[j * 3 + 1], z = base.pos[j * 3 + 2], raise = [];
+    let l0 = AMBIENT.torch;
+    for (const s of torchTile(x, y, z)) {
+      const dx = x - s.x, dy = y - s.y, dz = z - s.z, d = Math.sqrt(dx * dx + dy * dy + dz * dz), v0 = s.top - Math.floor(d / s.step), v1 = s.top - Math.floor((d - 1) / s.step);
+      if (v0 > l0) l0 = v0;
+      if (v1 > v0) raise.push([torches.indexOf(s), Math.min(0, v1)]);
+    }
+    base.light[j] = l0 = Math.min(0, l0);
+    for (const [k, v] of raise) if (v > l0) torchShell.push(j, k, v);
+  }
+}
+// 作業用の層に松明の明かりを付ける。動かない層の画素は、範囲が伸びている松明の殻だけを明るくする。
+// 動く物の画素は、点が映るマスの松明から求める（動く物の点は画素とずれることがあるので、画素の場所でなく点の位置でマスを引く）
+function lightTorches() {
+  for (let n = 0; n < torchShell.length; n += 3) {
+    const i = torchShell[n];
+    if (torches[torchShell[n + 1]].flick && fDepth[i] === base.depth[i] && torchShell[n + 2] > fLight[i]) fLight[i] = torchShell[n + 2];
+  }
+  // 書いた画素の一覧から溢れたコマは、画面全体を見る（同じ画素が何度も入っていても、同じ明るさを求め直すだけ）
+  const full = written === writtenAt.length, end = full ? fMat.length : written;
+  for (let n = 0; n < end; n++) {
+    const i = full ? n : writtenAt[n], m = fMat[i];
+    if (!m || m >= EMISSIVE || fDepth[i] === base.depth[i]) continue;
+    const x = fPos[i * 3], y = fPos[i * 3 + 1], z = fPos[i * 3 + 2];
+    fLight[i] = lightFrom(torchTile(x, y, z), x, y, z, AMBIENT.torch);
+  }
+}
 // Ruins: 水路・滝・受け口に沿って、光る水の光源を並べる
 function waterLightSources() {
   const src = [];
@@ -1039,6 +1090,7 @@ function blitLayer(L, dy = 0) {
       const i = y * W + x;
       if (L.depth[j] <= fDepth[i]) continue;
       fMat[i] = L.mat[j]; fShade[i] = L.shade[j]; fDepth[i] = L.depth[j]; fLight[i] = L.light[j];
+      if (written < writtenAt.length) writtenAt[written++] = i;
       fPos[i * 3] = L.pos[j * 3]; fPos[i * 3 + 1] = L.pos[j * 3 + 1]; fPos[i * 3 + 2] = L.pos[j * 3 + 2];
     }
   }
@@ -1095,6 +1147,7 @@ function castLayers() {
   base = makeLayer(0, 0, W, H);
   castVolume(vol, base);
   lightLayer(base);
+  buildTorchLight();
   const castLit = (v) => { const L = castSprite(v); lightLayer(L); return L; };
   wheelFrames = wheelVolumes.map(castLit);
   laundryFrames = laundryVolumes.map(castLit);
@@ -1121,6 +1174,7 @@ function layoutScreen() {
   screen = new Uint8Array(n);
   fMat = new Uint8Array(n); fShade = new Int8Array(n); fDepth = new Float32Array(n); fLight = new Int8Array(n);
   fPos = new Float32Array(n * 3);
+  writtenAt = new Int32Array(n);
   screenTex?.dispose();
   screenTex = new THREE.DataTexture(screen, W, H, THREE.RedFormat, THREE.UnsignedByteType);
   screenTex.magFilter = screenTex.minFilter = THREE.NearestFilter;
@@ -1189,6 +1243,7 @@ const contactZ = (y) => WHEEL.z + Math.sqrt(Math.max(0, WHEEL.r ** 2 - (y + 0.5 
 function put(i, m, s, d, x, y, z) {
   if (d <= fDepth[i]) return false;
   fMat[i] = m; fShade[i] = s; fDepth[i] = d; fLight[i] = 0;
+  if (written < writtenAt.length) writtenAt[written++] = i;
   fPos[i * 3] = x; fPos[i * 3 + 1] = y; fPos[i * 3 + 2] = z;
   return true;
 }
@@ -1568,6 +1623,7 @@ function drawDuck() {
 // ---- 描く ----
 function render() {
   fMat.set(base.mat); fShade.set(base.shade); fDepth.set(base.depth); fLight.set(base.light);
+  written = 0;
   if (current.lighting === 'torch') fPos.set(base.pos);
   for (const r of rockSprites) blitLayer(r, rockDy(r));
   blitLayer(wheelFrames[Math.min(WHEEL.frames - 1, Math.floor(wheelAngle / (TAU / WHEEL.paddles) * WHEEL.frames))]);
@@ -1583,12 +1639,7 @@ function render() {
   drawDuck();
   if (current.fireflies) drawFireflies();
   drawButterflies();
-  if (current.lighting === 'torch') {
-    for (let i = 0; i < fMat.length; i++) {
-      const m = fMat[i];
-      if (m && m < EMISSIVE) fLight[i] = lightFrom(torches, fPos[i * 3], fPos[i * 3 + 1], fPos[i * 3 + 2], AMBIENT.torch);
-    }
-  }
+  if (current.lighting === 'torch') lightTorches();
   if (current.clouds && Math.floor(time * CLOUD_DRIFT) !== cloudOff) fillClouds(Math.floor(time * CLOUD_DRIFT));
   for (let y = 0, i = 0; y < H; y++) {
     for (let x = 0; x < W; x++, i++) {
