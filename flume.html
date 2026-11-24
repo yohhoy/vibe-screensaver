@@ -64,7 +64,7 @@ const BASIN = { x0: WHEEL.x - 7, x1: WHEEL.x + 7, y0: WHEEL.y - WHEEL.r - 3, y1:
 // 建物（ボクセルの範囲。top は本体の上端、loggia は屋根を支える柱の高さ、floors は階の数）
 const TOWER_FALL = { x0: 16, x1: 31, y0: -7, y1: 8, top: CH_FLOOR + LIFT - CH_SLAB, loggia: 19, floors: 3 };
 // gate がある塔は、水路の上を柱だけで跨ぎ、柱の上（gate から top まで）に部屋を載せる
-const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 44, loggia: 0, gate: 28, eave: 0.5, square: true };   // eave: 屋根の張り出し（省くと 2.5）、square: 屋根を四角錐にする（省くと円錐）
+const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 48, loggia: 0, gate: 32, eave: 0.5, square: true, round: 0.45, pitch: 1.45 };   // eave: 屋根の張り出し（省くと 2.5）、square: 屋根を四角錐にする（省くと円錐）、round: 1 より小さいと頂上を丸める（省くと 1）、pitch: 屋根の高さと底の半径の比（省くと 1.9）
 const WELL = { x: 62, y: 6 };   // 屋根付きの井戸の中心
 const HUT = { x0: -36, x1: -10, y0: -2, y1: 18, wall: 30 };   // 2 階建て。水車（直径 32）と釣り合う高さにする
 // 浮島（中心、半径、形の丸さの指数、下側の岩の深さ、下側のすぼまり方の指数（小さいほど縁の近くまで深く、左右に太る））
@@ -115,7 +115,6 @@ const SPLASH_GRAVITY = 80;         // しぶきを引く重力（ボクセル/�
 const SUN = [-0.55, 0.15, 1];      // 日の向き（Garden。z を 1 にした向き）
 const SHADOW_STEPS = 240;          // 影をたどる歩数（0.5 ボクセルずつ。影の長さの上限。高い滝の脇の塔の影が中庭まで届く長さにする）
 const TORCH_LIGHT = { top: 0, step: 8 };     // 松明の明かり: 光源の段と、段が 1 つ落ちる距離（ボクセル）。島を暖かく照らしつつ、炎が光だまりの中で目立ち、松明ごとの光の輪を見分けられる広さにする
-const LANTERN_LIGHT = { top: 0, step: 9 };   // 塔の上の燭台の明かり
 const ROCK_TORCH_LIGHT = { top: 0, step: 4 }; // 浮かぶ岩に立てた小さな松明の明かり
 const WATER_LIGHT = { top: 0, step: 13 };   // 光る水の明かり（Ruins）。滝の脇の塔の、滝から離れた右の面まで届かせ、塔と小屋の形を暗がりに溶かさない
 const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり
@@ -140,6 +139,7 @@ const FLOW_START = 3;   // 最初の段
 // 生き物の出る間隔（[平均, 最短, 最長] 秒）
 const BLINK_INTERVAL = [30, 20, 40];   // 猫が目を開けてしっぽを振る
 const CAT_EYES_TIME = 5;               // 猫が目を開けている秒
+const OWL_IVY_CLEAR = 6;     // ふくろうの左右この幅（ドット）には、奥の水路の蔦を垂らさない（ふくろうの幅は 7）
 const OWL_BLINK = { fps: 5, chance: 0.04 };   // ふくろうが不規則にまばたきする（1 秒に fps 回、そのたびに chance の見込みで両目を閉じる。平均 5 秒ほどに 1 回）
 const LAUNDRY = [[11, 'LINEN_B'], [18, 'LINEN_R'], [26, 'LINEN_Y']];   // 洗濯物の布（紐の上の x と色。色の並びはシーンに入るたびに替わる）
 const BUTTERFLIES = ['LINEN_Y', 'LINEN_B'];   // 花壇のまわりを飛ぶ蝶の羽の色（Garden）
@@ -256,7 +256,7 @@ function buildPalette(s) {
 // sil: 影絵の生き物の色、duck: 隠し要素のアヒルの胴の素材（省くと FLOWER_Y）、props: 小物（buildProps）、litWindows: 窓に灯をともす、ruin: 廃墟にする
 // glowWater: 水を光らせる、stars: 星を出す、fireflies: 蛍を出す、clouds: 空に雲を浮かべる、smoke: 煙突から煙を出す
 // birds: 鳥が横切る、meteors: 流れ星が流れる、embers: 松明から火の粉が昇る、fallGlow: 滝を光を受けない色（ramps の GWATER）で塗る
-// rightShade: 右の面の段（省くと FACE_SHADE のまま）、curves: 素材ごとの、暗い側の段の寄せ方（省くと 1 で均等）、brightWellRoof: 井戸の屋根を 1 段明るくする
+// rightShade: 右の面の段（省くと FACE_SHADE のまま）、curves: 素材ごとの、暗い側の段の寄せ方（省くと 1 で均等）、brightWellRoof: 井戸の屋根を 1 段明るくする、brightGateRoof: 右奥の低い塔の屋根を 1 段明るくする
 const SCENES = [
   {
     name: 'Garden', lighting: 'sun', dark: 0x2a2440, bright: 0xfffaf0, sil: 0x1c1826,
@@ -311,6 +311,7 @@ const SCENES = [
     },
     sky: [0x04060e, 0x14202e],   // 深夜の空（黒に近い紺から、わずかに青みのある紺へ）
     props: 'ruin', ruin: true, glowWater: true, stars: true, fireflies: true, meteors: true, duck: 'LINEN_Y',
+    brightGateRoof: true,   // 右奥の低い塔の屋根を 1 段明るくする
   },
 ];
 
@@ -368,7 +369,7 @@ let splashes = [];         // しぶき { x, y, z, vx, vy, vz, z0 }
 let puffs = [];            // 煙突の煙 { x, y, z, vx, vz, age, life }
 let puffWait = 0;          // 次の煙を出すまでの秒
 let chimneyTop = null;     // 煙突の口
-let torches = [];          // 松明・燭台 { x, y, z, top, step, flick, phase, lantern, rock }（top・step は lightFrom の光源、rock は載っている浮かぶ岩の番号）
+let torches = [];          // 松明と塔の最上階の明かり { x, y, z, top, step, flick, phase, hidden, rock }（top・step は lightFrom の光源、rock は載っている浮かぶ岩の番号）
 let lightSources = [];     // 動かない光源（Ruins の水・きのこ）
 let creature = null;       // いまのシーンの生き物の状態
 let fireflies = [];
@@ -523,14 +524,16 @@ function buildArcade(v, a, b, floor) {
     }
   }
 }
-// 円錐（square なら四角錐）の屋根。屋根板の段ごとに暗い筋を入れる
-function cone(v, cx, cy, z0, r0, h, ruin, square = false) {
+// 円錐（square なら四角錐）の屋根。屋根板の段ごとに暗い筋を入れる。round が 1 より小さいと、頂上の近くで急に細り、頂上が丸くなる。
+// bright なら、筋と地の段をどちらも 1 段明るい段（0 と 2）にする
+function cone(v, cx, cy, z0, r0, h, ruin, square = false, round = 1, bright = false) {
   for (let z = z0; z < z0 + h; z++) {
-    const r = Math.max(0.6, r0 * (1 - (z - z0) / h));
+    const r = Math.max(0.6, r0 * (1 - (z - z0) / h) ** round);
     for (let y = Math.floor(cy - r0); y <= cy + r0; y++) for (let x = Math.floor(cx - r0); x <= cx + r0; x++) {
       const dd = square ? Math.max(Math.abs(x + 0.5 - cx), Math.abs(y + 0.5 - cy)) : Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
       if (dd >= r) continue;
-      let c = vox(M.ROOF, mod(z - z0, 3) === 0 ? 1 : hash3(x, y, z) < 0.2 ? 2 : 0);
+      const stripe = mod(z - z0, 3) === 0;
+      let c = vox(M.ROOF, bright ? (stripe ? 0 : 2) : stripe ? 1 : hash3(x, y, z) < 0.2 ? 2 : 0);
       // 廃墟では、手前側の一部が崩れて、横に渡した板の骨組みがのぞく
       if (ruin && x + y > cx + cy - 2 && z < z0 + h * 0.7 && noise2(x * 0.35, z * 0.3, 11) > 0.5) {
         c = dd > r - 1.5 && mod(z - z0, 3) === 0 ? vox(M.WOOD, 1) : 0;
@@ -542,7 +545,7 @@ function cone(v, cx, cy, z0, r0, h, ruin, square = false) {
 // 塔の屋根の寸法（底の高さ z0・半径 r・高さ h）。屋根は本体より eave（既定 2.5）ボクセル張り出す
 function towerRoof(t) {
   const r = (t.x1 - t.x0) / 2 + (t.eave ?? 2.5);
-  return { z0: t.top + t.loggia, r, h: Math.round(r * 1.9) };
+  return { z0: t.top + t.loggia, r, h: Math.round(r * (t.pitch ?? 1.9)) };
 }
 // 窓。壁の左の面（side 'y'。plane は面の y）か右の面（'x'。plane は面の x）に、幅 w・高さ h のガラスを、
 // 木の十字の格子で分けて嵌める。塔も小屋も同じ作りにし、灯った窓（lit）は光るガラスにする
@@ -568,7 +571,7 @@ function buildGateTower(v, t, sc) {
   windowOn(v, 'y', Math.floor(cx) - 1, zc - 3, 3, 5, y1 - 1, lit);
   windowOn(v, 'x', Math.floor(cy) - 1, zc - 3, 3, 5, x1 - 1, lit);
   const roof = towerRoof(t);
-  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square);
+  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square, t.round, sc.brightGateRoof);
 }
 function buildTower(v, t, sc) {
   const { x0, x1, y0, y1, top, floors } = t;
@@ -591,7 +594,7 @@ function buildTower(v, t, sc) {
   for (const [px, py] of [[x0, y0], [x1 - 2, y0], [x0, y1 - 2], [x1 - 2, y1 - 2]]) fill(v, px, py, lz, px + 2, py + 2, lz + lh, masonry);
   fill(v, x0 - 1, y0 - 1, lz + lh - 2, x1 + 1, y1 + 1, lz + lh, (x, y, z) => vox(M.STONE, z === lz + lh - 1 ? 2 : 1));
   const roof = towerRoof(t);
-  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square);
+  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square, t.round);
 }
 function buildHut(v, h, sc) {
   const { x0, x1, y0, y1, wall } = h, yc = (y0 + y1) / 2, half = (y1 - y0) / 2;
@@ -691,9 +694,15 @@ function well(v, cx, cy, ruin, bright) {
     });
   }
 }
-function barrel(v, cx, cy, z0 = 0) {
+// aged なら、年月を経て黒ずみ、ところどころ苔むした樽にする（Ruins）
+function barrel(v, cx, cy, z0 = 0, aged = false) {
   // 胴より上下の縁を細くして、積んだときに 1 つずつ分かれて見えるようにする
-  const stave = (x, y, z) => (z === z0 + 1 || z === z0 + 5 ? vox(M.METAL) : vox(M.WOOD, mod(x + y, 3) === 0 ? 1 : 0));
+  const stave = (x, y, z) => {
+    const h = hash3(x, y, z * 7 + 5);
+    if (aged && h < 0.15) return vox(M.MOSS, h < 0.05 ? 1 : 0);
+    if (z === z0 + 1 || z === z0 + 5) return vox(M.METAL, aged ? 1 : 0);
+    return vox(M.WOOD, mod(x + y, 3) === 0 ? (aged ? 3 : 1) : aged ? 1 : 0);
+  };
   cylinder(v, cx, cy, z0, z0 + 7, 2.5, stave);
   cylinder(v, cx, cy, z0 + 1, z0 + 6, 3, stave);
 }
@@ -709,12 +718,6 @@ function mushrooms(v, cx, cy, seed) {
     fill(v, x - (h > 2 ? 1 : 0), y - (h > 2 ? 1 : 0), h, x + 1, y + 1, h + 1, vox(M.MUSH, 2));
   }
 }
-function rubble(v, cx, cy, seed) {
-  for (let k = 0; k < 6; k++) {
-    const x = cx + (hash3(k, seed, 1) - 0.5) * 10, y = cy + (hash3(k, seed, 2) - 0.5) * 10;
-    blob(v, x, y, 0.8, 1.5 + hash3(k, seed, 3) * 1.5, 1.4 + hash3(k, seed, 4) * 1.4, 1.6, masonry);
-  }
-}
 
 // シーンごとの小物。松明・光源・生き物の居場所もここで決める
 function buildProps(v, sc) {
@@ -724,42 +727,45 @@ function buildProps(v, sc) {
   well(v, WELL.x, WELL.y, sc.ruin, sc.brightWellRoof);
   if (sc.props === 'garden') {
     const seed = randInt(1000);   // 花の付き方は、シーンに入るたびに替わる
-    herbBed(v, -44, 18, -32, 25, seed);
-    herbBed(v, -44, 28, -32, 35, seed + 1);
-    // 洗濯紐の柱と紐（布は動くので別に描く）
-    fill(v, 8, 14, 0, 9, 15, 20, vox(M.WOOD));
-    fill(v, 34, 14, 0, 35, 15, 20, vox(M.WOOD));
-    fill(v, 9, 14, 18, 34, 15, 19, vox(M.CLOTH, 3));
+    herbBed(v, -44, 18, -32, 25, seed);       // 小屋の左手前の花壇（小屋寄り）
+    herbBed(v, -44, 28, -32, 35, seed + 1);   // 小屋の左手前の花壇（手前寄り）
+    // 洗濯紐の柱と紐（布は動くので別に描く）。中庭の手前寄りに、左から右下へ渡す
+    fill(v, 8, 14, 0, 9, 15, 20, vox(M.WOOD));          // 左の柱
+    fill(v, 34, 14, 0, 35, 15, 20, vox(M.WOOD));        // 右の柱
+    fill(v, 9, 14, 18, 34, 15, 19, vox(M.CLOTH, 3));    // 紐
     // 蝶は 2 つの花壇の上を飛びまわる
     anchors.butterflies = { x: -38, y: 26.5, z: 6 };
   } else if (sc.props === 'workshop') {
     // 小屋の戸口のそばに、猫の乗る樽と、大きな粉袋を 1 つ置く
-    barrel(v, -34, 22);
-    sack(v, -26, 24);
+    barrel(v, -34, 22);   // 戸口の左。猫が乗る
+    sack(v, -26, 24);     // 戸口の右
     // 中庭の、滝の脇の塔の左手前の角に、下に 2 つ・上に 1 つ積む（中庭は壁が高く、床が見えるのはこの角だけ。1 段では隠れる）
-    barrel(v, 11, 6); barrel(v, 11, 12); barrel(v, 11, 9, 7);
+    barrel(v, 11, 6); barrel(v, 11, 12);   // 下の段の 2 つ
+    barrel(v, 11, 9, 7);                   // 上の段の 1 つ
+    // 松明をいくつか置く。炎の位置は、torches に入れる
     torches.push({ ...torchHolder(v, -23, 18, 20), ...TORCH_LIGHT });   // 小屋の 2 階の、窓の間
-    torches.push({ ...torchHolder(v, 19, 8, 22), ...TORCH_LIGHT });
-    torches.push({ ...torchHolder(v, 31, 4, 60), ...TORCH_LIGHT });   // 滝の脇の塔の中腹（右の面の手前寄り）
-    torches.push({ ...torchHolder(v, 44, 40, 16), ...TORCH_LIGHT });   // 手前の水路の外壁（右側の外壁の松明と同じ高さ）
-    torches.push({ ...torchHolder(v, 50, -25, 16), ...TORCH_LIGHT });   // 右側の水路の外壁の、右奥の低い塔のすぐ手前
-    // 島の外を通る奥の水路の、外側の壁にも掛ける（暗闇の中で水路が途切れて見えないように）
-    torches.push({ ...torchHolder(v, 10, -72, 16), ...TORCH_LIGHT });
-    torches.push({ ...torchHolder(v, 10, -101, 16), ...TORCH_LIGHT });
-    torches.push({ ...torchHolder(v, -28, -94, 16), ...TORCH_LIGHT });
-    // 滝の脇の塔の最上階の燭台
-    fill(v, 28, 6, TOWER_FALL.top + 6, 30, 8, TOWER_FALL.top + 7, vox(M.METAL));
-    torches.push({ x: 29, y: 7, z: TOWER_FALL.top + 8, ...LANTERN_LIGHT, lantern: true });
+    torches.push({ ...torchHolder(v, 19, 8, 22), ...TORCH_LIGHT });     // 滝の脇の塔の左の面の下の方
+    torches.push({ ...torchHolder(v, 31, -4, 60), ...TORCH_LIGHT });    // 滝の脇の塔の右の面の中腹
+    torches.push({ ...torchHolder(v, 44, 40, 16), ...TORCH_LIGHT });    // 手前の水路の外壁、右の角の近く
+    torches.push({ ...torchHolder(v, 50, -25, 16), ...TORCH_LIGHT });   // 右側の水路の外壁、右奥の低い塔のすぐ手前
+    torches.push({ ...torchHolder(v, 10, -97, 16), ...TORCH_LIGHT });   // 島の外を通る奥の水路の、右奥の角の近く
+    torches.push({ ...torchHolder(v, -32, -94, 16), ...TORCH_LIGHT });  // 島の外を通る奥の水路の、左奥の区間
+    // 滝の脇の塔の最上階は、中央の中ほどの高さに炎の見えない明かりを置き、内側から柱と水面を照らす
+    // （天井の近くに置くと、明かりは屋根を遮らないので、屋根が外から照らされて見える）
+    torches.push({ x: (TOWER_FALL.x0 + TOWER_FALL.x1) / 2, y: (TOWER_FALL.y0 + TOWER_FALL.y1) / 2, z: TOWER_FALL.top + TOWER_FALL.loggia / 2, ...TORCH_LIGHT, hidden: true });
     anchors.cat = { x: -34, y: 22.5, z: 7 };   // 猫は樽の上で丸くなる
   } else {
-    rubble(v, -46, 8, 31); rubble(v, 22, 20, 32);
-    for (const [x, y, s] of [[-40, 30, 41], [14, 22, 42], [55, -20, 43], [-20, -30, 44]]) {
+    // 中庭の、滝の脇の塔の左手前の角に、Mill と同じに積んだ樽が、黒ずんで苔むしたまま残る
+    barrel(v, 11, 6, 0, true); barrel(v, 11, 12, 0, true);   // 下の段の 2 つ
+    barrel(v, 11, 9, 7, true);                               // 上の段の 1 つ
+    // 光るきのこの群れ。小屋の左手前・右奥の低い塔の足元の右・小屋の左奥
+    for (const [x, y, s] of [[-40, 30, 41], [57, -38, 43], [-52, 2, 44]]) {
       mushrooms(v, x, y, s);
       lightSources.push({ x: x + 0.5, y: y + 0.5, z: 2, ...MUSH_LIGHT });
     }
-    // ふくろうは、右奥の低い塔の四角錐の屋根のてっぺんにとまる（背後に、奥の水路の光る水面が来る）
+    // ふくろうは、右奥の低い塔の屋根のてっぺんにとまる（背後に、奥の水路の光る水面が来る）
     const roof = towerRoof(TOWER_MID);
-    anchors.owl = { x: (TOWER_MID.x0 + TOWER_MID.x1) / 2 + 0.5, y: (TOWER_MID.y0 + TOWER_MID.y1) / 2 + 0.5, z: roof.z0 + roof.h - 1 };
+    anchors.owl = { x: (TOWER_MID.x0 + TOWER_MID.x1) / 2 + 0.5, y: (TOWER_MID.y0 + TOWER_MID.y1) / 2 + 0.5, z: roof.z0 + roof.h };
   }
   torches.forEach((t, i) => { t.phase = i * 3.7; t.flick = 0; });
   return anchors;
@@ -777,6 +783,8 @@ function channelIvy(v, rnd, n, len0, span) {
     const x = horiz ? cx : cx + CH_HALF, y = horiz ? cy + CH_HALF : cy, len = len0 + Math.floor(rnd() * span);
     const wall = vget(v, horiz ? x : x - 1, horiz ? y - 1 : y, top) & 31;
     if (vget(v, x, y, top) || (wall !== M.STONE && wall !== M.MOSS)) continue;
+    // ふくろう（Ruins）と画面の同じ列には垂らさない（真後ろに蔦があると、影絵の輪郭が溶ける）
+    if (anchors.owl && Math.abs(x - y - (anchors.owl.x - anchors.owl.y)) < OWL_IVY_CLEAR) continue;
     for (let z = top; z > top - len; z--) if (!vget(v, x, y, z)) vset(v, x, y, z, leafVox(x, y, z));
   }
 }
@@ -1413,8 +1421,7 @@ function drawFlames() {
     const k = Math.floor(time * 8 + t.phase), f = FLAME_FRAMES[Math.floor(hash3(k, t.phase * 10, 3) * 4)];
     // 照らす範囲は、炎の絵より遅く、ときどき 1 ボクセルだけ伸びる（明るさのゆらめきを抑える）
     t.flick = hash3(Math.floor(time * FLICK_FPS + t.phase), t.phase * 10, 4) < FLICK_CHANCE ? 1 : 0;
-    const rows = t.lantern ? f.slice(2) : f;
-    drawBitmap(rows, t.x, t.y, t.z - 1 - torchDy(t), FLAME_COLORS, 3);
+    if (!t.hidden) drawBitmap(f, t.x, t.y, t.z - 1 - torchDy(t), FLAME_COLORS, 3);   // 塔の最上階の明かりは、照らすだけで炎は描かない
   }
 }
 function drawCreatures() {
@@ -1533,6 +1540,7 @@ function drawMeteors() {
 function drawEmbers() {
   const now = time + eventShift, cur = Math.floor(now / EMBERS.slot), n = Math.ceil(EMBERS.life / EMBERS.slot);
   torches.forEach((t, k) => {
+    if (t.hidden) return;
     for (let sl = cur - n; sl <= cur; sl++) {
       if (hash3(sl, k, 71) >= EMBERS.chance) continue;
       const age = now - sl * EMBERS.slot;
