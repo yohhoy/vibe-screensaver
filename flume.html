@@ -22,7 +22,7 @@
 <script type="module">
 import * as THREE from 'three';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, randIntIn, randomInterval, seededRandom, IS_TOUCH, fadeAndRun, logPosition, setupControls } = Common;
+const { TAU, clamp, rand, randInt, randIntIn, randomInterval, seededRandom, IS_TOUCH, fadeAndRun, setupControls } = Common;
 
 // ---- 設定 ----
 // 長さの単位は、世界ではボクセル、画面ではドット（拡大する前の 1 画素）。
@@ -58,7 +58,7 @@ const MOSS_WET = { range: 8, top: 50 };   // 苔は水の近く（水平の距�
 
 // 水車（軸は x の向きで、+x の面が見える。手前から見て時計回りに回る）
 // r: 半径、half: 軸の向きの半幅、paddles: 羽根の数、frames: 羽根 1 枚ぶんの角度を分けるコマ数、period: 最初の水量で 1 周する秒
-const WHEEL = { x: -2, y: 8, z: CH_FLOOR + 17, r: 16, half: 4, paddles: 10, frames: 8, period: 12 };
+const WHEEL = { x: -2, y: 9, z: CH_FLOOR + 17, r: 16, half: 4, paddles: 10, frames: 8, period: 12 };
 const BASIN = { x0: WHEEL.x - 7, x1: WHEEL.x + 7, y0: WHEEL.y - WHEEL.r - 3, y1: WHEEL.y + WHEEL.r + 3 };   // 受け口
 
 // 建物（ボクセルの範囲。top は本体の上端、loggia は屋根を支える柱の高さ、floors は階の数）
@@ -91,17 +91,24 @@ const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) =>
 const WHEEL_WATER_ARC = [0.9, 3.0];  // 水が乗る羽根の角度の範囲（ラジアン。+y から +z の向きへ測る。てっぺんの少し手前から、滝を受けた少し先まで）
 const WHEEL_WATER_X = [2.5, 0.5].map((a) => WHEEL.x + a);   // 羽根の上で水が乗る列（羽根の幅 6 のうち 2 列）
 const WHEEL_WATER_LAYERS = [[3.5, 6], [5, 5]];   // 水の層（羽根の先からの深さと段）。上の層ほど明るい
+const WHEEL_SPILL_END = 4.1;   // 水を運び終えた羽根（WHEEL_WATER_ARC の終わりから）が、受け口へ水をこぼす角度の上限（ラジアン。WHEEL_WATER_ARC と同じ測り方。4.71 が真下）
 const SMOKE_INTERVAL = [0.5, 0.9];  // 煙突の煙のかたまりを出す間隔（秒）
 const SMOKE_LIFE = [4, 5.5];        // 煙のかたまりが消えるまでの秒
 const SMOKE_GROW = 2.5;             // 煙のかたまりが消えるまでに広がる半径（ドット）
 
 // 水の流れ
-const FLOW_SPEED = 7;              // 水路の水面の筋の流れる速さ（ボクセル/秒。最初の水量で）
+const FLOW_SPEED = 7;              // 水路の水面の筋の流れる速さ（ボクセル/秒。水量 1 で）
+const RIPPLE_LEN = 7;              // 水路の水面のさざ波の間隔（流れの向きのボクセル）
+const RIPPLE_SLANT = 2;            // 筋が 1 つ横へずれるごとに、さざ波を流れの向きへずらすボクセル（波の列を斜めにする）
+const RIPPLE_CHANCE = 0.25;        // 間隔ごとにさざ波が立つ見込み（0..1）
+const GLOW_SWELL = [[15, -0.9], [26, 0.5]];   // 光る水（Ruins）の明暗のうねり: [波長（ボクセル）, 速さ（ラジアン/秒）] の 2 つの波を重ねる
+const GLOW_SWELL_AMP = 0.385;      // うねりの強さ。重ねた波（-2..2）にかけて丸めた数だけ段を上げ下げする（0.385 なら、波が ±1.3 を超えた所だけ 1 段）
 const FALL_SPEED = 24;             // 滝の筋の落ちる速さ（ボクセル/秒）
-const FALL_WIDTH = [2, 3, 5, 7];   // 水の深さの段ごとの、滝の幅（y の向き）
-const FALL_THICK = [2, 2, 3, 3];   // 同じく、滝の厚み（x の向き）
+const FALL_STREAK = [0.3, 0.75];   // 滝の明るい筋の出る見込み（上端, 下端）。下ほど増やして白く泡立たせる
+const FALL_FRAY = [0.25, 0.6];     // 滝の帯の縁のドットが欠ける見込み（上端, 下端）。下ほど水が散る
+const FALL_LIP = 2;                // 落ち口で縁を越えて曲がる水の、明るく塗る高さ（ボクセル）
 const FOAM_FPS = 10;               // 泡の絵を替える回数（1 秒あたり）
-const SPLASH_RATE = 12;            // しぶきの出る数（1 秒あたり。最初の水量で）
+const SPLASH_RATE = 12;            // しぶきの出る数（1 秒あたり。水量 1 で）
 const SPLASH_GRAVITY = 80;         // しぶきを引く重力（ボクセル/秒²）
 
 // 光
@@ -116,9 +123,18 @@ const AMBIENT = { torch: -2, water: -8 };   // 光の届かない所の段（Mil
 const FLICK_FPS = 3;         // 松明の照らす範囲が伸び縮みする回数（1 秒あたりの上限）
 const FLICK_CHANCE = 0.3;    // そのたびに、範囲が 1 ボクセル伸びる見込み
 
-// 強度（水量）
-const MIN_FLOW = 0.25, MAX_FLOW = 2, FLOW_STEP = 1.25;
-const LEVEL_FLOWS = [0.35, 0.7, 1.4];   // 水の深さが 1 段増える水量（1〜4 段）
+// 強度（水量）の段。段ごとに水路の水面を 1 ドットずつ上げ下げするか、底を伝う細い流れの幅を変え、滝はそれに合わせて太らせる。
+// rate: 水量（水車の回る速さ・泡としぶきの量の倍率）、depth: 水路の水の深さ（ボクセル。CH_WALL で縁まで満ちる）、
+// trickle: 底を伝う細い流れの半幅（ボクセル。無ければ水路いっぱい）、fall: 滝の [幅（y の向き）, 厚み（x の向き）]
+const FLOW_STEPS = [
+  { rate: 0.25, depth: 1, trickle: 1, fall: [2, 2] },   // 滝は途切れてしずくになる
+  { rate: 0.35, depth: 1, trickle: 3, fall: [2, 2] },
+  { rate: 0.55, depth: 2, fall: [3, 2] },
+  { rate: 1, depth: 3, fall: [5, 3] },
+  { rate: 1.4, depth: 4, fall: [7, 3] },
+  { rate: 2, depth: 5, fall: [8, 3] },
+];
+const FLOW_START = 3;   // 最初の段
 
 // 生き物の出る間隔（[平均, 最短, 最長] 秒）
 const BLINK_INTERVAL = [30, 20, 40];   // ふくろうのまばたき・首かしげ、猫のしっぽ・目
@@ -324,7 +340,7 @@ const sceneNameEl = document.getElementById('scene-name');
 
 // ---- 状態 ----
 let time = 0;              // 経過秒
-let flow = 1;              // 水量（強度）
+let flowStep = FLOW_START; // 強度の段
 let wheelAngle = 0;        // 水車の角度（羽根 1 枚ぶんで割った余り）
 let flowPhase = 0;         // 水路の筋の進んだ距離（ボクセル）
 let fallPhase = 0;         // 滝の筋の進んだ距離（ボクセル）
@@ -362,7 +378,7 @@ function vIndex(v, x, y, z) {
   return x < 0 || y < 0 || z < 0 || x >= v.nx || y >= v.ny || z >= v.nz ? -1 : (z * v.ny + y) * v.nx + x;
 }
 function vset(v, x, y, z, c) { const i = vIndex(v, x, y, z); if (i >= 0) v.data[i] = c; }
-function vget(v, x, y, z) { const i = vIndex(v, x, y, z); return i < 0 ? 0 : v.data[i]; }
+function vget(v, x, y, z) { const i = vIndex(v, x, y, z); return i < 0 ? 0 : v.data[i] & ~GHOST; }   // 透ける印は除く（空のマスにも付く）
 // 箱 [x0, x1) × [y0, y1) × [z0, z1) を埋める。c は値か、(x, y, z) から値を返す関数（0 なら空ける）
 function fill(v, x0, y0, z0, x1, y1, z1, c) {
   x0 = Math.max(x0, v.x0); y0 = Math.max(y0, v.y0); z0 = Math.max(z0, v.z0);
@@ -601,13 +617,14 @@ function buildStructures(v, sc) {
   buildHut(v, HUT, sc);
   for (let i = 0; i + 1 < PATH.length; i++) buildArcade(v, PATH[i], PATH[i + 1], CH_FLOOR);
   buildChannel(v, PATH, CH_FLOOR, true, false);
-  // 落ち口の水路。奥の水路の端の真上に重なる側は開けておき、x の向きの視線には透かす
+  // 落ち口の水路。奥の水路の端の真上に重なる側は開けておき、x の向きの視線には透かす。
+  // 溝の中の空のマスにも印を付け、開いた端から溝に入った視線も透かす（透かさないと、端の壁の脇から溝の底が覗く）
   const spout = [[SPOUT_X, 0], [FALL_X1, 0]];
   buildChannel(v, spout, CH_FLOOR + LIFT, true, true);
   const r = segRect(spout[0], spout[1], CH_HALF, CH_HALF, 0);
   for (let z = CH_FLOOR + LIFT - CH_SLAB; z < CH_FLOOR + LIFT + CH_WALL; z++) for (let y = r.y0; y < r.y1; y++) for (let x = GHOST_X; x < r.x1; x++) {
     const i = vIndex(v, x, y, z);
-    if (i >= 0 && v.data[i]) v.data[i] |= GHOST;
+    if (i >= 0) v.data[i] |= GHOST;
   }
   // 塔の上の風見
   const tcx = Math.floor((TOWER_FALL.x0 + TOWER_FALL.x1) / 2), tcy = Math.floor((TOWER_FALL.y0 + TOWER_FALL.y1) / 2);
@@ -804,7 +821,7 @@ function ruinWorld(v) {
     let i = (z * ny + y) * nx;
     for (let x = 0; x < nx; x++, i++) {
       const c = data[i];
-      if (!c || data[i + sz]) continue;
+      if (!c || data[i + sz] & ~GHOST) continue;
       const m = c & 31, wx = x + v.x0, wy = y + v.y0, wz = z + v.z0;
       if (m !== M.STONE && m !== M.PAVE && m !== M.ROOF && m !== M.ROCK) continue;
       const n = noise2(wx * 0.18, wy * 0.18 + wz * 0.1, 12);
@@ -962,14 +979,16 @@ function castVolume(v, L) {
       let face = t === vz1 ? 0 : t === tx1 ? 2 : 1;
       let ix = Math.floor(x0 + t - 1e-6) - vx0, iy = Math.floor(y0 + t - 1e-6) - vy0, iz = Math.floor(t - 1e-6) - vz0;
       if (ix < 0 || iy < 0 || iz < 0) continue;
-      let i = (iz * ny + iy) * nx + ix, ghost = false, through = false, c = 0;
+      let i = (iz * ny + iy) * nx + ix, ghost = false, through = false, c = 0, prev = 0;
       for (;;) {
         c = data[i];
         if (c) {
           if (!(c & GHOST)) break;
-          // 透けるボクセルは、x の向きから入ったときだけ、続くあいだ通り抜ける
-          if (ghost || face === 2) ghost = through = true; else break;
+          // 透けるマスは、x の向きから入ったときだけ、続くあいだ通り抜ける。ただし空のマスは、印の無いマスから入ったとき（開いた端から溝に入ったとき）だけ。
+          // そうでなければ、空のマスはそのまま進む
+          if (ghost || (face === 2 && (c & 31 || !(prev & GHOST)))) ghost = through = true; else if (c & 31) break;
         } else ghost = false;
+        prev = c;
         const tx = ix + vx0 - x0, ty = iy + vy0 - y0, tz = iz + vz0;
         if (tx >= ty && tx >= tz) { if (--ix < 0) { c = 0; break; } t = tx; i--; face = 2; }
         else if (ty >= tz) { if (--iy < 0) { c = 0; break; } t = ty; i -= nx; face = 1; }
@@ -1133,7 +1152,7 @@ const WATER_BODIES = (() => {
 })();
 // 水の素材（Ruins では光る水）
 const waterMat = () => (current.glowWater ? M.GWATER : M.WATER);
-const waterLevel = () => 1 + LEVEL_FLOWS.filter((f) => flow >= f).length;
+const flowLevel = () => FLOW_STEPS[flowStep];   // いまの強度の段
 // 水車の輪の上の、滝の当たる高さ
 const contactZ = (y) => WHEEL.z + Math.sqrt(Math.max(0, WHEEL.r ** 2 - (y + 0.5 - WHEEL.y) ** 2));
 
@@ -1153,12 +1172,13 @@ function plot(x, y, z, m, s, bias = 0) {
 }
 
 function drawWater() {
-  const lv = waterLevel(), half = lv === 1 ? 1 : CH_IN, mat = waterMat();
+  const { depth: lv, trickle } = flowLevel(), half = trickle ?? CH_IN, mat = waterMat();
   const tick = Math.floor(time * FOAM_FPS);
   for (const b of WATER_BODIES) {
     const zw = b.floor + lv;
     const pxa = Math.max(0, Math.floor(originX + b.x0 - b.y1)), pxb = Math.min(W, Math.ceil(originX + b.x1 - b.y0));
-    const pya = Math.max(0, Math.floor(originY + (b.x0 + b.y0) / 2 - zw)), pyb = Math.min(H, Math.ceil(originY + (b.x1 + b.y1) / 2 - zw));
+    // 下端は底の高さで求める（水面より下に沈んだ面は、水面より下に映る）
+    const pya = Math.max(0, Math.floor(originY + (b.x0 + b.y0) / 2 - zw)), pyb = Math.min(H, Math.ceil(originY + (b.x1 + b.y1) / 2 - b.floor));
     for (let py = pya; py < pyb; py++) {
       const sy = py + 0.5 - originY;
       for (let px = pxa; px < pxb; px++) {
@@ -1181,13 +1201,18 @@ function drawWater() {
           // 受け口は波立ち、明るい点がちらつく
           s = hash3(Math.floor(x), Math.floor(y), tick) < 0.12 ? 6 : 4;
         } else {
-          const lmin = -half, lmax = half + (lv === 1 ? 0 : CH_FRONT) - 1;
+          const lmin = -half, lmax = half + (trickle ? 0 : CH_FRONT) - 1;
           let lat = Math.floor(b.dx ? y - b.ay : x - b.ax);
           if (sunk) lat = clamp(lat, lmin, lmax);   // 沈んだ面は、水面の点が水路の外でも、いちばん近い筋の水にする
           else if (lat < lmin || lat > lmax) continue;
-          const u = Math.floor(b.u0 + (x - b.ax) * b.dx + (y - b.ay) * b.dy - flowPhase);
+          const along = b.u0 + (x - b.ax) * b.dx + (y - b.ay) * b.dy, u = Math.floor(along - flowPhase);
           const cell = Math.floor(u / 8), h = hash3(cell, lat, 11);
           s = lat === -CH_IN || lat === CH_IN + CH_FRONT - 1 ? 3 : 4;
+          // さざ波: 明るい 2 ドットのすぐ下流に暗い 1 ドット。筋ごとに斜めにずらし、2 筋ずつ間引く
+          const ru = u + lat * RIPPLE_SLANT, rc = Math.floor(ru / RIPPLE_LEN), rp = ru - rc * RIPPLE_LEN;
+          if (rp < 3 && hash3(rc, Math.floor(lat / 2), 17) < RIPPLE_CHANCE) s += rp < 2 ? 1 : -1;
+          // 光る水は、ゆっくり動く明暗のうねりで、ベタ塗りに見せない
+          if (current.glowWater) s += Math.round(GLOW_SWELL_AMP * GLOW_SWELL.reduce((a, [len, sp]) => a + Math.sin((along + lat * 0.5) * TAU / len + time * sp), 0));
           if (h < 0.5 && u - cell * 8 < 1 + Math.floor(h * 6)) s = h < 0.12 ? 7 : 6;
         }
         put(i, mat, s, d, x, y, zw);
@@ -1197,10 +1222,11 @@ function drawWater() {
 }
 
 function drawFall() {
-  const lv = waterLevel(), w = FALL_WIDTH[lv - 1], th = FALL_THICK[lv - 1];
+  const { depth: lv, fall: [w, th] } = flowLevel();
   const xa = FALL_X1 - th, xb = FALL_X1, ya = -Math.floor(w / 2), yb = ya + w;
   const zTop = CH_FLOOR + LIFT + lv, zBot = Math.min(contactZ(ya), contactZ(yb - 1));
   const mat = current.fallGlow ? M.GWATER : waterMat(), tick = Math.floor(time * FOAM_FPS);
+  const at = ([a, b], f) => a + (b - a) * f;   // 上端の値と下端の値の間
   const pxa = Math.max(0, Math.floor(originX + xa - yb)), pxb = Math.min(W, Math.ceil(originX + xb - ya));
   const pya = Math.max(0, Math.floor(originY + (xa + ya) / 2 - zTop)), pyb = Math.min(H, Math.ceil(originY + (xb + yb) / 2 - zBot));
   for (let py = pya; py < pyb; py++) {
@@ -1211,37 +1237,46 @@ function drawFall() {
       if (t <= Math.max(xa - x0, ya - y0, zBot)) continue;
       const x = x0 + t, y = y0 + t, z = t;
       if (z < contactZ(y)) continue;
-      const face = t === zTop ? 0 : t === tX ? 2 : 1;
+      const face = t === zTop ? 0 : t === tX ? 2 : 1, f = Math.min(1, (zTop - z) / (zTop - zBot));   // f: 落ちた割合（上端 0..下端 1）
       const lane = face === 2 ? Math.floor(y) : Math.floor(x);
       const outer = face === 2 ? lane === ya || lane === yb - 1 : lane === xa;
-      if (outer && hash3(tick, Math.floor(z / 2), lane) < 0.3) continue;   // 縁がちらちら揺れる
+      if (outer && hash3(tick, Math.floor(z / 2), lane) < at(FALL_FRAY, f)) continue;   // 縁がちらちら揺れる
       const q = Math.floor(z + fallPhase);
-      if (lv === 1 && hash3(Math.floor(q / 5), lane, 31) < 0.35) continue;   // 細い流れは途切れてしずくになる
+      if (flowStep === 0 && hash3(Math.floor(q / 5), lane, 31) < 0.35) continue;   // いちばん弱い段では、途切れてしずくになる
       const cell = Math.floor(q / 6), h = hash3(cell, lane, 21);
-      let s = face === 2 ? 4 : 5;
-      if (h < 0.5 && q - cell * 6 < 2) s = h < 0.15 ? 7 : 6;
-      const i = py * W + px;
-      put(i, mat, s, x + y + z, x, y, z);
+      const p = at(FALL_STREAK, f);
+      let s = zTop - z < FALL_LIP ? 6 : face === 2 ? 4 : 5;   // 落ち口の縁は明るく
+      if (h < p && q - cell * 6 < 2) s = h < p * 0.3 ? 7 : 6;
+      put(py * W + px, mat, s, x + y + z, x, y, z);
     }
   }
 }
 
-// 水車の上の方の羽根に乗った水（1 枚に、WHEEL_WATER_LAYERS の層 × WHEEL_WATER_X の列のドット）。滝を受けたあたりの羽根だけに、手前の輪に隠れない深さで描く
+// 水車の上の方の羽根に乗った水（1 枚に、WHEEL_WATER_LAYERS の層 × WHEEL_WATER_X の列のドット）。滝を受けたあたりの羽根だけに、手前の輪に隠れない深さで描く。
+// 運び終えて下がっていく羽根からは、羽根の端からあふれた水が、途切れ途切れの細い流れになって受け口へこぼれ落ちる（運んだ水が消えて見えないように）
 function drawWheelWater() {
   const { x: wx, y: wy, z: wz, r: R, paddles, frames } = WHEEL, pitch = TAU / paddles;
   const phi = Math.min(frames - 1, Math.floor(wheelAngle / pitch * frames)) * pitch / frames;   // 水車の絵と同じ角度
+  const mat = waterMat(), surf = CH_FLOOR + flowLevel().depth;
   for (let j = 0; j < paddles; j++) {
     const a = mod(j * pitch + phi, TAU) + 0.12;   // 羽根の上側
-    if (a <= WHEEL_WATER_ARC[0] || a >= WHEEL_WATER_ARC[1]) continue;
-    for (const [depth, shade] of WHEEL_WATER_LAYERS) for (const x of WHEEL_WATER_X) {
-      const r = R - depth;
-      plot(x, wy + r * Math.cos(a), wz + r * Math.sin(a), waterMat(), shade, 0.5);
+    if (a > WHEEL_WATER_ARC[0] && a < WHEEL_WATER_ARC[1]) {
+      for (const [depth, shade] of WHEEL_WATER_LAYERS) for (const x of WHEEL_WATER_X) {
+        const r = R - depth;
+        plot(x, wy + r * Math.cos(a), wz + r * Math.sin(a), mat, shade, 0.5);
+      }
+    } else if (a >= WHEEL_WATER_ARC[1] && a < WHEEL_SPILL_END) {
+      const r = R - WHEEL_WATER_LAYERS[0][0], y = wy + r * Math.cos(a);
+      for (let z = wz + r * Math.sin(a); z > surf; z--) {
+        const q = mod(Math.floor(z + fallPhase) + j * 3, 5);
+        if (q < 3) plot(wx + WHEEL.half + 0.5, y, z, mat, q === 0 ? 7 : 6, 0.5);   // 手前の輪のすぐ外を落とす（輪の内側は輪と輻に隠れる）。受け口の水に溶けないよう、明るい段で塗る
+      }
     }
   }
 }
 // 泡: 滝が水車に当たる所、受け口の水車の下、受け口の出口。しぶきもここで描く
 function drawFoam() {
-  const lv = waterLevel(), tick = Math.floor(time * FOAM_FPS), surf = CH_FLOOR + lv + 0.2;
+  const { depth, rate } = flowLevel(), tick = Math.floor(time * FOAM_FPS), surf = CH_FLOOR + depth + 0.2;
   const mat = current.glowWater ? M.GWATER : M.FOAM;
   const emitters = [
     { x: FALL_X1 - 1.5, y: 0, z: contactZ(0), rx: 3, ry: 4, rz: 2, n: 10 },
@@ -1249,7 +1284,7 @@ function drawFoam() {
     { x: PATH[0][0] - 0.5, y: BASIN.y1 + 1, z: surf, rx: 2.5, ry: 3, rz: 0, n: 6 },
   ];
   emitters.forEach((e, k) => {
-    const n = Math.round(e.n * Math.min(flow, 1.6));
+    const n = Math.round(e.n * Math.min(rate, 1.6));
     for (let j = 0; j < n; j++) {
       const x = e.x + (hash3(tick, j, k * 3) - 0.5) * 2 * e.rx, y = e.y + (hash3(tick, j, k * 3 + 1) - 0.5) * 2 * e.ry;
       const z = e.z + hash3(tick, j, k * 3 + 2) * e.rz;
@@ -1514,20 +1549,20 @@ function setScene(index) {
 const nextScene = () => fadeAndRun(() => setScene(sceneIndex + 1));
 
 // ---- 強度 ----
-function setFlow(v) {
-  flow = clamp(v, MIN_FLOW, MAX_FLOW);
+function setFlowStep(k) {
+  flowStep = clamp(k, 0, FLOW_STEPS.length - 1);
 }
 
 // ---- メインループ ----
 function step(dt) {
   time += dt;
-  const pitch = TAU / WHEEL.paddles;
-  wheelAngle = mod(wheelAngle + dt * flow * TAU / WHEEL.period, pitch);
-  flowPhase = (flowPhase + dt * FLOW_SPEED * Math.sqrt(flow)) % 960;
+  const pitch = TAU / WHEEL.paddles, { rate } = flowLevel();
+  wheelAngle = mod(wheelAngle + dt * rate * TAU / WHEEL.period, pitch);
+  flowPhase = (flowPhase + dt * FLOW_SPEED * Math.sqrt(rate)) % 960;
   fallPhase = (fallPhase + dt * FALL_SPEED) % 960;
   // しぶき
   const zc = contactZ(0);
-  for (let n = SPLASH_RATE * flow * dt; n > 0; n--) {
+  for (let n = SPLASH_RATE * rate * dt; n > 0; n--) {
     if (n < 1 && Math.random() > n) break;
     splashes.push({ x: FALL_X1 - 1.5 + rand(-1, 1), y: rand(-2, 2), z: zc, vx: rand(-5, 5), vy: rand(-12, 4), vz: rand(6, 16), z0: zc });
   }
@@ -1571,9 +1606,9 @@ setupControls({
   changeScene: nextScene,
   // 強度（↑↓・上下スワイプ）。水量
   intensity: {
-    up: () => setFlow(flow * FLOW_STEP),
-    down: () => setFlow(flow / FLOW_STEP),
-    level: () => logPosition(flow, MIN_FLOW, MAX_FLOW),   // ゲージの位置（0..1）
+    up: () => setFlowStep(flowStep + 1),
+    down: () => setFlowStep(flowStep - 1),
+    level: () => flowStep / (FLOW_STEPS.length - 1),   // ゲージの位置（0..1）
   },
   onResize() {
     renderer.setSize(innerWidth, innerHeight);
