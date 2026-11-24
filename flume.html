@@ -68,7 +68,7 @@ const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 44, loggia: 0, gate: 
 const WELL = { x: 62, y: 6 };   // 屋根付きの井戸の中心
 const HUT = { x0: -36, x1: -10, y0: -2, y1: 18, wall: 30 };   // 2 階建て。水車（直径 32）と釣り合う高さにする
 // 浮島（中心、半径、形の丸さの指数、下側の岩の深さ、下側のすぼまり方の指数（小さいほど縁の近くまで深く、左右に太る））
-const ISLAND = { cx: 4, cy: 0, rx: 71, ry: 54, power: 3, depth: 50, taper: 0.85 };   // 奥の縁は、右の塔の陰から地面の角が細く覗かない所に置く
+const ISLAND = { cx: 4, cy: 0, rx: 71, ry: 54, power: 3, depth: 50, taper: 0.85 };   // 奥の縁は、右奥の低い塔の陰から地面の角が細く覗かない所に置く
 // 周りに浮かぶ岩を置く候補の場所（画面の上の位置。世界の原点が映る点からのドット）。島に重ならない画面の端に、左右 6 か所ずつ。
 // シーンに入るたびに、左右から ROCK_COUNT 個ずつ選び、半径 ROCK_R の岩を置く（片側に寄らないように）
 const ROCK_SLOTS = [
@@ -113,11 +113,11 @@ const SPLASH_GRAVITY = 80;         // しぶきを引く重力（ボクセル/�
 
 // 光
 const SUN = [-0.55, 0.15, 1];      // 日の向き（Garden。z を 1 にした向き）
-const SHADOW_STEPS = 240;          // 影をたどる歩数（0.5 ボクセルずつ。影の長さの上限。高い中央の塔の影が中庭まで届く長さにする）
+const SHADOW_STEPS = 240;          // 影をたどる歩数（0.5 ボクセルずつ。影の長さの上限。高い滝の脇の塔の影が中庭まで届く長さにする）
 const TORCH_LIGHT = { top: 0, step: 8 };     // 松明の明かり: 光源の段と、段が 1 つ落ちる距離（ボクセル）。島を暖かく照らしつつ、炎が光だまりの中で目立ち、松明ごとの光の輪を見分けられる広さにする
 const LANTERN_LIGHT = { top: 0, step: 9 };   // 塔の上の燭台の明かり
 const ROCK_TORCH_LIGHT = { top: 0, step: 4 }; // 浮かぶ岩に立てた小さな松明の明かり
-const WATER_LIGHT = { top: 0, step: 13 };   // 光る水の明かり（Ruins）。中央の塔の、滝から離れた右の面まで届かせ、塔と小屋の形を暗がりに溶かさない
+const WATER_LIGHT = { top: 0, step: 13 };   // 光る水の明かり（Ruins）。滝の脇の塔の、滝から離れた右の面まで届かせ、塔と小屋の形を暗がりに溶かさない
 const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり
 const AMBIENT = { torch: -2, water: -8 };   // 光の届かない所の段（Mill は、塔の上・屋根・中庭の形が読め、松明の光の輪とも見分けられる暗さ）
 const FLICK_FPS = 3;         // 松明の照らす範囲が伸び縮みする回数（1 秒あたりの上限）
@@ -125,9 +125,9 @@ const FLICK_CHANCE = 0.3;    // そのたびに、範囲が 1 ボクセル伸び
 
 // 強度（水量）の段。段ごとに水路の水面を 1 ドットずつ上げ下げするか、底を伝う細い流れの幅を変え、滝はそれに合わせて太らせる。
 // rate: 水量（水車の回る速さ・泡としぶきの量の倍率）、depth: 水路の水の深さ（ボクセル。CH_WALL で縁まで満ちる）、
-// trickle: 底を伝う細い流れの半幅（ボクセル。無ければ水路いっぱい）、fall: 滝の [幅（y の向き）, 厚み（x の向き）]
+// trickle: 底を伝う細い流れの半幅（ボクセル。無ければ水路いっぱい）、fall: 滝の [幅（y の向き）, 厚み（x の向き）]、drip: 滝を途切れさせてしずくにする
 const FLOW_STEPS = [
-  { rate: 0.25, depth: 1, trickle: 1, fall: [2, 2] },   // 滝は途切れてしずくになる
+  { rate: 0.25, depth: 1, trickle: 1, fall: [2, 2], drip: true },
   { rate: 0.35, depth: 1, trickle: 3, fall: [2, 2] },
   { rate: 0.55, depth: 2, fall: [3, 2] },
   { rate: 1, depth: 3, fall: [5, 3] },
@@ -137,8 +137,8 @@ const FLOW_STEPS = [
 const FLOW_START = 3;   // 最初の段
 
 // 生き物の出る間隔（[平均, 最短, 最長] 秒）
-const BLINK_INTERVAL = [30, 20, 40];   // ふくろうのまばたき・首かしげ、猫のしっぽ・目
-const CAT_EYES_TIME = 2.5;             // 猫が目を開けている秒
+const BLINK_INTERVAL = [30, 20, 40];   // 猫が目を開けてしっぽを振る
+const CAT_EYES_TIME = 5;               // 猫が目を開けている秒
 const OWL_BLINK = { fps: 5, chance: 0.04 };   // ふくろうが不規則にまばたきする（1 秒に fps 回、そのたびに chance の見込みで両目を閉じる。平均 5 秒ほどに 1 回）
 const LAUNDRY = [[11, 'LINEN_B'], [18, 'LINEN_R'], [26, 'LINEN_Y']];   // 洗濯物の布（紐の上の x と色。色の並びはシーンに入るたびに替わる）
 const BUTTERFLIES = ['LINEN_Y', 'LINEN_B'];   // 花壇のまわりを飛ぶ蝶の羽の色（Garden）
@@ -160,13 +160,13 @@ const EMBERS = { slot: 0.3, chance: 0.35, life: 1.0, rise: 4 };   // Mill の火
 // 隠し要素のアヒルのおもちゃ。受け口から水路を 1 周して滝を落ち、水車の羽根に当たって跳ね、滝の脇の塔の後ろへ落ちて消える
 // interval: 現れる間隔 [平均, 最短, 最長]（秒）、rise: 水の中から浮かび上がるのにかかる秒、pop: 浮かび上がった勢いで水面から跳ね上がる高さ（ドット）と、落ち着くまでの秒、bobFps・bob: 波に揺られて 1 ドット浮く（1 秒に bobFps 回、そのたびに bob の見込みで）、
 // gravity: 落ちるときの重力（ボクセル/秒²）、fallMax: 滝を落ちる速さの上限（ボクセル/秒）、
-// bounce: 羽根に当たって跳ねる速さ [x, y, z]（ボクセル/秒。-y と上へ跳ねると、画面では右上へ進んで、奥の塔の後ろに入る）、gone: 跳ねてから消すまでの秒（塔に隠れきったあと）、
+// bounce: 羽根に当たって跳ねる速さ [x, y, z]（ボクセル/秒。-y と上へ跳ねると、画面では右上へ進んで、滝の脇の塔の後ろに入る）、gone: 跳ねてから消すまでの秒（塔に隠れきったあと）、
 // bias: 描くときに手前へずらす深さ（ボクセル。絵は 1 つの深さで描くので、水路の手前の薄い壁や滝の水に、頭やくちばしが欠けないようにする）
 const DUCK = { interval: [300, 120, 900], rise: 0.2, pop: [2, 0.5], bobFps: 2, bob: 0.3, gravity: 150, fallMax: 45, bounce: [0, -30, 28], gone: 0.7, bias: 6 };
 const DUCK_SWAP = 10;    // 奥の水路の端から、この長さだけ手前で、落ち口の水路へ移る（ボクセル。端の近くは落ち口の水路の石に隠れるので、その手前で移る）
 const DUCK_START = [-1.5, 23];   // 浮かび上がる所（受け口の、水車より手前で、水路の出口の前）
 // 横から見た絵（左向き。# は胴、u は胴の下側、b はくちばし、e は目）
-const DUCK_ART = ['.##.....', '#e##....', 'bb##...#', '.######.', '..uuuu..'];
+const DUCK_ART = ['.###..', 'b#e#..', '.#####', '.uuuu.'];
 
 // ---- ユーティリティ ----
 const mod = (a, n) => ((a % n) + n) % n;
@@ -186,6 +186,11 @@ function noise2(x, y, seed = 0) {
 }
 const hex = (c) => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
 const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+// 配列を、その場でランダムに並べ替える
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) { const j = randInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
 
 // ---- パレット ----
 // 画素の色は「素材」と「明るさの段（0..7）」で決まり、パレットの番号は 素材 × 8 + 段。番号 0 は黒
@@ -532,7 +537,7 @@ function cone(v, cx, cy, z0, r0, h, ruin, square = false) {
     }
   }
 }
-// 塔の最上階の円錐（square なら四角錐）の屋根（底の高さ z0・半径 r・高さ h）。屋根は本体より eave（既定 2.5）ボクセル張り出す
+// 塔の屋根の寸法（底の高さ z0・半径 r・高さ h）。屋根は本体より eave（既定 2.5）ボクセル張り出す
 function towerRoof(t) {
   const r = (t.x1 - t.x0) / 2 + (t.eave ?? 2.5);
   return { z0: t.top + t.loggia, r, h: Math.round(r * 1.9) };
@@ -729,18 +734,18 @@ function buildProps(v, sc) {
     // 小屋の戸口のそばに、猫の乗る樽と、大きな粉袋を 1 つ置く
     barrel(v, -34, 22);
     sack(v, -26, 24);
-    // 中庭の、落ち口の塔の左手前の角に、下に 2 つ・上に 1 つ積む（中庭は壁が高く、床が見えるのはこの角だけ。1 段では隠れる）
+    // 中庭の、滝の脇の塔の左手前の角に、下に 2 つ・上に 1 つ積む（中庭は壁が高く、床が見えるのはこの角だけ。1 段では隠れる）
     barrel(v, 11, 6); barrel(v, 11, 12); barrel(v, 11, 9, 7);
     torches.push({ ...torchHolder(v, -23, 18, 20), ...TORCH_LIGHT });   // 小屋の 2 階の、窓の間
     torches.push({ ...torchHolder(v, 19, 8, 22), ...TORCH_LIGHT });
-    torches.push({ ...torchHolder(v, 31, 4, 60), ...TORCH_LIGHT });   // 落ち口の塔の中腹（右の面の手前寄り）
+    torches.push({ ...torchHolder(v, 31, 4, 60), ...TORCH_LIGHT });   // 滝の脇の塔の中腹（右の面の手前寄り）
     torches.push({ ...torchHolder(v, 44, 40, 16), ...TORCH_LIGHT });   // 手前の水路の外壁（右側の外壁の松明と同じ高さ）
-    torches.push({ ...torchHolder(v, 50, -25, 16), ...TORCH_LIGHT });   // 右側の水路の外壁の、右の塔のすぐ手前
+    torches.push({ ...torchHolder(v, 50, -25, 16), ...TORCH_LIGHT });   // 右側の水路の外壁の、右奥の低い塔のすぐ手前
     // 島の外を通る奥の水路の、外側の壁にも掛ける（暗闇の中で水路が途切れて見えないように）
     torches.push({ ...torchHolder(v, 10, -72, 16), ...TORCH_LIGHT });
     torches.push({ ...torchHolder(v, 10, -101, 16), ...TORCH_LIGHT });
     torches.push({ ...torchHolder(v, -28, -94, 16), ...TORCH_LIGHT });
-    // 落ち口の塔の最上階の燭台
+    // 滝の脇の塔の最上階の燭台
     fill(v, 28, 6, TOWER_FALL.top + 6, 30, 8, TOWER_FALL.top + 7, vox(M.METAL));
     torches.push({ x: 29, y: 7, z: TOWER_FALL.top + 8, ...LANTERN_LIGHT, lantern: true });
     anchors.cat = { x: -34, y: 22.5, z: 7 };   // 猫は樽の上で丸くなる
@@ -750,7 +755,7 @@ function buildProps(v, sc) {
       mushrooms(v, x, y, s);
       lightSources.push({ x: x + 0.5, y: y + 0.5, z: 2, ...MUSH_LIGHT });
     }
-    // ふくろうは、右の塔の四角錐の屋根のてっぺんにとまる（背後に、奥の水路の光る水面が来る）
+    // ふくろうは、右奥の低い塔の四角錐の屋根のてっぺんにとまる（背後に、奥の水路の光る水面が来る）
     const roof = towerRoof(TOWER_MID);
     anchors.owl = { x: (TOWER_MID.x0 + TOWER_MID.x1) / 2 + 0.5, y: (TOWER_MID.y0 + TOWER_MID.y1) / 2 + 0.5, z: roof.z0 + roof.h - 1 };
   }
@@ -885,11 +890,6 @@ function buildLaundryVolume(k, cloths) {
   }
   return v;
 }
-// 配列を、その場でランダムに並べ替える
-function shuffle(a) {
-  for (let i = a.length - 1; i > 0; i--) { const j = randInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; }
-  return a;
-}
 // 浮かぶ岩。上に草（廃墟では苔）が生える
 function buildRockVolume(rock, sc, decor) {
   const r = rock.r, x = Math.round(rock.sy + rock.sx / 2), y = Math.round(rock.sy - rock.sx / 2);
@@ -928,10 +928,8 @@ function buildRockVolume(rock, sc, decor) {
 
 // 影絵の生き物（'#' は体、'o' は目）
 const OWL = ['.#...#.', '.#####.', '.#o#o#.', '#######', '#######', '#######', '.#####.'];   // 頭より胴を太くして、ずんぐりさせる
-const OWL_TILT = ['..#..#.', '..####.', '.#o#o#.', '#######', '#######', '#######', '.#####.'];
-const CAT = ['#.#........', '###..####..', '####.#####.', '##########.', '##########.', '.########..'];
-const CAT_EYES = ['#.#........', '###..####..', 'o#o#.#####.', '##########.', '##########.', '.########..'];   // 目を開けた顔（o が目）
-const CAT_TAILS = [[[10, 4], [11, 4], [12, 3], [12, 2]], [[10, 4], [11, 3], [12, 2], [13, 1]], [[10, 4], [11, 3], [11, 2], [10, 1]]];   // しっぽの画素（左上からの位置）。体の後ろから上へ立てて、明るい壁を背にする（体の下へ垂らすと、暗い樽と重なって消える）
+const CAT = ['#.#.......', '###.####..', 'o#o######.', '#########.', '#########.', '.#######..'];   // o は目（閉じている間は体の色で塗る）
+const CAT_TAILS = [[[9, 4], [10, 4], [11, 3], [11, 2]], [[9, 4], [10, 3], [11, 2], [12, 1]], [[9, 4], [10, 3], [10, 2], [9, 1]]];   // しっぽの画素（左上からの位置）。体の後ろから上へ立てて、明るい壁を背にする（体の下へ垂らすと、暗い樽と重なって消える）
 // 蝶（'w' は羽、'b' は胴）。羽を開いた絵と閉じた絵を交互に描いて羽ばたかせる
 const BUTTERFLY = [['w.w', 'wbw'], ['.w.', '.b.']];
 
@@ -1028,6 +1026,23 @@ function castSprite(v) {
   castVolume(v, L);
   return L;
 }
+// 層を作業用の層に重ねる（dy ドットだけ下へずらして。手前にある画素だけ）
+function blitLayer(L, dy = 0) {
+  for (let py = 0; py < L.h; py++) {
+    const y = L.by + py + dy;
+    if (y < 0 || y >= H) continue;
+    for (let px = 0; px < L.w; px++) {
+      const j = py * L.w + px;
+      if (!L.mat[j]) continue;
+      const x = L.bx + px;
+      if (x < 0 || x >= W) continue;
+      const i = y * W + x;
+      if (L.depth[j] <= fDepth[i]) continue;
+      fMat[i] = L.mat[j]; fShade[i] = L.shade[j]; fDepth[i] = L.depth[j]; fLight[i] = L.light[j];
+      fPos[i * 3] = L.pos[j * 3]; fPos[i * 3 + 1] = L.pos[j * 3 + 1]; fPos[i * 3 + 2] = L.pos[j * 3 + 2];
+    }
+  }
+}
 // 層に影と、動かない光を付ける
 function lightLayer(L) {
   for (let j = 0; j < L.mat.length; j++) {
@@ -1113,7 +1128,7 @@ function layoutScreen() {
   screenMaterial.uniforms.screenTex.value = screenTex;
   screenMaterial.uniforms.scale.value = scale;
   screenMaterial.uniforms.bufferHeight.value = size.y;
-  // 空: 上から下へ 8 本の帯。帯の境目の上下 SKY_HATCH 本ぶんは、2 つの帯の色を網点で混ぜてなだらかにつなぐ
+  // 空: 上から下へ 8 本の帯。帯の境目の上下それぞれ、帯の高さの SKY_HATCH 倍の幅は、2 つの帯の色を網点で混ぜてなだらかにつなぐ
   skyBuf = new Uint8Array(n);
   for (let y = 0, i = 0; y < H; y++) {
     const t = y * 8 / H, b = Math.round(t), local = t - b;   // いちばん近い境目 b からの距離（帯の高さを 1 とする）
@@ -1165,6 +1180,8 @@ const WATER_BODIES = (() => {
 // 水の素材（Ruins では光る水）
 const waterMat = () => (current.glowWater ? M.GWATER : M.WATER);
 const flowLevel = () => FLOW_STEPS[flowStep];   // いまの強度の段
+// 水路の流れの速さ（ボクセル/秒）。水量の平方根ほどにとどめる（速くすると、筋がちらついて流れに見えない）
+const flowSpeed = () => FLOW_SPEED * Math.sqrt(flowLevel().rate);
 // 水車の輪の上の、滝の当たる高さ
 const contactZ = (y) => WHEEL.z + Math.sqrt(Math.max(0, WHEEL.r ** 2 - (y + 0.5 - WHEEL.y) ** 2));
 
@@ -1220,7 +1237,7 @@ function drawWater() {
           const along = b.u0 + (x - b.ax) * b.dx + (y - b.ay) * b.dy, u = Math.floor(along - flowPhase);
           const cell = Math.floor(u / 8), h = hash3(cell, lat, 11);
           s = lat === -CH_IN || lat === CH_IN + CH_FRONT - 1 ? 3 : 4;
-          // さざ波: 明るい 2 ドットのすぐ下流に暗い 1 ドット。筋ごとに斜めにずらし、2 筋ずつ間引く
+          // さざ波: 明るい 2 ドットのすぐ下流に暗い 1 ドット。筋ごとに斜めにずらし、立つかどうかは隣り合う 2 筋ずつまとめて決める
           const ru = u + lat * RIPPLE_SLANT, rc = Math.floor(ru / RIPPLE_LEN), rp = ru - rc * RIPPLE_LEN;
           if (rp < 3 && hash3(rc, Math.floor(lat / 2), 17) < RIPPLE_CHANCE) s += rp < 2 ? 1 : -1;
           // 光る水は、ゆっくり動く明暗のうねりで、ベタ塗りに見せない
@@ -1234,7 +1251,7 @@ function drawWater() {
 }
 
 function drawFall() {
-  const { depth: lv, fall: [w, th] } = flowLevel();
+  const { depth: lv, fall: [w, th], drip } = flowLevel();
   const xa = FALL_X1 - th, xb = FALL_X1, ya = -Math.floor(w / 2), yb = ya + w;
   const zTop = CH_FLOOR + LIFT + lv, zBot = Math.min(contactZ(ya), contactZ(yb - 1));
   const mat = current.fallGlow ? M.GWATER : waterMat(), tick = Math.floor(time * FOAM_FPS);
@@ -1254,7 +1271,7 @@ function drawFall() {
       const outer = face === 2 ? lane === ya || lane === yb - 1 : lane === xa;
       if (outer && hash3(tick, Math.floor(z / 2), lane) < at(FALL_FRAY, f)) continue;   // 縁がちらちら揺れる
       const q = Math.floor(z + fallPhase);
-      if (flowStep === 0 && hash3(Math.floor(q / 5), lane, 31) < 0.35) continue;   // いちばん弱い段では、途切れてしずくになる
+      if (drip && hash3(Math.floor(q / 5), lane, 31) < 0.35) continue;   // 途切れてしずくになる
       const cell = Math.floor(q / 6), h = hash3(cell, lane, 21);
       const p = at(FALL_STREAK, f);
       let s = zTop - z < FALL_LIP ? 6 : face === 2 ? 4 : 5;   // 落ち口の縁は明るく
@@ -1349,23 +1366,22 @@ function drawCreatures() {
   const c = creature;
   if (!c) return;
   if (c.kind === 'owl') {
-    const blink = (c.event === 'blink' && c.eventAge < 0.25) || hash3(Math.floor(time * OWL_BLINK.fps), 91, 3) < OWL_BLINK.chance, tilt = c.event === 'tilt' && c.eventAge < 1.6;
-    drawBitmap(tilt ? OWL_TILT : OWL, c.at.x, c.at.y, c.at.z, { '#': [M.SIL, 0], o: blink ? [M.SIL, 0] : [M.EYE, 6] }, 3);
+    const blink = hash3(Math.floor(time * OWL_BLINK.fps), 91, 3) < OWL_BLINK.chance;
+    drawBitmap(OWL, c.at.x, c.at.y, c.at.z, { '#': [M.SIL, 0], o: blink ? [M.SIL, 0] : [M.EYE, 6] }, 3);
   } else if (c.kind === 'cat') {
-    const swish = c.event === 'tail' && c.eventAge < 1.5 ? 1 + Math.floor(c.eventAge * 4) % 2 : 0;
-    const eyes = c.event === 'eyes' && c.eventAge < CAT_EYES_TIME;
-    drawBitmap(eyes ? CAT_EYES : CAT, c.at.x, c.at.y, c.at.z, { '#': [M.SIL, 0], o: [M.EYE, 6] }, 3, false, CAT_TAILS[swish]);
+    const swish = c.eventAge < 1.5 ? 1 + Math.floor(c.eventAge * 4) % 2 : 0;
+    const eyes = c.eventAge < CAT_EYES_TIME;
+    drawBitmap(CAT, c.at.x, c.at.y, c.at.z, { '#': [M.SIL, 0], o: eyes ? [M.EYE, 6] : [M.SIL, 0] }, 3, false, CAT_TAILS[swish]);
   }
 }
+// 猫は、ときどき目を開けて、同時にしっぽを振る（ふくろうのまばたきは、時刻のハッシュで決める）
 function updateCreature(dt) {
   const c = creature;
-  if (!c) return;
+  if (c?.kind !== 'cat') return;
   c.eventAge += dt;
   c.wait -= dt;
   if (c.wait > 0) return;
   c.eventAge = 0;
-  // 猫はしっぽを振るのと目を開けるのを交互にする（Math.random を引く回数を変えないため）
-  c.event = c.kind === 'cat' ? (c.event === 'tail' ? 'eyes' : 'tail') : Math.random() < 0.6 ? 'blink' : 'tilt';
   c.wait = randomInterval(BLINK_INTERVAL);
 }
 // 蝶（Garden）。花壇の上を、揃わない周期でふらふらと飛びまわる
@@ -1472,22 +1488,6 @@ function drawEmbers() {
     }
   });
 }
-function blitLayer(L, dy = 0) {
-  for (let py = 0; py < L.h; py++) {
-    const y = L.by + py + dy;
-    if (y < 0 || y >= H) continue;
-    for (let px = 0; px < L.w; px++) {
-      const j = py * L.w + px;
-      if (!L.mat[j]) continue;
-      const x = L.bx + px;
-      if (x < 0 || x >= W) continue;
-      const i = y * W + x;
-      if (L.depth[j] <= fDepth[i]) continue;
-      fMat[i] = L.mat[j]; fShade[i] = L.shade[j]; fDepth[i] = L.depth[j]; fLight[i] = L.light[j];
-      fPos[i * 3] = L.pos[j * 3]; fPos[i * 3 + 1] = L.pos[j * 3 + 1]; fPos[i * 3 + 2] = L.pos[j * 3 + 2];
-    }
-  }
-}
 
 // ---- アヒルのおもちゃ（隠し要素） ----
 // 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）
@@ -1522,7 +1522,7 @@ function updateDuck(dt) {
   if (d.phase === 'pop' && d.t >= DUCK.pop[1]) Object.assign(d, { phase: 'float', t: 0 });
   if (d.phase === 'float') {
     // 水の流れと同じ速さで進む（流れから浮くと、自分で泳いでいるように見える）
-    d.u += dt * FLOW_SPEED * Math.sqrt(flowLevel().rate);
+    d.u += dt * flowSpeed();
     let u = d.u, k = 0;
     while (k < DUCK_PATH.length && u > DUCK_PATH[k].len) u -= DUCK_PATH[k++].len;
     const s = DUCK_PATH[k];
@@ -1554,7 +1554,7 @@ function drawDuck() {
     : current.lighting === 'torch' ? lightFrom(torches, d.x, d.y, d.z, AMBIENT.torch) : lightFrom(lightSources, d.x, d.y, d.z, AMBIENT.water);
   const body = current.lighting === 'torch' ? 0 : lit;   // Mill は、光らない素材に render が松明の明かりを付けるので、ここでは足さない
   const m = M[current.duck ?? 'FLOWER_Y'], colors = {
-    '#': [m, 5 + body], e: [M.SIL, 0], b: [M.FLAME, Math.max(2, 4 + lit)],
+    '#': [m, 5 + body], e: [M.SIL, 0], b: [M.FLAME, 2],
     u: current.glowWater ? [M.GWATER, 5] : [m, 4 + body],   // Ruins は、下側が光る水を受けて青緑を帯びる
   };
   const sink = d.phase === 'rise' ? Math.ceil(DUCK_ART.length * (1 - d.t / DUCK.rise)) : 0;   // 浮かび上がる間は、水面より下の行を描かない
@@ -1619,7 +1619,7 @@ function setScene(index) {
   paletteTex.needsUpdate = true;
   splashes = []; puffs = [];
   creature = anchors.owl ? { kind: 'owl', at: anchors.owl } : anchors.cat ? { kind: 'cat', at: anchors.cat } : null;
-  if (creature) Object.assign(creature, { event: null, eventAge: 99, wait: randomInterval(BLINK_INTERVAL) * 0.5 });
+  if (creature) Object.assign(creature, { eventAge: 99, wait: randomInterval(BLINK_INTERVAL) * 0.5 });
   const rnd = seededRandom(randInt(1e6));   // 蛍と蝶の動きは、シーンに入るたびに替わる
   fireflies = current.fireflies ? Array.from({ length: FIREFLIES }, () => {
     let x, y, z, tries = 0;
@@ -1647,8 +1647,9 @@ function step(dt) {
   time += dt;
   const pitch = TAU / WHEEL.paddles, { rate } = flowLevel();
   wheelAngle = mod(wheelAngle + dt * rate * TAU / WHEEL.period, pitch);
-  flowPhase = (flowPhase + dt * FLOW_SPEED * Math.sqrt(rate)) % 960;
-  fallPhase = (fallPhase + dt * FALL_SPEED) % 960;
+  // 筋の模様は進んだ距離のハッシュで決めるので、巻き戻さない（巻き戻すと模様が一斉に入れ替わる。JS の倍精度なので長く動かしても荒れない）
+  flowPhase += dt * flowSpeed();
+  fallPhase += dt * FALL_SPEED;
   // しぶき
   const zc = contactZ(0);
   for (let n = SPLASH_RATE * rate * dt; n > 0; n--) {
