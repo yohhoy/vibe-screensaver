@@ -238,6 +238,21 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 シーン切替: 次の材質 / 強度: ビー玉の数
 
+## [巡る水路](https://yohhoy.github.io/vibe-screensaver/flume.html)
+
+[<img src="docs/images/flume.jpg" width="480" alt="巡る水路">](https://yohhoy.github.io/vibe-screensaver/flume.html)
+
+空に浮かぶ小さな石造りの浮島を、荒いドット絵で眺めます。水路を奥へ流れていった水が、なぜか水車の真上に戻ってきて流れ落ち、水車を回し続けます。昼の花の庭、松明の灯る粉ひき場、星明かりの廃墟と、光と小物と生き物が替わります。
+
+シーン切替: 次の場面 / 強度: 水量
+
+<details>
+<summary>隠し要素（ネタバレ注意）</summary>
+
+ときどき黄色いアヒルのおもちゃが水路を流れてきて、浮島をひと巡りします。**C** キーですぐに呼び出せます。
+
+</details>
+
 <details>
 <summary>隠し要素（ネタバレ注意）</summary>
 
