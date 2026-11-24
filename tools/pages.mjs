@@ -43,6 +43,7 @@ export const HIDDEN = {
   bubbles: 'startHeart',
   orrery: 'startComet',
   marbles: 'startMascot',
+  flume: 'startDuck',
 };
 
 // kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）

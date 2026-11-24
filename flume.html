@@ -22,7 +22,7 @@
 <script type="module">
 import * as THREE from 'three';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, randIntIn, randomInterval, seededRandom, IS_TOUCH, fadeAndRun, setupControls } = Common;
+const { TAU, clamp, rand, randInt, randIntIn, randomInterval, seededRandom, sideRandom, IS_TOUCH, fadeAndRun, isFading, setupControls } = Common;
 
 // ---- 設定 ----
 // 長さの単位は、世界ではボクセル、画面ではドット（拡大する前の 1 画素）。
@@ -157,6 +157,17 @@ const BIRD_FRAMES = [['#...#', '.#.#.', '..#..'], ['..#..', '.#.#.', '#...#']]; 
 const METEORS = { every: 45, chance: 0.7, time: 0.7, speed: 110, len: 7, slope: 0.4 };   // Ruins の流れ星（time: 光っている秒、speed: 横の速さ（ドット/秒）、len: 尾の長さ（ドット）、slope: 浅い傾き（下へ進む量 / 横へ進む量））
 const EMBERS = { slot: 0.3, chance: 0.35, life: 1.0, rise: 4 };   // Mill の火の粉（slot 秒ごとに、松明ごとに chance の見込みで出す。life: 消えるまでの秒、rise: 昇る速さ（ボクセル/秒）。昇る高さ rise × life を低く抑えて控えめにする）
 
+// 隠し要素のアヒルのおもちゃ。受け口から水路を 1 周して滝を落ち、水車の羽根に当たって跳ね、滝の脇の塔の後ろへ落ちて消える
+// interval: 現れる間隔 [平均, 最短, 最長]（秒）、rise: 水の中から浮かび上がるのにかかる秒、pop: 浮かび上がった勢いで水面から跳ね上がる高さ（ドット）と、落ち着くまでの秒、bobFps・bob: 波に揺られて 1 ドット浮く（1 秒に bobFps 回、そのたびに bob の見込みで）、
+// gravity: 落ちるときの重力（ボクセル/秒²）、fallMax: 滝を落ちる速さの上限（ボクセル/秒）、
+// bounce: 羽根に当たって跳ねる速さ [x, y, z]（ボクセル/秒。-y と上へ跳ねると、画面では右上へ進んで、奥の塔の後ろに入る）、gone: 跳ねてから消すまでの秒（塔に隠れきったあと）、
+// bias: 描くときに手前へずらす深さ（ボクセル。絵は 1 つの深さで描くので、水路の手前の薄い壁や滝の水に、頭やくちばしが欠けないようにする）
+const DUCK = { interval: [300, 120, 900], rise: 0.2, pop: [2, 0.5], bobFps: 2, bob: 0.3, gravity: 150, fallMax: 45, bounce: [0, -30, 28], gone: 0.7, bias: 6 };
+const DUCK_SWAP = 10;    // 奥の水路の端から、この長さだけ手前で、落ち口の水路へ移る（ボクセル。端の近くは落ち口の水路の石に隠れるので、その手前で移る）
+const DUCK_START = [-1.5, 23];   // 浮かび上がる所（受け口の、水車より手前で、水路の出口の前）
+// 横から見た絵（左向き。# は胴、u は胴の下側、b はくちばし、e は目）
+const DUCK_ART = ['.##.....', '#e##....', 'bb##...#', '.######.', '..uuuu..'];
+
 // ---- ユーティリティ ----
 const mod = (a, n) => ((a % n) + n) % n;
 // 整数の組から決まる 0..1 の乱数（見た目のばらつき用。Math.random を引かない）
@@ -236,7 +247,7 @@ function buildPalette(s) {
 // lighting: 光の当たり方（sun: 日差しが一様に当たる、torch: 松明のまわりだけ、water: 光る水のまわりだけ）
 // dark・bright: 段の暗い側・明るい側で寄せる色、colors: 素材の色（段 4）、ramps: 段ごとの色を直に決める素材
 // sky: 背景の空の、画面の上端と下端の色（省くと黒）、shift: 素材の色を全体に何段暗くするか（空は変えない）、darkFloor: 下側と右下の石畳を何段暗くするか、courtFloor: 水路に囲まれた中庭の石畳を何段暗くするか
-// sil: 影絵の生き物の色、props: 小物（buildProps）、litWindows: 窓に灯をともす、ruin: 廃墟にする
+// sil: 影絵の生き物の色、duck: 隠し要素のアヒルの胴の素材（省くと FLOWER_Y）、props: 小物（buildProps）、litWindows: 窓に灯をともす、ruin: 廃墟にする
 // glowWater: 水を光らせる、stars: 星を出す、fireflies: 蛍を出す、clouds: 空に雲を浮かべる、smoke: 煙突から煙を出す
 // birds: 鳥が横切る、meteors: 流れ星が流れる、embers: 松明から火の粉が昇る、fallGlow: 滝を光を受けない色（ramps の GWATER）で塗る
 // rightShade: 右の面の段（省くと FACE_SHADE のまま）、curves: 素材ごとの、暗い側の段の寄せ方（省くと 1 で均等）、brightWellRoof: 井戸の屋根を 1 段明るくする
@@ -290,9 +301,10 @@ const SCENES = [
       STONE: 0x8e9490, PAVE: 0x76847e, ROCK: 0x505a5a, GRASS: 0x3c6c4c, ROOF: 0x4c5660, WOOD: 0x54443a,
       WATER: 0x24a898, FOAM: 0xd8fff8, LEAF: 0x2e6040, FLOWER_R: 0x804050, FLOWER_Y: 0x9a9050, FLOWER_W: 0xa0b0b0,
       MOSS: 0x3a8a50, CLOTH: 0x8a8c80, METAL: 0x5a6466, SOIL: 0x3a3a30, DARK: 0x0c1418, GLASS: 0x2e4a4e,
+      LINEN_Y: 0xe8c838,   // 隠し要素のアヒル（洗濯物の無いシーンなので、黄色の布の素材を借りる。くすんだ黄色の花の色では、苔や石に溶ける）
     },
     sky: [0x04060e, 0x14202e],   // 深夜の空（黒に近い紺から、わずかに青みのある紺へ）
-    props: 'ruin', ruin: true, glowWater: true, stars: true, fireflies: true, meteors: true,
+    props: 'ruin', ruin: true, glowWater: true, stars: true, fireflies: true, meteors: true, duck: 'LINEN_Y',
   },
 ];
 
@@ -1477,6 +1489,82 @@ function blitLayer(L, dy = 0) {
   }
 }
 
+// ---- アヒルのおもちゃ（隠し要素） ----
+// 乱数は Math.random と別にする（DEVELOPMENT.md: 既存の乱数を引く順番を変えない）
+const duckRandom = sideRandom();
+// 通る道（水路の水面の中ほどの区間を、流れる順に並べる）。奥の水路の端の手前で、画面で重なる落ち口の水路の上の点へ移り、落ち口の縁まで進む
+const DUCK_PATH = (() => {
+  const c = CH_FRONT / 2;   // 水面は手前の側へ CH_FRONT だけ広いので、中ほどはその半分だけ手前
+  const pts = [DUCK_START, ...PATH.slice(1).map(([x, y]) => [x + c, y + c])];
+  pts[pts.length - 1][0] += DUCK_SWAP;
+  const segs = pts.slice(1).map((b, i) => ({ a: pts[i], b, floor: CH_FLOOR }));
+  segs.push({ a: [SPOUT_X + c + DUCK_SWAP, c], b: [FALL_X1 + 1, c], floor: CH_FLOOR + LIFT });
+  for (const s of segs) s.len = Math.abs(s.b[0] - s.a[0]) + Math.abs(s.b[1] - s.a[1]);
+  return segs;
+})();
+let duck = null;   // 出ているアヒル { phase（rise: 浮かび上がる、pop: 跳ね上がって落ち着く、float: 水路を流れる、fall: 滝を落ちる、bounce: 跳ねて塔の後ろへ落ちる）, t（その段の経過秒）, u（道の上を進んだ距離）, x, y, z, vx, vy, vz, flip（右向き） }。いなければ null
+let duckWait = randomInterval(DUCK.interval, duckRandom);   // 次に現れるまでの秒数
+
+function startDuck() {
+  if (duck || isFading()) return;
+  const [x, y] = DUCK_START;
+  duck = { phase: 'rise', t: 0, u: 0, x, y, z: CH_FLOOR + flowLevel().depth, vx: 0, vy: 0, vz: 0, flip: false };
+  duckWait = randomInterval(DUCK.interval, duckRandom);
+}
+function updateDuck(dt) {
+  const d = duck;
+  if (!d) {
+    if ((duckWait -= dt) <= 0) startDuck();   // 暗転している間は出さない（startDuck が何もせず、次のコマにまた試す）
+    return;
+  }
+  d.t += dt;
+  if (d.phase === 'rise' && d.t >= DUCK.rise) Object.assign(d, { phase: 'pop', t: 0 });
+  if (d.phase === 'pop' && d.t >= DUCK.pop[1]) Object.assign(d, { phase: 'float', t: 0 });
+  if (d.phase === 'float') {
+    // 水の流れと同じ速さで進む（流れから浮くと、自分で泳いでいるように見える）
+    d.u += dt * FLOW_SPEED * Math.sqrt(flowLevel().rate);
+    let u = d.u, k = 0;
+    while (k < DUCK_PATH.length && u > DUCK_PATH[k].len) u -= DUCK_PATH[k++].len;
+    const s = DUCK_PATH[k];
+    if (!s) {
+      // 落ち口の縁を越えて、滝の中へ
+      Object.assign(d, { phase: 'fall', t: 0, x: FALL_X1 - 1 });
+    } else {
+      const f = u / s.len, dx = s.b[0] - s.a[0], dy = s.b[1] - s.a[1];
+      d.x = s.a[0] + dx * f; d.y = s.a[1] + dy * f; d.z = s.floor + flowLevel().depth;
+      d.flip = dx - dy > 0;   // 画面で右へ進む区間は右を向く
+    }
+    return;
+  }
+  if (d.phase === 'fall' || d.phase === 'bounce') {
+    d.vz -= DUCK.gravity * dt;
+    if (d.phase === 'fall') d.vz = Math.max(d.vz, -DUCK.fallMax);
+    d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
+    if (d.phase === 'fall' && d.z <= contactZ(d.y)) {
+      [d.vx, d.vy, d.vz] = DUCK.bounce;
+      Object.assign(d, { phase: 'bounce', t: 0, z: contactZ(d.y) });
+    } else if (d.phase === 'bounce' && d.t > DUCK.gone) duck = null;
+  }
+}
+function drawDuck() {
+  const d = duck;
+  if (!d) return;
+  // シーンの光に合わせて段を落とす。画素ごとに求めず、アヒルの位置の明るさを全体に使う
+  const lit = current.lighting === 'sun' ? (inShadow(d.x, d.y, d.z, 0) ? -2 : 0)
+    : current.lighting === 'torch' ? lightFrom(torches, d.x, d.y, d.z, AMBIENT.torch) : lightFrom(lightSources, d.x, d.y, d.z, AMBIENT.water);
+  const body = current.lighting === 'torch' ? 0 : lit;   // Mill は、光らない素材に render が松明の明かりを付けるので、ここでは足さない
+  const m = M[current.duck ?? 'FLOWER_Y'], colors = {
+    '#': [m, 5 + body], e: [M.SIL, 0], b: [M.FLAME, Math.max(2, 4 + lit)],
+    u: current.glowWater ? [M.GWATER, 5] : [m, 4 + body],   // Ruins は、下側が光る水を受けて青緑を帯びる
+  };
+  const sink = d.phase === 'rise' ? Math.ceil(DUCK_ART.length * (1 - d.t / DUCK.rise)) : 0;   // 浮かび上がる間は、水面より下の行を描かない
+  if (sink >= DUCK_ART.length) return;
+  // 浮かび上がった勢いで跳ね上がって落ち着き、そのあとは波に揺られてときどき浮く
+  const bob = d.phase === 'pop' ? Math.round(DUCK.pop[0] * Math.sin(Math.PI * d.t / DUCK.pop[1]))
+    : d.phase === 'float' && hash3(Math.floor(time * DUCK.bobFps), 57, 3) < DUCK.bob ? 1 : 0;
+  drawBitmap(DUCK_ART.slice(0, DUCK_ART.length - sink), d.x, d.y, d.z + bob, colors, DUCK.bias, d.flip);
+}
+
 // ---- 描く ----
 function render() {
   fMat.set(base.mat); fShade.set(base.shade); fDepth.set(base.depth); fLight.set(base.light);
@@ -1492,6 +1580,7 @@ function render() {
   if (current.embers) drawEmbers();
   drawSmoke();
   drawCreatures();
+  drawDuck();
   if (current.fireflies) drawFireflies();
   drawButterflies();
   if (current.lighting === 'torch') {
@@ -1578,6 +1667,7 @@ function step(dt) {
     puffs = puffs.filter((p) => p.age < p.life);
   }
   updateCreature(dt);
+  updateDuck(dt);
 }
 
 function draw() {
@@ -1604,6 +1694,7 @@ function tick(now) {
 setupControls({
   // シーン切替（Space・左右スワイプ）。次の景色へ
   changeScene: nextScene,
+  keys: { KeyC: startDuck },   // 隠し要素のアヒルのおもちゃ（操作ガイドには表示しない）
   // 強度（↑↓・上下スワイプ）。水量
   intensity: {
     up: () => setFlowStep(flowStep + 1),
