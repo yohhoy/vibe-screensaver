@@ -42,7 +42,7 @@ const CONDITIONS = [
 // 作品ごとのシーン（pages.mjs の CHOICES）。scenes はシーン別に測るか。
 // シーンの定義（SCENES）が無い作品は 1 行だけ測る。配色の定義（COLOR_PRESETS）はシーンとして分けない
 // EXCLUDED は測らない作品（理由は docs/performance-data.md の「作品ごとの注意」）
-const EXCLUDED = ['pixelcity'];
+const EXCLUDED = ['pixelcity', 'flume'];
 const PAGES = PAGE_NAMES.filter((page) => !EXCLUDED.includes(page))
   .map((page) => ({ page, scenes: Boolean(CHOICES[page]?.scenes) }));
 

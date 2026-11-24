@@ -45,7 +45,7 @@ node tools/gpu-bench.mjs --only ripple --scene 2 --cool 50     # シーンのあ
 
 作品ごとの測り方:
 
-- pixelcity は測らない（理由は [performance-data.md](performance-data.md) の「作品ごとの注意」）。
+- pixelcity・flume は測らない（理由は [performance-data.md](performance-data.md) の「作品ごとの注意」）。
 - `SCENES` がある drone・ripple・waterfall・penguins・teapot はシーン別に測る。ほかの作品は固定の乱数で 1 行だけ測る。
 - tube・aurora・lavalamp・sandpicture の `COLOR_PRESETS` は配色の定義なので、シーンとして分けない。
 - teapot は 1 シーンずつ `--scene` と `--cool 50` で測る（18 シーンを続けて測ると、後のシーンほどクロックが下がって重く出る）。
