@@ -72,6 +72,8 @@ const TOWER_FALL = { x0: 16, x1: 31, y0: -7, y1: 8, top: CH_FLOOR + LIFT - CH_SL
 const TOWER_MID = { x0: 35, x1: 53, y0: -49, y1: -31, top: 51, loggia: 0, gate: 32, eave: 0.5, square: true, round: 1.8, pitch: 1.2 };   // eave: 屋根の張り出し（省くと 2.5）、square: 屋根を四角錐にする（省くと円錐）、round: 1 より大きいと屋根全体を丸く膨らませる（2 で楕円。省くと 1）、pitch: 屋根の高さと底の半径の比（省くと 1.9）
 const WELL = { x: 62, y: 6 };   // 屋根付きの井戸の中心
 const WHEELBARROW = { garden: [-60, 8], workshop: [-58, 11], ruin: [58, -22] };   // 手押し車の荷台の奥の角（x・y の小さい側）。シーンごとに替える: Garden は小屋から離した左、Mill はそのわずかに手前、Ruins は井戸の右奥
+// Garden のベンチのそばの花: 咲かせる範囲と、咲かせない範囲（どちらも [x0, y0, x1, y1)）、日なた・影の中で 1 マスに花が咲く割合
+const WILDFLOWERS = { area: [53, -44, 80, -1], avoid: [57, -24, 67, -10], sun: 0.08, shade: 0.015 };
 const HUT = { x0: -36, x1: -10, y0: -2, y1: 18, wall: 30 };   // 2 階建て。水車（直径 32）と釣り合う高さにする
 // 浮島（中心、半径、形の丸さの指数、下側の岩の深さ、下側のすぼまり方の指数（小さいほど縁の近くまで深く、左右に太る））
 const ISLAND = { cx: 4, cy: 0, rx: 71, ry: 54, power: 3, depth: 50, taper: 0.85 };   // 奥の縁は、右奥の低い塔の陰から地面の角が細く覗かない所に置く
@@ -704,13 +706,28 @@ function herbBed(v, x0, y0, x1, y1, seed) {
 }
 // 土の上（高さ z）に、葉と花をまだらに植える（花壇・手押し車の荷台）
 function plants(v, x0, y0, x1, y1, z, seed) {
-  const flowers = [prop('FLOWER_R'), prop('FLOWER_Y'), prop('FLOWER_W')];
   for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
     const h = hash3(x, y, seed);
     if (h < 0.6) {
       vset(v, x, y, z, vox(M.LEAF, h < 0.2 ? 2 : 0));
-      if (h < 0.3) vset(v, x, y, z + 1, h < 0.14 ? vox(flowers[Math.floor(hash3(x, y, seed + 1) * 3)], 2) : vox(M.LEAF, 1));
+      if (h < 0.3) vset(v, x, y, z + 1, h < 0.14 ? flower(hash3(x, y, seed + 1)) : vox(M.LEAF, 1));
     }
+  }
+}
+// 花のボクセル。h（0..1 の乱数）で赤・黄・白から選ぶ
+const flower = (h, sc = current) => vox(prop(['FLOWER_R', 'FLOWER_Y', 'FLOWER_W'][Math.floor(h * 3)], sc), 2);
+// 長方形 [x0, y0, x1, y1) の中か
+const inRect = (x, y, [x0, y0, x1, y1]) => x >= x0 && x < x1 && y >= y0 && y < y1;
+// ベンチのそばの草地（WILDFLOWERS.area のうち、地面が草で上が空いていて、avoid の外の所）に、葉を 1 つ付けた花をまばらに咲かせる。
+// 日の当たる所を優先し、影の中は少しだけにする（影の中の花は暗く沈んで、差し色にならない）
+function wildflowers(v, seed) {
+  const { area: [x0, y0, x1, y1], avoid, sun, shade } = WILDFLOWERS;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if ((vget(v, x, y, -1) & 31) !== M.GRASS || vget(v, x, y, 0) || inRect(x, y, avoid)) continue;
+    const h = hash3(x, y, seed);
+    if (h >= sun || h >= shade && inShadow(x + 0.5, y + 0.5, 2, 0)) continue;   // 影の判定は重いので、日なたでも咲かない所では調べない
+    vset(v, x, y, 0, vox(M.LEAF, 2));
+    vset(v, x, y, 1, flower(hash3(x, y, seed + 1)));
   }
 }
 // 井戸: 石の井桁、2 本の柱と横木、柱に載せた切妻の屋根（棟は x の向き）
@@ -806,6 +823,18 @@ function jar(v, cx, cy) {
     return vox(prop('TERRA'), z === neck - 1 ? 1 : 0);   // 首の下の帯
   }));
 }
+// 木のベンチ（(x0, y0) は背もたれの奥の端）。座面の長い辺を y の向き（画面の右上から左下）にし、背もたれを -x に立てて、右下（+x）を向かせる。
+// 背もたれは 2 本の横木にし、間を空けて後ろを透かす。座面は板の継ぎ目を暗くする
+function bench(v, x0, y0) {
+  const L = 12, D = 4, H = 3, B = 8;   // 座面の長さ・奥行き・高さ（座面の上の面の z）・背もたれの上端の z
+  const y1 = y0 + L - 1, wood = vox(M.WOOD, 2), dark = vox(M.WOOD);   // ほかの木より 1 段明るくして、塔の影に沈ませない
+  for (const y of [y0, y1]) {
+    fill(v, x0, y, 0, x0 + 1, y + 1, B + 1, dark);              // 背もたれの柱（後ろの脚を兼ねる）
+    fill(v, x0 + D - 1, y, 0, x0 + D, y + 1, H, dark);          // 前の脚
+  }
+  fill(v, x0, y0, H, x0 + D, y1 + 1, H + 1, (x) => mod(x - x0, 2) ? dark : wood);   // 座面の板
+  for (const z of [B - 3, B]) fill(v, x0, y0 + 1, z, x0 + 1, y1, z + 1, wood);      // 背もたれの横木
+}
 // 光るきのこの群れ（Ruins）: (cx, cy) のまわり 8 ボクセル四方に、高さの違う 5 本を生やす
 function mushrooms(v, cx, cy, seed) {
   for (let k = 0; k < 5; k++) {
@@ -833,6 +862,9 @@ function buildProps(v, sc) {
     fill(v, 34, 14, 0, 35, 15, 20, vox(M.WOOD));        // 右の柱
     fill(v, 9, 14, 18, 34, 15, 19, vox(M.CLOTH, 3));    // 紐
     barrel(v, 13, 8);   // 中庭の、滝の脇の塔の左手前の角に、樽を 1 つ寄せて置く（塔の際で一部が隠れてよい）
+    bench(v, 57, -23);   // 井戸の右奥、右奥の低い塔の足もとに、右下を向いた木のベンチを置く
+    // 島の右の縁寄りの草地から、右奥の低い塔の根元にかけて、花をまばらに咲かせる。ベンチの真下と、その正面（右下）6 ボクセルまでには咲かせない（ベンチの両端からも 1 ボクセル空ける）
+    wildflowers(v, seed + 2);
     // 蝶は 2 つの花壇の上を飛びまわる
     anchors.butterflies = { x: -38, y: 26.5, z: 6 };
   } else if (sc.props === 'workshop') {
@@ -1017,12 +1049,11 @@ function buildRockVolume(rock, sc, decor) {
   if (sc.lighting === 'torch' && decor) v.torch = torchHolder(v, x, y, 5);
   // Garden では花が咲く
   if (sc.props === 'garden' && decor) {
-    const flowers = [prop('FLOWER_R', sc), prop('FLOWER_Y', sc), prop('FLOWER_W', sc)];
     for (let k = 0; k < 5; k++) {
       const fx = x + Math.round((hash3(k, x, 71) - 0.5) * r * 1.2), fy = y + Math.round((hash3(k, y, 72) - 0.5) * r * 1.2);
       if (!vget(v, fx, fy, 1)) continue;   // 草の上だけ
       vset(v, fx, fy, 2, vox(M.LEAF, 0));
-      vset(v, fx, fy, 3, vox(flowers[Math.floor(hash3(k, x + y, 73) * 3)], 2));
+      vset(v, fx, fy, 3, flower(hash3(k, x + y, 73), sc));
     }
   }
   // Ruins では光るきのこが生える
