@@ -259,10 +259,9 @@ function buildPalette(s) {
   const shift = s.shift ?? 0;   // 素材の色を、段いくつぶん暗くずらすか
   for (const [name, c] of Object.entries({ ...s.colors, ...s.propColors })) {
     const base = hex(c);
-    const curve = s.curves?.[name] ?? 1;   // 1 より大きいと、暗い側の段ほど暗く寄る（段の明るさを不均等にする）
     for (let k = 0; k < 8; k++) {
       const q = k - shift;
-      put(M[name] ?? prop(name, s), k, q <= 4 ? mixRgb(dark, base, (Math.max(0, q + 1) / 5) ** curve) : mixRgb(base, bright, (q - 4) * 0.28));
+      put(M[name] ?? prop(name, s), k, q <= 4 ? mixRgb(dark, base, (Math.max(0, q + 1) / 5)) : mixRgb(base, bright, (q - 4) * 0.28));
     }
   }
   // 空は、上の色から下の色へ 8 段の帯にする（無ければ黒）
@@ -278,16 +277,17 @@ function buildPalette(s) {
 // ---- シーン ----
 // lighting: 光の当たり方（sun: 日差しが一様に当たる、torch: 松明のまわりだけ、water: 光る水のまわりだけ）
 // dark・bright: 段の暗い側・明るい側で寄せる色、colors: 素材の色（段 4）、propColors: 小物の色（段 4。名前は prop で素材の番号にする。6 色まで）、ramps: 段ごとの色を直に決める素材（LAMP・AIR は ramps でしか色を決めないので、使うシーンでは必ず書く）
-// sky: 背景の空の、画面の上端と下端の色（省くと黒）、shift: 素材の色を全体に何段暗くするか（空は変えない）、darkFloor: 下側と右下の石畳を何段暗くするか、courtFloor: 水路に囲まれた中庭の石畳を何段暗くするか
+// sky: 背景の空の、画面の上端と下端の色（省くと黒）、shift: 素材の色を全体に何段暗くするか（空は変えない）、courtFloor: 水路に囲まれた中庭の石畳を何段暗くするか
 // sil: 影絵（生き物と鳥の群れ）の色、props: 小物（buildProps）、litWindows: 窓に灯をともす、ruin: 廃墟にする
 // glowWater: 水を光らせる、stars: 星を出す、fireflies: 蛍を出す、clouds: 空に雲を浮かべる、smoke: 煙突から煙を出す
 // birds: 鳥が横切る、meteors: 流れ星が流れる、embers: 松明から火の粉が昇る、fallGlow: 滝を光を受けない色（ramps の GWATER）で塗る
-// rightShade: 右の面の段（省くと FACE_SHADE のまま）、curves: 素材ごとの、暗い側の段の寄せ方（省くと 1 で均等）、brightWellRoof: 井戸の屋根を 1 段明るくする、brightGateRoof: 右奥の低い塔の屋根を 1 段明るくする
+// rightShade: 右の面の段（省くと FACE_SHADE のまま）、brightRoofs: 1 段明るくする屋根（well: 井戸、gate: 右奥の低い塔）
 const SCENES = [
   {
     name: 'Garden', lighting: 'sun', dark: 0x2a2440, bright: 0xfffaf0, sil: 0x1c1826,
     colors: {
-      STONE: 0xd9ceb2, PAVE: 0xc4b494, ROCK: 0xa48a70, GRASS: 0x82a852, ROOF: 0xb0583c, WOOD: 0x8c5c34,
+      STONE: 0xd9ceb2, PAVE: 0xa5b3ab,   // 石畳は青みのわずかな灰にして、白っぽい壁と見分ける
+      ROCK: 0xa48a70, GRASS: 0x82a852, ROOF: 0xb0583c, WOOD: 0x8c5c34,
       WATER: 0x4aa0e0, FOAM: 0xe6f4ff, LEAF: 0x3e8a3c,
       MOSS: 0x6c9c3c, CLOTH: 0xf0ebe0, METAL: 0x8e8e96, SOIL: 0x6c4a30, DUCK: 0xffdc28, GLASS: 0x7a92aa,
     },
@@ -298,22 +298,21 @@ const SCENES = [
     sky: [0x1e4478, 0x5088bc],   // 昼の空（澄んだ青。島の日の当たる面より暗く抑える。灰色や紺に寄せると、夕方や夜に見える）
     smoke: true, clouds: true,
     rightShade: 1,   // 右の面を 1 段暗くして、左上からの日差しの立体感を強める
-    // 窓のガラスは空を映して明るく光る（浮島を 1 段暗くした分を受けないよう、段ごとの色を直に決める）
     ramps: {
+      // 窓のガラスは空を映して明るく光る（浮島を 1 段暗くした分を受けない）
       GLASS: [0x8aa6c2, 0x9cb8d2, 0xaecae0, 0xc0d8ec, 0xd0e4f4, 0xdeecf8, 0xeaf4fc, 0xf6faff],
       AIR: [0x4a6e98, 0x5a80a8, 0x6a90b6, 0x8aa6c6, 0x9cb4d0, 0xaec2da, 0xbecee2, 0xccd8e8],   // 雲と煙。雲は空より明るい淡い青にする（空より暗いと雨雲に見える）
     },
     shift: 1,
-    darkFloor: 1,   // 下側と右下の石畳を 1 段暗くする（壁や水路の石と見分けるため。2 段では、日なたなのにそこだけ陰って見える）
-    courtFloor: 2,   // 水路に囲まれた中庭の石畳も 2 段暗くする（塔の足もとの床が、まわりの壁と一緒に明るく浮かないように）
-    curves: { PAVE: 2 },   // 石畳の暗い側の段を暗く寄せ、影の中の床を、目地を残したまま壁より暗くする
+    courtFloor: 1,   // 水路に囲まれた中庭の石畳を 1 段暗くする（塔の足もとの床が、まわりの壁と一緒に明るく浮かないように）
     props: 'garden', birds: true,
   },
   {
     name: 'Mill', lighting: 'torch', dark: 0x2c1408,   // 段の暗い側を焦げ茶に寄せ、影の中も炎の暖かさを残す
     bright: 0xfff0c8, sil: 0x160a06,
     colors: {
-      STONE: 0xcf9d68, PAVE: 0xae7f54, ROCK: 0x6c4c36, GRASS: 0x6c7a34, ROOF: 0x6a5450, WOOD: 0x9c6a3c,
+      STONE: 0xcf9d68, PAVE: 0x908680,   // 石畳は灰色にして、橙の壁と見分ける
+      ROCK: 0x6c4c36, GRASS: 0x6c7a34, ROOF: 0x6a5450, WOOD: 0x9c6a3c,
       WATER: 0x3a6a88, FOAM: 0xfff0d0, LEAF: 0x4a5a28,
       MOSS: 0x5a6a2c, CLOTH: 0xd8be90, METAL: 0x707070, SOIL: 0x5a3a24, DUCK: 0xd8b040, GLASS: 0x4a3c48,
     },
@@ -325,7 +324,7 @@ const SCENES = [
     },
     smoke: true, clouds: true,
     rightShade: 1,   // 右の面を 1 段暗くして、建物の形を締める
-    brightWellRoof: true,   // 井戸の屋根を 1 段明るくして、暗がりから浮かせる
+    brightRoofs: ['well'],   // 井戸の屋根を 1 段明るくして、暗がりから浮かせる
     sky: [0x222444, 0x5c3c3c],   // 夕闇の空（藍紫から、くすんだ赤茶へ。島の光の輪より目立たない明るさに抑える）
     props: 'workshop', litWindows: true, embers: true, birds: true,
     fallGlow: true,   // 滝は光を受けない青だけの色にして、暗がりでもだまし絵の要の滝を見せる（炎を映した橙は入れない）
@@ -333,7 +332,8 @@ const SCENES = [
   {
     name: 'Ruins', lighting: 'water', dark: 0x04080c, bright: 0xd0fff0, sil: 0x060c10,
     colors: {
-      STONE: 0x8e9490, PAVE: 0x76847e, ROCK: 0x505a5a, GRASS: 0x3c6c4c, ROOF: 0x4c5660, WOOD: 0x54443a,
+      STONE: 0x8e9490, PAVE: 0x887b72,   // 石畳は赤みを抑えたレンガ色にして、青緑がかった灰の壁と見分ける
+      ROCK: 0x505a5a, GRASS: 0x3c6c4c, ROOF: 0x4c5660, WOOD: 0x54443a,
       WATER: 0x24a898, FOAM: 0xd8fff8, LEAF: 0x2e6040,
       MOSS: 0x3a8a50, CLOTH: 0x8a8c80, METAL: 0x5a6466, SOIL: 0x3a3a30, GLASS: 0x2e4a4e,
       DUCK: 0xe8c838,   // 暗いシーンでも、苔や石に溶けない明るい黄色にする
@@ -344,7 +344,7 @@ const SCENES = [
       AIR: [0x000000, 0x181c28, 0x2c3244, 0x484e64, 0x6a7088, 0x9aa0b8, 0xd0d4e4, 0xffffff],   // 星と流れ星
     },
     props: 'ruin', ruin: true, glowWater: true, stars: true, fireflies: true, meteors: true,
-    brightGateRoof: true,   // 右奥の低い塔の屋根を 1 段明るくする
+    brightRoofs: ['gate'],   // 右奥の低い塔の屋根を 1 段明るくする
   },
 ];
 
@@ -475,8 +475,6 @@ function paving(x, y) {
   if (mod(y, 6) === 0 || mod(a, 6) === 0) return vox(M.PAVE, 1);
   return vox(M.PAVE, hash3(Math.floor(a / 6), row, 5) < 0.3 ? 2 : 0);
 }
-// 画面の下側（島の手前の縁）と右下（井戸のまわり）の床か
-const isLowerFloor = (x, y) => x + y > 36 || x > 40;
 // 水路に囲まれた中庭の床か（水路の外壁の内側）
 const isCourtFloor = (x, y) => x >= PATH[0][0] + CH_HALF && x < PATH[2][0] - CH_HALF && y >= PATH[4][1] + CH_HALF && y < PATH[1][1] - CH_HALF;
 
@@ -606,7 +604,7 @@ function buildGateTower(v, t, sc) {
   windowOn(v, 'y', Math.floor(cx) - 1, zc - 3, 3, 5, y1 - 1, lit);
   windowOn(v, 'x', Math.floor(cy) - 1, zc - 3, 3, 5, x1 - 1, lit);
   const roof = towerRoof(t);
-  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square, t.round, sc.brightGateRoof);
+  cone(v, cx, cy, roof.z0, roof.r, roof.h, sc.ruin, t.square, t.round, sc.brightRoofs?.includes('gate'));
 }
 function buildTower(v, t, sc) {
   const { x0, x1, y0, y1, top, floors } = t;
@@ -808,7 +806,7 @@ function buildProps(v, sc) {
   torches = [];
   const anchors = {};
   // 井戸は、どのシーンも同じ所に置く（Ruins では、ほかの石と一緒に苔むし、屋根が少し崩れる）
-  well(v, WELL.x, WELL.y, sc.ruin, sc.brightWellRoof);
+  well(v, WELL.x, WELL.y, sc.ruin, sc.brightRoofs?.includes('well'));
   bucket(v, WELL.x - 0.5, WELL.y + 10.5, sc.ruin);   // 井戸の手前に置いた桶
   // 手押し車は、シーンごとに置き場所と荷台の中身を替える
   wheelbarrow(v, ...WHEELBARROW[sc.props], sc.ruin, { garden: 'flowers', workshop: 'sack' }[sc.props]);
@@ -1201,10 +1199,10 @@ function lightLayer(L) {
     const shadow = current.lighting === 'sun' && L.face[j] !== 2 && inShadow(x, y, z, L.face[j]);
     if (shadow) L.shade[j] -= 2;
     if (current.lighting === 'water') L.light[j] = lightFrom(lightSources, x, y, z, AMBIENT.water);
-    // 下側と右下、中庭の石畳を暗くする。影の中は 1 段少なくする（重ねると目地が黒に潰れ、穴に見える）
+    // 中庭の石畳を暗くする。影の中は 1 段少なくする（重ねると目地が黒に潰れ、穴に見える）
     if (m === M.PAVE) {
       const fx = Math.floor(x - 1e-6), fy = Math.floor(y - 1e-6);
-      const k = isLowerFloor(fx, fy) ? current.darkFloor ?? 0 : isCourtFloor(fx, fy) ? current.courtFloor ?? 0 : 0;
+      const k = isCourtFloor(fx, fy) ? current.courtFloor ?? 0 : 0;
       if (k) L.shade[j] -= k - (shadow ? 1 : 0);
     }
   }
