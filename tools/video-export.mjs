@@ -101,6 +101,8 @@ ${SEEDED_RANDOM}
     const results = [];
     let frame = 0;
     for (const [sceneIndex, scene] of plan.scenes.entries()) {
+      // 乱数を種の最初に戻す。同じ場面は、単独で撮っても、ほかの場面に続けて撮っても、前の場面の変更があっても同じ乱数で始まる
+      reseedRandom();
       // シーンを選んでから配色を選ぶ（シーンを替えると配色を選び直す作品があるため）
       const names = [];
       for (const kind of ['scenes', 'presets']) {

@@ -131,8 +131,11 @@ export async function connectCdp(url, onError = null, onLog = null) {
 
 // ---- ページに差し込む処理 ----
 // 作品のスクリプトより先に実行するスクリプトの一部。同じ種から同じ絵を描くため、乱数を固定する（mulberry32。種は URL の seed）
+// reseedRandom() で乱数を種の最初に戻す。場面ごとに呼び、前の場面で引いた乱数の数が次の場面の絵を変えないようにする
 export const SEEDED_RANDOM = `
-  let s = Number(new URLSearchParams(location.search).get('seed')) >>> 0;
+  const seed = Number(new URLSearchParams(location.search).get('seed')) >>> 0;
+  let s = seed;
+  const reseedRandom = () => { s = seed; };
   Math.random = () => {
     s = (s + 0x6D2B79F5) >>> 0;
     let t = s;

@@ -2,7 +2,7 @@
 // 2 つの版の作品を同じ条件で撮り、並べた比較動画と確認用の画像を作る。使い方と例は docs/video.md。
 //
 //   node tools/video-compare.mjs <作品名> --keep
-//   node tools/video-compare.mjs <作品名> [--base HEAD|kept] [--case "名前:式"]... [--scenes 0,1,2] [--presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--out 出力先.mp4] [--open]
+//   node tools/video-compare.mjs <作品名> [--base HEAD|kept] [--case "名前:式"]... [--scenes 0,1,2] [--presets 0,1,2] [--seconds 4] [--warmup 3] [--seed 1] [--hidden off|auto|秒,秒] [--out 出力先.mp4] [--open]
 //
 // 撮影は video-export.mjs に任せる。作品の HTML も作業ツリーも変更しない。依存は video-export.mjs と同じで、加えて git と tar。
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -27,12 +27,13 @@ const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプショ
 上の段に --base の版、下の段に作業ツリーの版を並べる。
   --keep          作業ツリーの作品の HTML を、変更前の版として .kept/ に控えて終わる（撮影はしない）
   --base 版       比べる版。git のコミット、作品の HTML のパス、kept（--keep で控えた版）のどれか（既定 HEAD）
-  --case "名前:式" 列を 1 つ足す。収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
+  --case "名前:式" 列を 1 つ足す。場面ごとに、収録の最初に式を実行する。複数指定できる（省くと、そのままの 1 列）
   --scenes 0,1,2  シーンの番号（${pagesWith('scenes')} のみ）
   --presets 0,1,2 配色の番号（${pagesWith('presets')} のみ）。--scenes と同時に指定すると、シーン × 配色の場面を撮る
   --seconds S     1 場面の長さ（秒。既定 4）
   --warmup S      各場面の収録前に進めておく時間（秒。既定 3）
   --seed N        乱数の種（既定 1）
+  --hidden H      隠し要素。video-export の --hidden と同じ（既定 auto）
   --out PATH      出力先（既定 <作品名>-compare.mp4）。確認用の画像を <出力先>.thumbs.jpg に作る
   --open          できた動画を開く`;
 
@@ -51,6 +52,7 @@ function parseOptions() {
       seconds: { type: 'string', default: '4' },
       warmup: { type: 'string', default: '3' },
       seed: { type: 'string', default: '1' },
+      hidden: { type: 'string', default: 'auto' },
       out: { type: 'string' },
       open: { type: 'boolean', default: false },
       keep: { type: 'boolean', default: false },
@@ -85,11 +87,12 @@ async function checkoutExporter(base, page, dir) {
 
 // ---- 撮影 ----
 async function capture(exporter, options, code, out) {
-  const { page, seconds, warmup, seed, scenes, presets } = options;
-  const args = [exporter, page, '--seconds', seconds, '--warmup', warmup, '--seed', seed, '--fade', '0', '--out', out];
+  const { page, seconds, warmup, seed, hidden, scenes, presets, sceneCount } = options;
+  const args = [exporter, page, '--seconds', seconds, '--warmup', warmup, '--seed', seed, '--hidden', hidden, '--fade', '0', '--out', out];
   if (scenes) args.push('--scenes', scenes);
   if (presets) args.push('--presets', presets);
-  if (code) args.push('--at', `0:${code}`);
+  // --at の時刻は動画の中の秒なので、場面ごとにその始まりの時刻で実行する
+  if (code) for (let k = 0; k < sceneCount; k++) args.push('--at', `${k * Number(seconds)}:${code}`);
   for (let attempt = 1; ; attempt++) {
     try {
       await run(process.execPath, args);
