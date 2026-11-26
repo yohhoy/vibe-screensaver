@@ -1,4 +1,4 @@
-// 作品の一覧と、場面の選び方・隠し要素の呼び出し方。video-export.mjs・video-compare.mjs・gpu-bench.mjs で使う。
+// 作品の一覧と、場面の選び方・隠し要素の呼び出し方。video-export.mjs・video-compare.mjs・bench.mjs で使う。
 // 作品を足したときは、ここだけを直す。
 
 // 作品名（index.html の並びの順）

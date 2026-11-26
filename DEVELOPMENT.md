@@ -7,7 +7,7 @@
 - 動作環境は WebGL2 に対応したブラウザ（最近の Chrome / Safari / Firefox / Edge）。Three.js を CDN から読み込むため、インターネット接続が必要。
 - 調整できる値はファイル冒頭の「設定」節に定数で置く（全作品で共通の値は common.js の「設定」）。名前だけで意味・単位が分からない定数には、その行のコメントに意味・単位・範囲を書く（`CAM_FOV` や `FISH_COLOR` のように名前で分かるものには書かなくてよい）。定数の一覧表はドキュメントに作らない（コメントと二重になり、食い違うため）。
 - 時間で進む位相（うねり・明滅など）は JS（倍精度）で 0〜2π に収めてからシェーダーに渡す。GPU の float に経過秒をそのまま渡すと、長時間動かしたときに動きが荒れる。
-- 1 秒に描く回数を抑える作品は、`tick` の先頭を [jellyfish.html](jellyfish.html) と同じ書き方（`nextDraw`）にする。前回描いた時刻との差で判定すると、時計を止めた `tools/gpu-bench.mjs` の撮影で一度も描かず、`--shots` の画像が一色になる。
+- 1 秒に描く回数を抑える作品は、`tick` の先頭を [jellyfish.html](jellyfish.html) と同じ書き方（`nextDraw`）にする。前回描いた時刻との差で判定すると、時計を止めた `tools/bench.mjs` の撮影で一度も描かず、`--shots` の画像が一色になる。
 - ブルームなどを使う作品では、マルチサンプルにするのはシーンを描く描画先だけにする。composer の描画先までマルチサンプルにすると、全画面の処理がとても重くなる。ブルームは解像度を下げて描き、効果がほとんど無い場面では切る。
 - 不透明度を使わない浮動小数点の描画先は、common.js の `compactHdrFormat(renderer, samples)` で形式を選ぶ。1 画素 4 バイトの形式になり、半精度の RGBA より軽い（これまでの作品では GPU タイマーが 1.5〜4 割減った）。
 - `EffectComposer` に描画先を渡すと、解像度の倍率が 1 になる。`composer.setPixelRatio(renderer.getPixelRatio())` も呼んで倍率を合わせる（呼ばないと、高 DPI の画面で解像度が落ちる）。
@@ -27,15 +27,15 @@
 | docs/specs/ | 作品ごとの仕様 |
 | docs/images/ | README 用のサムネイル |
 | docs/video.md | 動画・静止画の書き出し、変更前後の比較、撮った画像の確認（切り出し・並べ・差・明るさ）のツールの使い方 |
-| docs/performance.md | GPU 負荷の測り方・比べ方と、値の読み方 |
+| docs/performance.md | GPU 負荷と JS の時間の測り方・比べ方と、値の読み方 |
 | docs/performance-data.md | 全作品の GPU 負荷の基準値（測った条件と、作品ごとの注意） |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
-| tools/gpu-bench.mjs | 作品の GPU 負荷をシーン別に測るスクリプト。全作品（`--all`）か、絞った作品（`--only`）を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
+| tools/bench.mjs | 作品の GPU 負荷と JS の時間をシーン別に測るスクリプト。全作品（`--all`）か、名前で選んだ作品を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |
 | tools/video-compare.mjs | 2 つの版を同じ条件で撮って並べるスクリプト（[docs/video.md](docs/video.md)） |
 | tools/img.mjs | 撮った静止画・動画から、切り出し・拡大・並べた確認用の画像や 2 枚の差の画像を作るか、範囲の明るさを測るスクリプト（[docs/video.md](docs/video.md)） |
-| tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。gpu-bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
-| tools/common.mjs | gpu-bench・video-export・video-compare で共通の処理（コマンドの実行（img.mjs も使う）、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
+| tools/pages.mjs | 作品の一覧と、シーン・配色の選び方（`SCENES`・`COLOR_PRESETS`）、隠し要素を呼び出す関数名（`HIDDEN`）。bench・video-export・video-compare で使う。作品を足したときや、シーン・配色の一覧・隠し要素を持たせたときに直す |
+| tools/common.mjs | bench・video-export・video-compare で共通の処理（コマンドの実行（img.mjs も使う）、比べる版の取り出し、ヘッドレス Chrome の起動と接続、ページに差し込む乱数） |
 | .claude/rules/ | Claude Code 用の、ファイルの種類ごとのルール。この文書の節名を参照しているので、節名を変えたら合わせる |
 | .claude/skills/ | Claude Code 用の、作業ごとの手順（新作の追加 new-work、隠し要素の追加 add-hidden、リファクタリングと仕様の整合確認 tidy-work）。この文書の節名を参照しているので、節名を変えたら合わせる |
 
@@ -157,7 +157,7 @@ setupControls({
   - シーン（配色）を替える処理では、`Math.random` で決まる状態（次の出来事までの待ち時間、粒や群れなど）をすべて作り直すか初期値に戻す。前のシーンから持ち越すと、前のシーンでの乱数の引き方の違いが、後のシーンの絵まで変える（例: flume の煙の待ち時間 `puffWait`）。乱数を使わずに進む時刻や位相と、隠し要素の専用の乱数で決まる状態（`○○Wait`・出ている隠し要素）は、持ち越してよい。
 - 動作確認は `open <file>.html` でブラウザ表示して確認する。自動で確かめるときは、ヘッドレス Chrome を直接呼ばずに `node tools/video-export.mjs <作品名> --out <scratchpad>/check.png` で撮る。ページのエラー（`Uncaught`・`console.error`。シェーダーのコンパイルの失敗を含む）が起きると、撮影がエラーで止まる。シェーダーや隠し要素は、使う場面になって初めてコンパイルされることがあるので、変えたシーン（`--scenes`）や隠し要素（`--hidden`）を撮って確かめる。縦長の画面は `--size 720x1280` で確かめる。
 - 見た目を変えないリファクタリングは、変更前後で「全コマ一致」になるかを確かめる（下の「見た目を変えないリファクタリング」）。
-- GPU の負荷を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
+- GPU の負荷や JS の時間を測るのは、指示があったときだけにする（[docs/performance.md](docs/performance.md)）。
 
 
 ## 見た目を変えないリファクタリング
