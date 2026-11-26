@@ -213,14 +213,14 @@ function shuffle(a) {
 // 素材の番号の決まり（物を足すときに読む）
 // - 素材は 1..31 の 32 枠（ボクセルは下位 5 ビットが素材）。0 は「空」の意味なので素材にできない。
 //   段が負になった画素は番号 0（黒）、7 を越えた画素は段 7 になる。番号 1..7 はどこからも使わない
-// - EMISSIVE（SIL）より後ろの素材は光を受けない（日差しの影・松明・光る水の明るさを足さず、段をそのまま使う）。
+// - UNLIT（SIL）から後ろの素材は光を受けない（日差しの影・松明・光る水の明るさを足さず、段をそのまま使う）。
 //   番号の並びに頼るのはこの比較だけで、ほかは名前（M.X）で引く
-// - 空いている枠: 光を受けない側に 27・29。光を受ける側には無い
+// - 空いている枠: 光を受けない側に 27・28・29。光を受ける側には無い
 // - 物を足すときの枠の選び方
 //   - 一部のシーンだけの、光を受ける色 → シーンの propColors に足す（PROP_SLOTS の 6 枠をシーンごとに割り当て直す。Garden は 6 枠とも使っている）
-//   - 光を受けない色 → シーンの ramps で、シーンごとに使い分けられないかを先に考える（LAMP・AIR のように、同じシーンで同時に使わない物は 1 枠にまとめる）。
+//   - 光を受けない色 → シーンの ramps で、シーンごとに使い分けられないかを先に考える（LAMP・SPARK・AIR のように、同じシーンで同時に使わない物は 1 枠にまとめる）。
 //     まとめられなければ空いている枠を使う
-//   - どのシーンでも使う、光を受ける色 → 枠が無い。SIL より前に枠を空けて番号を並べ替え、EMISSIVE を動かす
+//   - どのシーンでも使う、光を受ける色 → 枠が無い。SIL より前に枠を空けて番号を並べ替える（UNLIT は、光を受けない側の先頭の素材を指したままにする）
 //   - 同じ素材の別の段で済むなら、枠を足さない（SIL の段 2・3 をアヒルの目とくちばしに使うなど。光を受けない素材は段が動かないので、段ごとに別の色を置ける）
 const M = {
   STONE: 1, PAVE: 2, ROCK: 3, GRASS: 4, ROOF: 5, WOOD: 6, WATER: 7, FOAM: 8, LEAF: 9,
@@ -228,16 +228,15 @@ const M = {
   GLASS: 15,   // 灯っていない窓のガラス
   // 16..21 は小物の色の枠（PROP_SLOTS）
   // ここから後は光を受けない素材（自分で光る物と、影絵）
-  SIL: 22,   // 影絵の生き物（段 0）とその目（段 1）、アヒルの目（段 2。黒）とくちばし（段 3）。段 4..7 は空き
-  FLAME: 23,
+  SIL: 22,   // 影絵の生き物（段 0）とその目（段 1）、アヒルの目（段 2。黒）とくちばし（段 3）。段 4..7 は影絵の色で、段 4 は Mill の水瓶の口の中（上面）が使う。段 5..7 は空き
+  SPARK: 23,   // 小さく光る物（Mill の松明の炎と火の粉、Ruins の蛍）。既定の色は炎で、Ruins は ramps で蛍の色にする
   LAMP: 24,   // 灯り（Mill の灯った窓、Ruins の光るきのこ）。色はシーンの ramps で決める
   GWATER: 25,   // 光を受けない水（Ruins の光る水と泡、Mill の滝（fallGlow））。既定の色は Ruins の光る水で、Mill は ramps で滝の色にする
   BERRY: 26,   // Ruins の蔦の光る実。色はシーンの ramps で決める
-  FIREFLY: 28,
   SKY: 30,   // 背景の空（段 0..7 が上から下への帯）
   AIR: 31,   // 空の物（Garden・Mill の煙と雲は段 0 が薄れた煙、7 が出たての煙。Ruins の星は段 1..7）。色はシーンの ramps で決める
 };
-const EMISSIVE = M.SIL;
+const UNLIT = M.SIL;   // 光を受けない素材の先頭（これ以上の番号は光を受けない）
 // シーン固有の小物の色の枠。シーンの propColors に並べた名前へ、前から順に割り当てる
 const PROP_SLOTS = [16, 17, 18, 19, 20, 21];
 // 小物の色の名前を、シーン s での素材の番号にする（propColors に無い名前や、枠に収まらない名前は誤り）
@@ -249,15 +248,14 @@ function prop(name, s = current) {
 // 面の向きごとの段（上面・左の面 (+y)・右の面 (+x)）と、ボクセルごとの明るさのずれ（0..3）
 const FACE_SHADE = [4, 3, 2];
 const VAR_SHADE = [0, -1, 1, -2];
-const GLOW_SHADE = 5;   // 灯った窓（LAMP）の段
+const LAMP_SHADE = 5;   // 灯った窓（LAMP）の段
 const vox = (m, v = 0) => m | (v << 5);
 const GHOST = 0x80;   // ボクセルの印: x の向きから入った視線には透ける
 
 // 光を受けない素材の、どのシーンでも同じ色（段 0..7）。シーンの ramps で上書きできる
 const GLOW_RAMPS = {
-  FLAME: [0x300800, 0x601400, 0xa02808, 0xd04810, 0xf07020, 0xf8a038, 0xffd870, 0xfff6c8],
+  SPARK: [0x300800, 0x601400, 0xa02808, 0xd04810, 0xf07020, 0xf8a038, 0xffd870, 0xfff6c8],
   GWATER: [0x04201e, 0x083a36, 0x0e5a52, 0x168074, 0x24a898, 0x48d0c0, 0x8cf0e2, 0xd8fff8],
-  FIREFLY: [0x0c1000, 0x1c2600, 0x344600, 0x506a08, 0x78981c, 0xa8c838, 0xd8f070, 0xf8ffc0],
 };
 const SIL_EYE = 0xf0e070;   // 影絵の生き物の目の色（SIL の段 1）
 const DUCK_BEAK = 0xa02808;   // アヒルのくちばしの色（SIL の段 3。濃い赤茶にし、どのシーンでも胴より暗くして浮かせない）
@@ -288,11 +286,11 @@ function buildPalette(s) {
 // ---- シーン ----
 // lighting: 光の当たり方（sun: 日差しが一様に当たる、torch: 松明のまわりだけ、water: 光る水のまわりだけ）
 // dark・bright: 段の暗い側・明るい側で寄せる色、colors: 素材の色（段 4）、propColors: 小物の色（段 4。名前は prop で素材の番号にする。6 色まで）、ramps: 段ごとの色を直に決める素材（LAMP・AIR は ramps でしか色を決めないので、使うシーンでは必ず書く）
-// sky: 背景の空の、画面の上端と下端の色（省くと黒）、shift: 素材の色を全体に何段暗くするか（空は変えない）、courtFloor: 水路に囲まれた中庭の石畳を何段暗くするか
+// sky: 背景の空の、画面の上端と下端の色（省くと黒）、shift: 素材の色を全体に何段暗くするか（空は変えない）
 // sil: 影絵（生き物と鳥の群れ）の色、props: 小物（buildProps）、litWindows: 窓に灯をともす、ruin: 廃墟にする
 // glowWater: 水を光らせる、stars: 星を出す、fireflies: 蛍を出す、clouds: 空に雲を浮かべる、smoke: 煙突から煙を出す
 // birds: 鳥が横切る、meteors: 流れ星が流れる、embers: 松明から火の粉が昇る、fallGlow: 滝を光を受けない色（ramps の GWATER）で塗る
-// rightShade: 右の面の段（省くと FACE_SHADE のまま）、brightRoofs: 1 段明るくする屋根（well: 井戸、gate: 右奥の低い塔）
+// rightShade: 右の面の段（省くと FACE_SHADE のまま）、brightRoofs: 1 段明るくする屋根（gate: 右奥の低い塔）
 const SCENES = [
   {
     name: 'Garden', lighting: 'sun', dark: 0x2a2440, bright: 0xfffaf0, sil: 0x1c1826,
@@ -315,7 +313,6 @@ const SCENES = [
       AIR: [0x4a6e98, 0x5a80a8, 0x6a90b6, 0x8aa6c6, 0x9cb4d0, 0xaec2da, 0xbecee2, 0xccd8e8],   // 雲と煙。雲は空より明るい淡い青にする（空より暗いと雨雲に見える）
     },
     shift: 1,
-    courtFloor: 1,   // 水路に囲まれた中庭の石畳を 1 段暗くする（塔の足もとの床が、まわりの壁と一緒に明るく浮かないように）
     props: 'garden', birds: true,
   },
   {
@@ -336,7 +333,6 @@ const SCENES = [
     smoke: true, clouds: true,
     propColors: { TERRA: 0xb8704a },   // 素焼きの水瓶。赤みを持たせて、砂岩色の石壁・芝・石畳から見分ける
     rightShade: 1,   // 右の面を 1 段暗くして、建物の形を締める
-    brightRoofs: ['well'],   // 井戸の屋根を 1 段明るくして、暗がりから浮かせる
     sky: [0x222444, 0x5c3c3c],   // 夕闇の空（藍紫から、くすんだ赤茶へ。島の光の輪より目立たない明るさに抑える）
     props: 'workshop', litWindows: true, embers: true, birds: true,
     fallGlow: true,   // 滝は光を受けない青だけの色にして、暗がりでもだまし絵の要の滝を見せる（炎を映した橙は入れない）
@@ -352,6 +348,7 @@ const SCENES = [
     },
     sky: [0x04060e, 0x14202e],   // 深夜の空（黒に近い紺から、わずかに青みのある紺へ）
     ramps: {
+      SPARK: [0x0c1000, 0x1c2600, 0x344600, 0x506a08, 0x78981c, 0xa8c838, 0xd8f070, 0xf8ffc0],   // 蛍
       LAMP: [0x100c28, 0x1c1848, 0x2c2a70, 0x40449c, 0x5c68c8, 0x80a0f0, 0xb0d0ff, 0xe8f4ff],   // 光るきのこ
       BERRY: [0x5040a0, 0x6c58c8, 0x9078e8, 0x5040a0, 0xd0b8ff, 0x9078e8, 0x9078e8, 0x9078e8],   // 蔦の光る実。きのこ（LAMP）の傘より少し紫に寄せ、同じ系統のまま別の物に見せる。段 0..2 が実の色（右の面・左の面・上面）。ハイライトのボクセルは右の面 3・左の面 4・上面 5 で映り、左の面（段 4）だけを明るく光らせる
       AIR: [0x000000, 0x181c28, 0x2c3244, 0x484e64, 0x6a7088, 0x9aa0b8, 0xd0d4e4, 0xffffff],   // 星と流れ星
@@ -488,8 +485,6 @@ function paving(x, y) {
   if (mod(y, 6) === 0 || mod(a, 6) === 0) return vox(M.PAVE, 1);
   return vox(M.PAVE, hash3(Math.floor(a / 6), row, 5) < 0.3 ? 2 : 0);
 }
-// 水路に囲まれた中庭の床か（水路の外壁の内側）
-const isCourtFloor = (x, y) => x >= PATH[0][0] + CH_HALF && x < PATH[2][0] - CH_HALF && y >= PATH[4][1] + CH_HALF && y < PATH[1][1] - CH_HALF;
 
 // ---- 浮島と建物 ----
 const vol = makeVolume(WORLD.x0, WORLD.y0, WORLD.z0, WORLD.x1, WORLD.y1, WORLD.z1);
@@ -741,7 +736,7 @@ function wildflowers(v, seed) {
   }
 }
 // 井戸: 石の井桁、2 本の柱と横木、柱に載せた切妻の屋根（棟は x の向き）
-function well(v, cx, cy, ruin, bright) {
+function well(v, cx, cy, ruin) {
   cylinder(v, cx, cy, 0, 6, 6, masonry);
   cylinder(v, cx, cy, 2, 6, 4, 0);
   cylinder(v, cx, cy, 1, 2, 4, vox(M.WATER));
@@ -752,9 +747,8 @@ function well(v, cx, cy, ruin, bright) {
     fill(v, cx - 7, cy - 4 + k, 17 + k, cx + 7, cy + 5 - k, 18 + k, (x, y, z) => {
       // 廃墟では、屋根の右手前の一部が崩れて、横に渡した垂木がのぞく
       if (ruin && x + y > cx + cy - 1 && noise2(x * 0.45, y * 0.45 + z * 0.3, 13) > 0.45) return mod(x, 3) === 0 ? vox(M.WOOD, 1) : 0;
-      // 瓦の目地の段（1）と地の段（0）。bright では、どちらも 1 段明るい段（0 と 2）、廃墟では 1 段暗い段（3 と 1）にする
-      const sh = Math.abs(y + 0.5 - (cy + 0.5)) > 3.5 - k - 1 && mod(x, 3) !== 0 ? 0 : 1;
-      return vox(M.ROOF, bright ? (sh ? 0 : 2) : ruin ? (sh ? 3 : 1) : sh);
+      // 瓦の目地の段（1）と地の段（0）
+      return vox(M.ROOF, Math.abs(y + 0.5 - (cy + 0.5)) > 3.5 - k - 1 && mod(x, 3) !== 0 ? 0 : 1);
     });
   }
 }
@@ -858,7 +852,7 @@ function buildProps(v, sc) {
   torches = [];
   const anchors = {};
   // 井戸は、どのシーンも同じ所に置く（Ruins では、ほかの石と一緒に苔むし、屋根が少し崩れる）
-  well(v, WELL.x, WELL.y, sc.ruin, sc.brightRoofs?.includes('well'));
+  well(v, WELL.x, WELL.y, sc.ruin);
   bucket(v, WELL.x - 0.5, WELL.y + 10.5, sc.ruin);   // 井戸の手前に置いた桶
   // 手押し車は、シーンごとに置き場所と荷台の中身を替える
   wheelbarrow(v, ...WHEELBARROW[sc.props], sc.ruin, { garden: 'flowers', workshop: 'sack' }[sc.props]);
@@ -1000,9 +994,7 @@ function ruinWorld(v) {
       const n = noise2(wx * 0.18, wy * 0.18 + wz * 0.1, 12);
       if (n > 0.52) {
         const k = n > 0.7 ? 2 : hash3(wx, wy, wz) < 0.3 ? 1 : 0;   // 明るさのむら（2: 明るい、0: ふつう、1: 暗い）
-        // 井戸の屋根の苔は 1 段暗くして、暗くした屋根と一緒に沈める（明るいままだと、背後の苔むした壁と溶け合う）
-        const well = m === M.ROOF && Math.abs(wx - WELL.x) < 8 && Math.abs(wy - WELL.y) < 6;
-        data[i] = (c & GHOST) | vox(M.MOSS, well ? [1, 3, 0][k] : k);
+        data[i] = (c & GHOST) | vox(M.MOSS, k);
       }
       else if (m === M.PAVE && (c >> 5 & 3) === 1 && hash3(wx, wy, 13) < 0.5) data[i] = vox(M.GRASS, 0);
     }
@@ -1138,7 +1130,7 @@ function buildTorchLight() {
   }
   if (current.lighting !== 'torch') return;
   for (let j = 0; j < base.mat.length; j++) {
-    if (!base.mat[j] || base.mat[j] >= EMISSIVE) continue;
+    if (!base.mat[j] || base.mat[j] >= UNLIT) continue;
     const x = base.pos[j * 3], y = base.pos[j * 3 + 1], z = base.pos[j * 3 + 2], raise = [];
     let l0 = AMBIENT.torch;
     for (const s of torchTile(x, y, z)) {
@@ -1161,7 +1153,7 @@ function lightTorches() {
   const full = written === writtenAt.length, end = full ? fMat.length : written;
   for (let n = 0; n < end; n++) {
     const i = full ? n : writtenAt[n], m = fMat[i];
-    if (!m || m >= EMISSIVE || fDepth[i] === base.depth[i]) continue;
+    if (!m || m >= UNLIT || fDepth[i] === base.depth[i]) continue;
     const x = fPos[i * 3], y = fPos[i * 3 + 1], z = fPos[i * 3 + 2];
     fLight[i] = lightFrom(torchTile(x, y, z), x, y, z, AMBIENT.torch);
   }
@@ -1233,7 +1225,7 @@ function castVolume(v, L) {
       // 灯った窓は、面の向きによらず明るく光らせる（面の向きで暗くすると、くすんだ茶色の四角に見える）。
       // LAMP は Ruins では光るきのこなので、窓を灯すシーンに限る
       const fs = face === 2 ? current.rightShade ?? FACE_SHADE[2] : FACE_SHADE[face];
-      L.shade[j] = ((c & 31) === M.LAMP && current.litWindows ? GLOW_SHADE : fs) + VAR_SHADE[(c >> 5) & 3];
+      L.shade[j] = ((c & 31) === M.LAMP && current.litWindows ? LAMP_SHADE : fs) + VAR_SHADE[(c >> 5) & 3];
       L.depth[j] = d;
       L.face[j] = face;
       L.through[j] = through;   // 落ち口の水路の端を透かして、奥の水路を描いた画素
@@ -1271,17 +1263,11 @@ function blitLayer(L, dy = 0) {
 function lightLayer(L) {
   for (let j = 0; j < L.mat.length; j++) {
     const m = L.mat[j];
-    if (!m || m >= EMISSIVE) continue;
+    if (!m || m >= UNLIT) continue;
     const x = L.pos[j * 3], y = L.pos[j * 3 + 1], z = L.pos[j * 3 + 2];
     const shadow = current.lighting === 'sun' && L.face[j] !== 2 && inShadow(x, y, z, L.face[j]);
     if (shadow) L.shade[j] -= 2;
     if (current.lighting === 'water') L.light[j] = lightFrom(lightSources, x, y, z, AMBIENT.water);
-    // 中庭の石畳を暗くする。影の中は 1 段少なくする（重ねると目地が黒に潰れ、穴に見える）
-    if (m === M.PAVE) {
-      const fx = Math.floor(x - 1e-6), fy = Math.floor(y - 1e-6);
-      const k = isCourtFloor(fx, fy) ? current.courtFloor ?? 0 : 0;
-      if (k) L.shade[j] -= k - (shadow ? 1 : 0);
-    }
   }
 }
 
@@ -1567,7 +1553,7 @@ function drawBitmap(rows, ax, ay, az, colors, bias = 3, flip = false, extra = nu
   rows.forEach((row, cy) => { for (let cx = 0; cx < row.length; cx++) dot(cx, cy, row[cx]); });
   extra?.forEach(([cx, cy]) => dot(cx, cy, '#'));
 }
-const FLAME_COLORS = Object.fromEntries(Array.from({ length: 8 }, (_, s) => [String(s), [M.FLAME, s]]));   // 炎の絵の数字は段
+const FLAME_COLORS = Object.fromEntries(Array.from({ length: 8 }, (_, s) => [String(s), [M.SPARK, s]]));   // 炎の絵の数字は段
 const FLAME_FRAMES = [['.6.', '676', '676', '565', '.4.'], ['6..', '67.', '676', '565', '.4.'], ['.6.', '.76', '676', '565', '.4.'], ['...', '.6.', '676', '565', '.4.']];
 // 煙のかたまりを、画面の上の丸として描く。昇るほど大きく薄くなり、終わりの方は網点で消えていく
 function drawSmoke() {
@@ -1640,7 +1626,7 @@ function darkSpot(x, y, z) {
   if (px < 0 || py < 0 || px >= W || py >= H) return false;
   const j = py * W + px, m = base.mat[j];
   if (!m) return true;
-  return x + y + z > base.depth[j] && m < EMISSIVE && base.shade[j] + base.light[j] <= FIREFLY_DARK;
+  return x + y + z > base.depth[j] && m < UNLIT && base.shade[j] + base.light[j] <= FIREFLY_DARK;
 }
 // 蛍（Ruins）: 地面の上を低くさまよいながら明滅する
 function drawFireflies() {
@@ -1649,13 +1635,13 @@ function drawFireflies() {
     if (b < FIREFLY_ON) continue;
     const [rx, ry, rz] = FIREFLY_RANGE;
     const x = f.x + rx * Math.sin(time * f.w1 + f.p1), y = f.y + ry * Math.sin(time * f.w2 + f.p2), z = f.z + rz * Math.sin(time * f.w3 + f.p3);
-    const i = plot(x, y, z, M.FIREFLY, b > 0 ? 7 : 5, 0);
+    const i = plot(x, y, z, M.SPARK, b > 0 ? 7 : 5, 0);
     // 強く光っている間は、上下左右の 4 ドットにも淡い光をにじませる（1 ドットだけだと小さすぎて目に入らない）
     if (i < 0 || b <= 0) continue;
     const px = i % W, py = (i - px) / W, d = fDepth[i];
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const qx = px + dx, qy = py + dy;
-      if (qx >= 0 && qy >= 0 && qx < W && qy < H) put(qy * W + qx, M.FIREFLY, 4, d, x, y, z);
+      if (qx >= 0 && qy >= 0 && qx < W && qy < H) put(qy * W + qx, M.SPARK, 4, d, x, y, z);
     }
   }
 }
@@ -1716,7 +1702,7 @@ function drawEmbers() {
       if (age < 0 || age > EMBERS.life) continue;
       const x = t.x + (hash3(sl, k, 72) - 0.5) * 2 + Math.sin(age * 6 + sl) * 0.7, y = t.y + (hash3(sl, k, 73) - 0.5);
       const z = t.z + 2 + EMBERS.rise * age - torchDy(t);
-      plot(x, y, z, M.FLAME, 7 - Math.floor(age / EMBERS.life * 4), 3);
+      plot(x, y, z, M.SPARK, 7 - Math.floor(age / EMBERS.life * 4), 3);
     }
   });
 }
@@ -1822,7 +1808,7 @@ function render() {
     for (let x = 0; x < W; x++, i++) {
       const m = fMat[i];
       if (!m) { screen[i] = (current.clouds && cloudBuf[i]) || skyBuf[i]; continue; }   // 何も無い所は空（と雲）
-      const s = m >= EMISSIVE ? fShade[i] : fShade[i] + fLight[i];
+      const s = m >= UNLIT ? fShade[i] : fShade[i] + fLight[i];
       screen[i] = s < 0 ? 0 : m * 8 + (s > 7 ? 7 : s);
     }
   }
@@ -1845,7 +1831,7 @@ function setScene(index) {
   castLayers();
   paletteTex.image.data.set(buildPalette(current));
   paletteTex.needsUpdate = true;
-  splashes = []; puffs = [];
+  splashes = []; puffs = []; puffWait = 0;
   creature = anchors.owl ? { kind: 'owl', at: anchors.owl } : anchors.cat ? { kind: 'cat', at: anchors.cat } : null;
   if (creature) Object.assign(creature, { eventAge: 99, wait: randomInterval(BLINK_INTERVAL) * 0.5 });
   const rnd = seededRandom(randInt(1e6));   // 蛍と蝶の動きは、シーンに入るたびに替わる
