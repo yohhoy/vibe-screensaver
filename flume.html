@@ -123,8 +123,9 @@ const SUN = [-0.55, 0.15, 1];      // 日の向き（Garden。z を 1 にした�
 const SHADOW_STEPS = 240;          // 影をたどる歩数（0.5 ボクセルずつ。影の長さの上限。高い滝の脇の塔の影が中庭まで届く長さにする）
 const TORCH_LIGHT = { top: 0, step: 8 };     // 松明の明かり: 光源の段と、段が 1 つ落ちる距離（ボクセル）。島を暖かく照らしつつ、炎が光だまりの中で目立ち、松明ごとの光の輪を見分けられる広さにする
 const ROCK_TORCH_LIGHT = { top: 0, step: 4 }; // 浮かぶ岩に立てた小さな松明の明かり
-const WATER_LIGHT = { top: 0, step: 13 };   // 光る水の明かり（Ruins）。滝の脇の塔の、滝から離れた右の面まで届かせ、塔と小屋の形を暗がりに溶かさない
-const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり
+const WATER_LIGHT = { top: 0, step: 13 };   // 光る水の明かり（Ruins）。滝の脇の塔の右の面は、蔦の光る実が照らす
+const MUSH_LIGHT = { top: -1, step: 4 };    // 光るきのこの明かり（地面の群れの段は MUSH_SPOTS で替える）
+const BERRY_LIGHT = { top: -1, step: 5 };   // 蔦の光る実の明かり（暗い塔の右の面に、実のまわりだけの小さな光だまりを作る）
 const AMBIENT = { torch: -2, water: -8 };   // 光の届かない所の段（Mill は、塔の上・屋根・中庭の形が読め、松明の光の輪とも見分けられる暗さ）
 const FLICK_FPS = 3;         // 松明の照らす範囲が伸び縮みする回数（1 秒あたりの上限）
 const FLICK_CHANCE = 0.3;    // そのたびに、範囲が 1 ボクセル伸びる見込み
@@ -152,6 +153,13 @@ const LAUNDRY = [[11, 'LINEN_B'], [18, 'LINEN_R'], [26, 'LINEN_Y']];   // 洗濯
 const BUTTERFLIES = ['LINEN_Y', 'LINEN_B'];   // 花壇のまわりを飛ぶ蝶の羽の色（Garden）
 const BUTTERFLY_RANGE = [7, 6, 3];     // 蝶が花壇の上を飛びまわる範囲（x・y・z の振れ幅。ボクセル）
 const FLAP_FPS = 5;                    // 蝶が羽ばたく速さ（コマ/秒）
+// 地面の光るきのこの群れ（Ruins）: [x, y, 種, 明かりの段（MUSH_LIGHT の top の代わり）]。小屋の左手前・朽ちた手押し車の右手前・小屋の左奥。
+// 手押し車の右手前だけ、ほかより 1 段明るくする
+const MUSH_SPOTS = [[-40, 30, 41, -1], [68, -15, 43, 0], [-52, 2, 44, -1]];
+const BERRY_IVY = { y: -44, top: 49, len: 15 };   // 右奥の低い塔の右の面の上の段に垂らす、実の生る蔦（Ruins）: y、上端の高さ、長さ（ボクセル）。ふくろうの真下の列は避ける
+// 蔦に生る光る実（Ruins）: vines は実を付ける蔦の [塔, y]（滝の脇の塔の右の面の 2 本と、BERRY_IVY）、chance は蔦の葉が実になる見込み（0..1）、
+// zMin は実を付ける高さの下限（ボクセル。下は水路の壁に隠れる）、gap は実の上に空ける高さ（ボクセル。実がつながらないように）
+const BERRIES = { vines: [[TOWER_FALL, 0], [TOWER_FALL, -3], [TOWER_MID, BERRY_IVY.y]], chance: 0.5, zMin: 30, gap: 2 };
 const FIREFLIES = 15;                  // 蛍の数（Ruins）
 const FIREFLY_ON = -0.5;               // 蛍の明滅の波（-1..1）がこれより上の間は光る（低いほど長く光る）
 const FIREFLY_RANGE = [8, 8, 1.5];     // 蛍がさまよう範囲（x・y・z の振れ幅。ボクセル。上下は小さくし、地面の上を漂わせる）
@@ -207,7 +215,7 @@ function shuffle(a) {
 //   段が負になった画素は番号 0（黒）、7 を越えた画素は段 7 になる。番号 1..7 はどこからも使わない
 // - EMISSIVE（SIL）より後ろの素材は光を受けない（日差しの影・松明・光る水の明るさを足さず、段をそのまま使う）。
 //   番号の並びに頼るのはこの比較だけで、ほかは名前（M.X）で引く
-// - 空いている枠: 光を受けない側に 26・27・29。光を受ける側には無い
+// - 空いている枠: 光を受けない側に 27・29。光を受ける側には無い
 // - 物を足すときの枠の選び方
 //   - 一部のシーンだけの、光を受ける色 → シーンの propColors に足す（PROP_SLOTS の 6 枠をシーンごとに割り当て直す。Garden は 6 枠とも使っている）
 //   - 光を受けない色 → シーンの ramps で、シーンごとに使い分けられないかを先に考える（LAMP・AIR のように、同じシーンで同時に使わない物は 1 枠にまとめる）。
@@ -224,6 +232,7 @@ const M = {
   FLAME: 23,
   LAMP: 24,   // 灯り（Mill の灯った窓、Ruins の光るきのこ）。色はシーンの ramps で決める
   GWATER: 25,   // 光を受けない水（Ruins の光る水と泡、Mill の滝（fallGlow））。既定の色は Ruins の光る水で、Mill は ramps で滝の色にする
+  BERRY: 26,   // Ruins の蔦の光る実。色はシーンの ramps で決める
   FIREFLY: 28,
   SKY: 30,   // 背景の空（段 0..7 が上から下への帯）
   AIR: 31,   // 空の物（Garden・Mill の煙と雲は段 0 が薄れた煙、7 が出たての煙。Ruins の星は段 1..7）。色はシーンの ramps で決める
@@ -344,6 +353,7 @@ const SCENES = [
     sky: [0x04060e, 0x14202e],   // 深夜の空（黒に近い紺から、わずかに青みのある紺へ）
     ramps: {
       LAMP: [0x100c28, 0x1c1848, 0x2c2a70, 0x40449c, 0x5c68c8, 0x80a0f0, 0xb0d0ff, 0xe8f4ff],   // 光るきのこ
+      BERRY: [0x5040a0, 0x6c58c8, 0x9078e8, 0x5040a0, 0xd0b8ff, 0x9078e8, 0x9078e8, 0x9078e8],   // 蔦の光る実。きのこ（LAMP）の傘より少し紫に寄せ、同じ系統のまま別の物に見せる。段 0..2 が実の色（右の面・左の面・上面）。ハイライトのボクセルは右の面 3・左の面 4・上面 5 で映り、左の面（段 4）だけを明るく光らせる
       AIR: [0x000000, 0x181c28, 0x2c3244, 0x484e64, 0x6a7088, 0x9aa0b8, 0xd0d4e4, 0xffffff],   // 星と流れ星
     },
     props: 'ruin', ruin: true, glowWater: true, stars: true, fireflies: true, meteors: true,
@@ -406,7 +416,7 @@ let puffs = [];            // 煙突の煙 { x, y, z, vx, vz, age, life }
 let puffWait = 0;          // 次の煙を出すまでの秒
 let chimneyTop = null;     // 煙突の口
 let torches = [];          // 松明と塔の最上階の明かり { x, y, z, top, step, flick, phase, hidden, rock }（top・step は lightFrom の光源、rock は載っている浮かぶ岩の番号）
-let lightSources = [];     // 動かない光源（Ruins の水・きのこ）
+let lightSources = [];     // 動かない光源（Ruins の水・きのこ・蔦の光る実）
 let anchors = {};          // 小物が決めた居場所（猫・ふくろう・蝶。buildProps の返り値）
 let creature = null;       // いまのシーンの生き物の状態
 let fireflies = [];
@@ -843,7 +853,6 @@ function mushrooms(v, cx, cy, seed) {
     fill(v, x - (h > 2 ? 1 : 0), y - (h > 2 ? 1 : 0), h, x + 1, y + 1, h + 1, vox(M.LAMP, 2));
   }
 }
-
 // シーンごとの小物。松明・光源・生き物の居場所もここで決める
 function buildProps(v, sc) {
   torches = [];
@@ -891,10 +900,10 @@ function buildProps(v, sc) {
     // 中庭の、滝の脇の塔の左手前の角に、Mill と同じに積んだ樽が、黒ずんで苔むしたまま残る
     barrel(v, 11, 6, 0, true); barrel(v, 11, 12, 0, true);   // 下の段の 2 つ
     barrel(v, 11, 9, 7, true);                               // 上の段の 1 つ
-    // 光るきのこの群れ。小屋の左手前・朽ちた手押し車の右手前・小屋の左奥
-    for (const [x, y, s] of [[-40, 30, 41], [68, -15, 43], [-52, 2, 44]]) {
+    // 光るきのこの群れ
+    for (const [x, y, s, top] of MUSH_SPOTS) {
       mushrooms(v, x, y, s);
-      lightSources.push({ x: x + 0.5, y: y + 0.5, z: 2, ...MUSH_LIGHT });
+      lightSources.push({ x: x + 0.5, y: y + 0.5, z: 2, ...MUSH_LIGHT, top });
     }
     // ふくろうは、右奥の低い塔の屋根のてっぺんにとまる（背後に、奥の水路の光る水面が来る）
     const roof = towerRoof(TOWER_MID);
@@ -906,6 +915,10 @@ function buildProps(v, sc) {
 
 // 蔦の葉のボクセル
 const leafVox = (x, y, z) => vox(M.LEAF, hash3(x, y, z) < 0.4 ? 2 : 0);
+// (x, y) の列に、高さ top から下へ len ボクセルの蔦を垂らす（物のある所と、地面より下は飛ばす）
+function hangIvy(v, x, y, top, len) {
+  for (let z = top; z > top - len && z > 0; z--) if (!vget(v, x, y, z)) vset(v, x, y, z, leafVox(x, y, z));
+}
 // 水路の外壁（見える +x・+y の面）の上端から、n 本の蔦を垂らす（長さは len0 から len0 + span - 1）。
 // 垂れ始めの所が空いていて、すぐ内側に壁（石か苔）がある所にだけ垂らす（折れ目の近くでは、外へずらした所が隣の区間の水路や塔の中に入るため）
 function channelIvy(v, rnd, n, len0, span) {
@@ -918,7 +931,7 @@ function channelIvy(v, rnd, n, len0, span) {
     if (vget(v, x, y, top) || (wall !== M.STONE && wall !== M.MOSS)) continue;
     // ふくろう（Ruins）と画面の同じ列には垂らさない（真後ろに蔦があると、影絵の輪郭が溶ける）
     if (anchors.owl && Math.abs(x - y - (anchors.owl.x - anchors.owl.y)) < OWL_IVY_CLEAR) continue;
-    for (let z = top; z > top - len; z--) if (!vget(v, x, y, z)) vset(v, x, y, z, leafVox(x, y, z));
+    hangIvy(v, x, y, top, len);
   }
 }
 // 塔の壁（見える +x・+y の面）の、高さ zMin から上端の zMin 手前までのところどころから、n 本の蔦を垂らす
@@ -927,7 +940,7 @@ function towerIvy(v, rnd, n, zMin, len0, span) {
     const t = rnd() < 0.6 ? TOWER_FALL : TOWER_MID, side = rnd() < 0.5;
     const z0 = zMin + Math.floor(rnd() * (t.top - 2 * zMin)), len = len0 + Math.floor(rnd() * span);
     const x = side ? t.x0 + Math.floor(rnd() * (t.x1 - t.x0)) : t.x1, y = side ? t.y1 : t.y0 + Math.floor(rnd() * (t.y1 - t.y0));
-    for (let z = z0; z > z0 - len && z > 0; z--) if (!vget(v, x, y, z)) vset(v, x, y, z, leafVox(x, y, z));
+    hangIvy(v, x, y, z0, len);
   }
 }
 // 石積みの苔と蔦（Garden・Mill）。場所は種を固定した乱数とハッシュで決め、どのシーンも同じ所に出す
@@ -997,6 +1010,24 @@ function ruinWorld(v) {
   // 蔦: 水路の外側の壁と塔から、多く長く垂らす
   channelIvy(v, rnd, 54, 4, 14);   // 折れ目の近くの所を飛ばすので、実際に垂れるのは 40 本あまり
   towerIvy(v, rnd, 24, 0, 6, 20);
+  // 右奥の低い塔の右の面の上の段に、実の生る蔦を 1 本垂らす
+  hangIvy(v, TOWER_MID.x1, BERRY_IVY.y, BERRY_IVY.top, BERRY_IVY.len);
+  // 塔の右の面の蔦に、光るきのこに近い色の実を付け、暗く沈む面に小さな明かりを灯す
+  // 実は縦 2 ボクセル（左の面と右の面が映り、画面で 2×2 ドットほど）。明るさのずれを、本体は 3（-2 段）、上の 1 つだけ 2（+1 段）にして、
+  // 面の向きによらず本体を段 0..2、上のボクセルを段 3..5 に分ける
+  for (const [t, y] of BERRIES.vines) for (let z = BERRIES.zMin; z < t.top; z++) {
+    const x = t.x1;
+    if ((vget(v, x, y, z) & 31) !== M.LEAF || vget(v, x + 1, y, z) || hash3(x, y, z * 5 + 61) >= BERRIES.chance) continue;
+    // 実の左右の位置は、画面で -1..1 ドットずらし、縦に揃えない。左へは +y へずらす。右へは、-y へずらすと左の面が蔦の葉に隠れるので、
+    // 代わりに壁から 1 ボクセル手前（+x）へ出す
+    const shift = Math.floor(hash3(x, y, z * 5 + 62) * 3) - 1, bx = x + (shift < 0 ? 1 : 0), by = y + (shift > 0 ? 1 : 0);
+    // 右の面と左の面のどちらかが隠れる所には付けない（幅 1 ドットの線になり、実に見えない）
+    if (vget(v, bx + 1, by, z) || vget(v, bx + 1, by, z + 1) || vget(v, bx, by + 1, z) || vget(v, bx, by + 1, z + 1)) continue;
+    vset(v, bx, by, z, vox(M.BERRY, 3));
+    vset(v, bx, by, z + 1, vox(M.BERRY, 2));
+    lightSources.push({ x: bx + 1, y: by + 0.5, z: z + 1, ...BERRY_LIGHT });
+    z += BERRIES.gap;
+  }
 }
 
 // ---- 動く物の形 ----
