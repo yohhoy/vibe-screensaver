@@ -1,0 +1,1655 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hex Network</title>
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <span class="pc-only">Space: 次の群島 / F・ダブルクリック: 全画面 / ↑↓: パケットの量</span>
+  <span class="touch-only">左右スワイプ: 次の群島 / 上下スワイプ: パケットの量</span>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+// 共通の入力・UI と小さな関数（common.js）
+const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+
+// ---- 設定 ----
+// 距離はなるべくセル数（グリッドで何歩か）で表す。セルより小さいもの（機器の寸法など）の長さの単位は、六角セルの中心から角までの距離で、
+// 隣り合うセルの中心どうしは √3（CELL）離れている
+
+// 群島の形
+const ISLAND_COUNT = [3, 5];          // 島の数
+const ISLAND_RADIUS = 5;              // 島 1 つの仮の範囲（コアからのセル数）
+const ISLAND_DIST = [8, 10];          // 中心の島のコアから、まわりの島のコアまでのセル数。島ごとに選ぶ
+const ISLAND_GAP = 3;                 // 島どうしの間に残す、何も置かないセルの数（島間リンクを除く）
+const ROUTERS_PER_ISLAND = [3, 5];    // 島ごとに目指すルータの数（置ける場所が無ければ減る）
+const ROUTER_DIST = [2, 4];           // コアからルータまでのセル数
+const ROUTER_GAP = 2;                 // ルータどうしの最小のセル数
+const LINK_AVOID = 0.9;               // ルータを置かない、島間リンクの出ていく向きからの角度 (rad)
+const SWITCH_DIST = 2;                // ルータからスイッチまでのセル数（間はケーブル）
+const TWO_SWITCHES = 0.8;             // ルータにスイッチを 2 個つなぐ確率（ほかは 1 個）
+const HOSTS_PER_SWITCH = [2, 5];
+const RING_LINKS = [1, 2];            // 輪の島間リンク（まわりの島どうし）の本数。最初の生成と、入れ替わりで島を足すとき
+const SERVICE_COLORS = [0x22e0ff, 0xff3cd8, 0xffa424, 0x4cff5a];   // シアン・マゼンタ・アンバー・グリーン
+
+// 生成と消去の時間（秒）
+const GEN_TIME = 100;                 // 群島が育ちきるまで（下の間隔の合計をこの長さに伸び縮みさせる）
+const GAP = { device: 0.6, host: 0.35, cable: 0.3, link: 0.18, island: 2.5 };   // 手順ごとの間隔（比）。island は島が育ちきったあとの間
+const BASE_TIME = 0.4;                // 機器の底板の輪郭を描く時間
+const SCAN_TIME = 0.9;                // 走査線が機器を下から上へ描く時間
+const ERASE_SPREAD = 7;               // 群島をまるごと消すとき、最初にほどけ始めるセルと、最後の（中心の島のコアの）セルの時間差
+const ERASE_FADE = 2;                 // セル 1 つがほどけて消えるまでの時間
+
+// 島の入れ替わり（時間は秒）
+const SWAP_INTERVAL = 60;             // 群島が完成してから、またはひとつ前の入れ替わりが終わってから、次の入れ替わりを始めるまで
+const DRAIN_MAX = 8;                  // 島を消す前に、その島を通るパケットが行き着くのを待つ最長の時間
+const LINK_UNRAVEL = 2;               // 消える島の島間リンクがほどけるのにかける時間
+const ISLAND_UNRAVEL = 3;             // 消える島が外側からほどけるのにかける時間
+const ISLAND_GROW_TIME = 25;          // 新しい島が育ちきるまで
+const SLOT_DRIFT = 0.5;               // 新しい島を置く方角の、席のもとの方角からの揺れの上限 (rad)。席の間隔の 4 分の 1 も超えない
+const CENTER_EVERY = 3;               // 入れ替わり何回に 1 回、まわりの島の代わりに中心の島の中身を作り直すか
+const CENTER_GROW_TIME = 20;          // 中心の島の中身が育ちきるまで
+
+// 見た目
+const LINE_COLOR = new THREE.Color(0.42, 0.55, 0.78);   // 機器とケーブルの線（淡い青白）
+const BASE_LEVEL = 0.4;               // 底板の輪郭の明るさ（機器の線に対して）
+const LINE_WIDTH = 1.6;               // 機器の線の太さ（CSS ピクセル）
+const CABLE_WIDTH = 2.4;              // ケーブルの線の太さ（CSS ピクセル）
+const FOG_MIN = 0.28;                 // いちばん奥の線の明るさ（手前を 1 とする）
+const SCAN_GLOW = 2.5;                // 描かれた直後の線の明るさの上乗せ（走査線の光）
+const DASH = 7;                       // 消えるときの点線の細かさ（1 単位の長さあたりの数）
+const FACE_TOP = new THREE.Color(0.02, 0.04, 0.08);     // 機器の面の色（上面）。空より少し明るい紺
+const FACE_SIDE = new THREE.Color(0.006, 0.012, 0.03);  // 機器の面の色（側面）。上面より暗くして立体感を出す
+const SCREEN_LEVEL = 1.3;             // ホストの画面の明るさ
+const HOST_LINE_LEVEL = 0.6;          // ホストの箱の線の明るさ（画面に対して）
+const RING_SPIN = 0.7;                // コアとルータのリングの回る速さ (rad/s)
+const PORT_IDLE = 0.18;               // ポート・ランプが消えているときの明るさ（線の色に対して）
+const FLASH_DECAY = 0.5;              // 光った光が消える時定数（秒）
+const BLOOM = { strength: 0.5, radius: 0.4, threshold: 0.6 };   // しきい値は、線がわずかに、光と描かれた直後の線が強くにじむ値
+const MSAA_SAMPLES = { pc: 0, touch: 4 };   // PC は解像度の倍率が 2 まであるので要らない
+const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
+
+// パケット
+const PACKET_SPEED = 1.5;             // 速さ（セル/秒）
+const HOP_PAUSE = 0.35;               // ルータで 1 つを送り出すのにかかる時間（秒）
+const REPLY_DELAY = 0.6;              // 要求が着いてから応答を返すまで（秒）
+const QUEUE_COST = 1.5;               // 経路を選ぶとき、ルータの待ち行列 1 つを何セルぶんの遠回りとみなすか
+const OTHER_ISLAND_WEIGHT = 3;        // 行き先に別の島のホストを選ぶ重み（同じ島を 1 とする）
+const PACKET_LOOK = {                 // 大きさ（単位）・尾の点の数・尾の点の間隔（単位）
+  req: { size: 0.16, tail: 3, gap: 0.09 },
+  res: { size: 0.26, tail: 8, gap: 0.12 },
+};
+const QUEUE_GAP = 0.16;               // 待ち行列の点の縦の間隔
+const MIN_PACKETS = 5;
+const MAX_PACKETS = 80;
+const BASE_PACKETS = 20;
+const PACKET_STEP = 1.5;              // ↑↓ 1 回あたりの倍率
+const GROW_SHARE = 0.6;               // 生成の間に流す割合（育ちきった島の割合に掛ける）
+const RAMP_TIME = 12;                 // 群島が完成してから強度の値まで増やす時間（秒）
+const SERVICE_SWITCH_INTERVAL = [10, 5, 15];   // ホストがサービスを切り替える間隔 [平均, 下限, 上限]（秒）
+const BROADCAST_INTERVAL = [20, 10, 30];       // ブロードキャストの間隔 [平均, 下限, 上限]（秒）
+const BROADCAST_RADIUS = 1.4;         // 波紋の広がる半径（セル数）
+const BROADCAST_TIME = 1.4;           // 波紋が広がりきるまでの秒数
+
+// 背景。暗い夜空のようなグラデーション（ブルームのしきい値より暗くし、にじませない）
+const SKY_TOP = new THREE.Color(0.0, 0.0, 0.004);      // 画面の上の色
+const SKY_BOTTOM = new THREE.Color(0.006, 0.014, 0.04);   // 画面の下の色（深い紺）
+
+// カメラ
+const CAM_FOV = 40;
+const CAM_ELEVATION = THREE.MathUtils.degToRad(30);
+const ORBIT_SPEED = TAU / 90;         // 周回の速さ (rad/s)
+const ZOOM_LAG = 5;                   // 距離が目安の距離を追う時定数（秒）
+const MIN_EXTENT = 5;                 // 映す範囲の最小の半径（セル数。最初の島の仮の範囲が収まる大きさ）
+const FRAME_FILL = 0.92;              // 群島を画面の縦横の何割の内側に収めるか
+const LOOK_Y = 0.4;                   // 注視点の高さ
+
+// ---- ユーティリティ ----
+// 六角形のグリッド（pointy-top、軸座標 q, r）
+const SQRT3 = Math.sqrt(3);
+const CELL = SQRT3;   // 隣り合うセルの中心どうしの距離（長さの単位）
+const DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];   // 隣の 6 方向。d と (d + 3) % 6 が逆向き
+const cellKey = (q, r) => q + ',' + r;
+const hexX = (q, r) => SQRT3 * (q + r / 2);
+const hexZ = (q, r) => 1.5 * r;
+const hexDist = (a, b) => (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q + a.r - b.q - b.r)) / 2;
+function hexRound(q, r) {
+  const s = -q - r;
+  let rq = Math.round(q), rr = Math.round(r);
+  const rs = Math.round(s);
+  const dq = Math.abs(rq - q), dr = Math.abs(rr - r), ds = Math.abs(rs - s);
+  if (dq > dr && dq > ds) rq = -rr - rs;
+  else if (dr > ds) rr = -rq - rs;
+  return { q: rq, r: rr };
+}
+const fromXZ = (x, z) => hexRound(x / SQRT3 - z / 3, (2 / 3) * z);
+const dirOf = (a, b) => DIRS.findIndex(([dq, dr]) => a.q + dq === b.q && a.r + dr === b.r);
+const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+// a から b への、折れ曲がりが 1 回以下の道（途中のセルの列）。どの 2 つのセルも、隣り合う 2 方向の直線 2 本でつなげる。
+// どちらの向きを先に進むかで 2 通りあり、乱数で並べた順に返す（まっすぐなら同じ道が 2 つ）
+function bentPaths(a, b) {
+  const dq = b.q - a.q, dr = b.r - a.r;
+  for (let d = 0; d < 6; d++) {
+    const [q1, r1] = DIRS[d], [q2, r2] = DIRS[(d + 1) % 6];
+    const det = q1 * r2 - q2 * r1;
+    const m = Math.round((dq * r2 - q2 * dr) / det), n = Math.round((q1 * dr - dq * r1) / det);
+    if (m < 0 || n < 0 || m * q1 + n * q2 !== dq || m * r1 + n * r2 !== dr) continue;
+    const walk = (legs) => {
+      const path = [];
+      let cur = a;
+      for (const [dir, steps] of legs) for (let i = 0; i < steps; i++) path.push(cur = { q: cur.q + DIRS[dir][0], r: cur.r + DIRS[dir][1] });
+      path.pop();   // b そのもの
+      return path;
+    };
+    const legs = [[d, m], [(d + 1) % 6, n]];
+    return shuffle([walk(legs), walk([...legs].reverse())]);
+  }
+  return [];
+}
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) { const j = randInt(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+  return arr;
+}
+
+// ---- シェーダー ----
+// 機器の面（FACE。暗い色で塗って奥の線を隠す）と、画面・ポート・ランプの光（LIGHT。色を光の表から引く）。
+// 時刻はどれも部品（島・島間リンク）の基準の時刻からの秒数。uBuild より後に現れる所は描かず、uEraseAt からほどけて消える
+// （aOrder が uOrderBase より大きいほど、uSpread 秒の割合で遅く消える）
+const f = (x) => x.toFixed(4);
+const NetVertex = /* glsl */`
+  attribute float aShow;     // 現れる時刻
+  attribute float aOrder;    // 消える順（0..1）
+  varying float vShow, vOrder, vDepth;
+  varying vec3 vWorld;
+  #ifdef LIGHT
+  attribute float aLight;
+  uniform sampler2D uLights;
+  varying vec3 vColor;
+  #endif
+  void main() {
+    #ifdef LIGHT
+    int i = int(aLight + 0.5);
+    vColor = texelFetch(uLights, ivec2(i % LIGHT_TEX_W, i / LIGHT_TEX_W), 0).rgb;
+    #endif
+    vShow = aShow; vOrder = aOrder;
+    vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }`;
+const NetFragment = /* glsl */`
+  uniform float uBuild, uTime, uEraseAt, uOrderBase, uSpread, uFogNear, uFogFar;
+  uniform vec3 uFaceTop, uFaceSide;
+  varying float vShow, vOrder, vDepth;
+  varying vec3 vWorld;
+  #ifdef LIGHT
+  varying vec3 vColor;
+  #endif
+  void main() {
+    if (uBuild < vShow) discard;
+    float k = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
+    float fog = mix(1.0, ${f(FOG_MIN)}, smoothstep(uFogNear, uFogFar, vDepth));
+    #ifdef FACE
+    if (k > 0.3) discard;   // 線より少し早く消し、ほどけていく線の奥を見せる
+    // 面の向き（画面上の位置の変化から求める）で、上面と側面の色を塗り分ける
+    float up = abs(normalize(cross(dFdx(vWorld), dFdy(vWorld))).y);
+    gl_FragColor = vec4(mix(uFaceSide, uFaceTop, smoothstep(0.5, 0.9, up)) * fog, 1.0);
+    #else
+    if (k > 0.0) discard;   // 光はほどけ始めたら消す
+    gl_FragColor = vec4(vColor * fog, 1.0);
+    #endif
+  }`;
+
+// 太さのある線は three.js の LineMaterial で描き、onBeforeCompile で上と同じ現れ方・消え方と、点線でほどける消え方・
+// 光の色（LIGHT）・コアのリングの回転（SPIN）・描かれた直後の光（走査線）を差し込む
+const NetLineVertexHead = /* glsl */`
+  attribute vec2 aShow2, aU2;      // 線分の両端の、現れる時刻・線に沿った長さ
+  attribute float aOrder;
+  attribute float aHide;           // 見えなくなる時刻（隣の底板がくっついて消える辺）
+  varying float vShow, vOrder, vU, vDepth, vHide;
+  #ifdef LIGHT
+  attribute float aLight;
+  uniform sampler2D uLights;
+  varying vec3 vNetColor;
+  #endif
+  #ifdef SPIN
+  attribute vec2 aPivot;
+  uniform float uSpin;
+  #endif
+  vec3 netSpin(vec3 p) {
+    #ifdef SPIN
+    vec2 d = p.xz - aPivot;
+    float c = cos(uSpin), s = sin(uSpin);
+    p.xz = aPivot + vec2(c * d.x - s * d.y, s * d.x + c * d.y);
+    #endif
+    return p;
+  }`;
+const NetLineVertexMain = /* glsl */`
+    float netT = position.y < 0.5 ? 0.0 : 1.0;
+    vShow = mix(aShow2.x, aShow2.y, netT); vU = mix(aU2.x, aU2.y, netT); vOrder = aOrder; vHide = aHide;
+    #ifdef LIGHT
+    int netI = int(aLight + 0.5);
+    vNetColor = texelFetch(uLights, ivec2(netI % LIGHT_TEX_W, netI / LIGHT_TEX_W), 0).rgb;
+    #endif`;
+const NetLineFragmentHead = /* glsl */`
+  uniform float uBuild, uTime, uEraseAt, uOrderBase, uSpread, uFogNear, uFogFar;
+  varying float vShow, vOrder, vU, vDepth, vHide;
+  #ifdef LIGHT
+  varying vec3 vNetColor;
+  #endif`;
+const NetLineFragmentMain = /* glsl */`
+    if (uBuild < vShow || uBuild >= vHide) discard;
+    float netK = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
+    if (netK > 0.0 && fract(vU * ${f(DASH)}) < netK) discard;`;
+const NetLineColor = /* glsl */`
+    float netFog = mix(1.0, ${f(FOG_MIN)}, smoothstep(uFogNear, uFogFar, vDepth));
+    #ifdef LIGHT
+    vec3 netC = vNetColor * LIGHT_SCALE;
+    #else
+    vec3 netC = diffuse;
+    #endif
+    netC *= 1.0 + ${f(SCAN_GLOW)} * (1.0 - smoothstep(0.0, 0.3, uBuild - vShow));
+    gl_FragColor = vec4(netC * netFog, alpha);`;
+function patchLineShader(shader) {
+  Object.assign(shader.uniforms, netUniforms);
+  const once = (src, a, b) => {
+    if (src.split(a).length !== 2) throw new Error('LineMaterial のシェーダーに差し込めない: ' + a);
+    return src.replace(a, b);
+  };
+  let v = shader.vertexShader;
+  v = once(v, '#include <common>', '#include <common>\n' + NetLineVertexHead);
+  v = once(v, 'void main() {', 'void main() {\n' + NetLineVertexMain);
+  v = once(v, 'vec4( instanceStart, 1.0 )', 'vec4( netSpin( instanceStart ), 1.0 )');
+  v = once(v, 'vec4( instanceEnd, 1.0 )', 'vec4( netSpin( instanceEnd ), 1.0 )');
+  v = once(v, 'gl_Position = clip;', 'gl_Position = clip;\n    vDepth = -( position.y < 0.5 ? start.z : end.z );');
+  let fr = shader.fragmentShader;
+  fr = once(fr, '#include <common>', '#include <common>\n' + NetLineFragmentHead);
+  fr = once(fr, 'void main() {', 'void main() {\n' + NetLineFragmentMain);
+  fr = once(fr, 'gl_FragColor = vec4( diffuseColor.rgb, alpha );', NetLineColor);
+  shader.vertexShader = v;
+  shader.fragmentShader = fr;
+}
+
+// 背景の色。画面いっぱいの板に、上下のグラデーションを描く。暗い色の段差が出ないよう、動かない細かなノイズを混ぜる
+const SkyShader = {
+  uniforms: { uTop: { value: SKY_TOP }, uBottom: { value: SKY_BOTTOM } },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = position.xy * 0.5 + 0.5;
+      gl_Position = vec4(position.xy, 1.0, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uTop, uBottom;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y));
+      float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+      gl_FragColor = vec4(c + n / 255.0, 1.0);
+    }`,
+};
+
+// パケットの点。ふちのぼけた丸（加算合成）
+const PacketShader = {
+  uniforms: { uScale: { value: 1 }, uFogNear: { value: 0 }, uFogFar: { value: 1 } },
+  vertexShader: /* glsl */`
+    attribute float size;
+    attribute vec3 color;
+    uniform float uScale;
+    varying vec3 vColor;
+    varying float vDepth;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vDepth = -mv.z;
+      gl_PointSize = max(2.0, size * uScale / vDepth);
+      vColor = color;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uFogNear, uFogFar;
+    varying vec3 vColor;
+    varying float vDepth;
+    void main() {
+      float r = length(gl_PointCoord - 0.5) * 2.0;
+      float a = 1.0 - smoothstep(0.2, 1.0, r);
+      float fog = mix(1.0, ${f(FOG_MIN)}, smoothstep(uFogNear, uFogFar, vDepth));
+      gl_FragColor = vec4(vColor * a * fog, 1.0);
+    }`,
+};
+
+// ---- three.js 初期化 ----
+const renderer = new THREE.WebGLRenderer();
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? MAX_PIXEL_RATIO.touch : MAX_PIXEL_RATIO.pc));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CAM_FOV, innerWidth / innerHeight, 0.1, 600);
+const TAN_HALF_FOV = Math.tan(THREE.MathUtils.degToRad(CAM_FOV / 2));   // 縦の視野の半分の tan
+
+// 線のぎざぎざを抑えるため、スマホなどではシーンの描画先をマルチサンプルにする
+const samples = IS_TOUCH ? MSAA_SAMPLES.touch : MSAA_SAMPLES.pc;
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1,
+  { type: THREE.HalfFloatType, samples, ...compactHdrFormat(renderer, samples) }));
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM.strength, BLOOM.radius, BLOOM.threshold));
+composer.addPass(new OutputPass());
+
+// 面・線・光で uniform を共有する。時刻の uniform は、部品ごとに描く直前に入れ替える（setPartUniforms）
+const LIGHT_TEX_W = 1024, LIGHT_CAPACITY = LIGHT_TEX_W * 4;   // 光の表の幅と、入る光の数
+const netUniforms = {
+  uBuild: { value: 0 }, uTime: { value: 0 }, uEraseAt: { value: 1e9 }, uOrderBase: { value: 0 }, uSpread: { value: ERASE_SPREAD },
+  uFogNear: { value: 0 }, uFogFar: { value: 1 },
+  uFaceTop: { value: FACE_TOP }, uFaceSide: { value: FACE_SIDE },
+  uLights: { value: null }, uSpin: { value: 0 },
+};
+const netMaterial = (defines, extra = {}) => new THREE.ShaderMaterial({
+  uniforms: netUniforms, vertexShader: NetVertex, fragmentShader: NetFragment,
+  defines: { LIGHT_TEX_W, ...defines }, ...extra,
+});
+// 面は暗い色で塗って奥の線を隠す。辺とちらつかないよう、少し奥へずらす。三角形の向きを揃えていないので、両面を描く
+const faceMaterial = netMaterial({ FACE: '' }, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+// 画面・ポート・ランプは、面より手前に出す
+const lightMaterial = netMaterial({ LIGHT: '' }, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+const lineMaterials = [];   // 画面の大きさ（resolution）を渡す線の素材
+function netLineMaterial(defines, linewidth = LINE_WIDTH, color = LINE_COLOR) {
+  const m = new LineMaterial({ color, linewidth, depthWrite: false });
+  m.defines = { ...m.defines, LIGHT_TEX_W, LIGHT_SCALE: '1.0', ...defines };
+  m.onBeforeCompile = patchLineShader;
+  lineMaterials.push(m);
+  return m;
+}
+const lineMaterial = netLineMaterial({});
+const cableMaterial = netLineMaterial({}, CABLE_WIDTH);
+// 底板の輪郭は、機器の線より暗くして控えめにする
+const baseMaterial = netLineMaterial({}, LINE_WIDTH, LINE_COLOR.clone().multiplyScalar(BASE_LEVEL));
+const ringMaterial = netLineMaterial({ LIGHT: '', SPIN: '' });
+// ホストの箱の線。画面と同じ光の色（サービスの色）を、画面より暗くして使う
+const hostLineMaterial = netLineMaterial({ LIGHT: '', LIGHT_SCALE: f(HOST_LINE_LEVEL) });
+const packetMaterial = new THREE.ShaderMaterial({
+  ...PacketShader, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const broadcastMaterial = new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+
+// 画面の大きさに合わせる（線の太さの基準、点の大きさ）
+function updateScreenScale() {
+  for (const m of lineMaterials) m.resolution.set(innerWidth, innerHeight);
+  packetMaterial.uniforms.uScale.value = renderer.domElement.height / (2 * TAN_HALF_FOV);
+}
+
+// ---- 状態 ----
+let packetCount = BASE_PACKETS;   // 強度（同時に流れるパケットの数）
+let net = null;          // いまの群島（planArchipelago() の戻り値）
+let clock = 0;           // いまの群島が始まってからの秒数
+let phase = 'grow';      // grow（最初の生成）・run（稼働と入れ替わり）・erase（群島をまるごと消す）
+let phaseTime = 0;       // いまの段階に入った時刻（clock）
+let eraseAt = Infinity;  // 群島をまるごと消し始めた時刻（clock）
+let swap = null;         // 入れ替わりの途中なら { stage（drain・unravel・grow）, isl（消す島）または center と gone（張り直すリンク）, t, end }、無ければ null
+let swapAt = 0;          // 次の入れ替わりを始める時刻（clock）
+let swapCount = 0;       // いまの群島で始めた入れ替わりの回数
+let packets = [];
+let broadcasts = [];
+let spawnCarry = 0;      // 要求を出すペースの端数（次のフレームへ持ち越す）
+let switchWait = 0;      // 次にホストがサービスを切り替えるまでの秒数
+let broadcastWait = 0;   // 次のブロードキャストまでの秒数
+let orbit = 0;           // カメラの方位
+let camDist = 0;         // カメラの距離（0 なら最初のフレームで目安に合わせる）
+let lensReady = false;   // 画面の中でのずらし量（lensShift）を、最初のフレームで合わせたか
+let lights = [];         // 光ごとの { idle（灯り続ける色）, cur（いまの色。idle へゆっくり移る）, flash（光った分。だんだん消える） }。空いた枠は null
+let freeLights = [];     // 空いた光の枠の番号（次の島で使い回す）
+
+// ---- 背景 ----
+// 空の色。群島より先に描き、群島の面がその上を塗りつぶす
+const sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ ...SkyShader, depthTest: false, depthWrite: false }));
+sky.frustumCulled = false;
+sky.renderOrder = -3;
+scene.add(sky);
+
+// ---- 群島の計画 ----
+// 群島（net）は、セル・島・島間リンクと描画の部品を持ち続ける。最初の生成では群島全体を、入れ替わりでは島 1 つを計画して足す。
+// 計画は写し（trialOf）の上で行い、うまくいったら群島に移す（commit）。失敗したら写しを捨て、作りかけのセルを残さない。
+// 島は席（0 は中心、1〜 はまわり）ごとに持ち、ほかの島の近くに置かないための印（nearIsland）は席の番号のビットで付ける
+
+function emptyWorld(count) {
+  const base = rand(0, TAU);
+  const outer = count - 1;   // まわりの島の数
+  const span = outer === 2 ? rand(1.9, 2.3) : TAU / outer;   // まわりが 2 つのときは反対側にしない（輪のリンクが中心を通る）
+  return { count, outer, base, span, cellAt: new Map(), nearIsland: new Map(), corridors: new Map(), islands: [], links: [], linkSeq: 0 };
+}
+// 計画の写し。セルの地図・印・島・島間リンクの並びを写し、この計画で足す手順（steps）とつながり（runs）を持つ
+function trialOf(w) {
+  return { ...w, cellAt: new Map(w.cellAt), nearIsland: new Map(w.nearIsland), corridors: new Map(w.corridors),
+    islands: [...w.islands], links: [...w.links], steps: [], runs: [] };
+}
+function commit(w) {
+  for (const k of ['cellAt', 'nearIsland', 'corridors', 'islands', 'links', 'linkSeq']) net[k] = w[k];
+}
+const at = (w, h) => w.cellAt.get(cellKey(h.q, h.r));
+// 島のセルから ISLAND_GAP 以内のセルに、その島の印を付ける。ほかの島は印の付いたセルに置かない
+function markNear(w, h, slot) {
+  for (let dq = -ISLAND_GAP; dq <= ISLAND_GAP; dq++) for (let dr = -ISLAND_GAP; dr <= ISLAND_GAP; dr++) {
+    if (Math.abs(dq + dr) > ISLAND_GAP) continue;
+    const k = cellKey(h.q + dq, h.r + dr);
+    w.nearIsland.set(k, (w.nearIsland.get(k) ?? 0) | (1 << slot));
+  }
+}
+const nearOther = (w, h, slot) => ((w.nearIsland.get(cellKey(h.q, h.r)) ?? 0) & ~(1 << slot)) !== 0;
+function addCell(w, h, type, island, mark = true) {
+  const cell = { q: h.q, r: h.r, x: hexX(h.q, h.r), z: hexZ(h.q, h.r), type, island, edges: [], birth: 0, dur: 0 };
+  w.cellAt.set(cellKey(h.q, h.r), cell);
+  if (mark) markNear(w, h, island);
+  return cell;
+}
+// まわりの席 slot のコアの場所。席の向きへ、中心のコアからちょうど d 歩のセルを探す
+// （同じ長さでも、向きによって歩数が 1 割ほど変わるため、遠くから寄せる）
+function coreSpot(w, slot) {
+  const a = w.base + (slot - 1) * w.span + rand(-0.2, 0.2), d = randIntIn(ISLAND_DIST);
+  let len = d * 1.2 * CELL, h;
+  do { h = fromXZ(Math.cos(a) * len, Math.sin(a) * len); len -= 0.05; } while (hexDist(h, { q: 0, r: 0 }) > d);
+  return h;
+}
+function newIsland(w, slot, h, bornAt) {
+  const isl = { index: slot, core: addCell(w, h, 'core', slot), hosts: [], linkAngles: [], cells: [], bornAt, lit: false };
+  isl.core.part = 'k' + slot;   // コアは島の中身と別の部品にする（中心の島の中身を作り直すときも、コアは残す）
+  w.islands[slot] = isl;
+  return isl;
+}
+// 島間リンク。ほかの島のコアの近くは通さない。張り直しでは、元のリンク old を渡す。元の道はなるべく選ばず（別の道にする）、
+// ほかに通せる道が無ければ、元の道をそのまま使う（元の道を引いたあとに、隣の島のコアが近くに来ていることがあるため）
+function addLink(w, ia, ib, ring, old = null) {
+  const A = w.islands[ia].core, B = w.islands[ib].core;
+  const ok = (path) => path.every((h) => !at(w, h) &&
+    w.islands.every((isl) => !isl || isl.index === ia || isl.index === ib || hexDist(h, isl.core) > ISLAND_RADIUS + 1));
+  // 元の道（A から B の向きに並べる。元のリンクが逆向きに引かれていれば裏返す）
+  const oldPath = !old ? null : old.ia === ia && old.ib === ib ? old.run.slice(1, -1)
+    : old.ia === ib && old.ib === ia ? old.run.slice(1, -1).reverse() : null;
+  const oldKeys = oldPath && new Set(oldPath.map((c) => cellKey(c.q, c.r)));
+  const same = (p) => (oldKeys && p.every((h) => oldKeys.has(cellKey(h.q, h.r))) ? 1 : 0);
+  const path = bentPaths(A, B).sort((p, q) => same(p) - same(q)).find(ok) ??
+    (oldPath?.every((h) => !at(w, h)) ? oldPath.map((c) => ({ q: c.q, r: c.r })) : null);
+  if (!path) return null;
+  const owner = Math.max(ia, ib);   // 消える順は、あとの席の島に合わせる
+  const part = 'l' + w.linkSeq++;   // 描画の部品の名前（島間リンクごと）
+  const run = [A, ...path.map((h) => addCell(w, h, 'cable', owner, false)), B];
+  run.forEach((c) => { if (c.type === 'cable') { c.link = true; c.part = part; } });
+  const link = { ia, ib, run, ring, part };
+  w.links.push(link);
+  // 中心の島からまわりの席への通り道（中心の島の範囲の中の部分）を取っておく。席の島が消えても残し、
+  // 中心の島の中身はそこに置かない（新しい島へのリンクの道を、中心の島の機器にふさがれないように）
+  if (ia === 0 && !ring) {
+    w.corridors.set(ib, new Set(run.filter((c) => c.type === 'cable' && hexDist(c, A) <= ISLAND_RADIUS + 1).map((c) => cellKey(c.q, c.r))));
+  }
+  w.runs.push({ run, lanes: 3, part });
+  // コアからリンクが出ていく向き（ルータはこの向きを避ける）
+  const first = run[1], last = run[run.length - 2];
+  w.islands[ia].linkAngles.push(Math.atan2(first.z - A.z, first.x - A.x));
+  w.islands[ib].linkAngles.push(Math.atan2(last.z - B.z, last.x - B.x));
+  return link;
+}
+// まわりの席の、向きの隣り合う組（まわりが 2 つなら 1 組）
+const adjacentPairs = (outer) => (outer === 2 ? [[1, 2]] : Array.from({ length: outer }, (_, i) => [i + 1, (i + 1) % outer + 1]));
+const near = (h, dist) => {
+  const out = [];
+  for (let dq = -dist; dq <= dist; dq++) for (let dr = -dist; dr <= dist; dr++) {
+    const c = { q: h.q + dq, r: h.r + dr };
+    if (hexDist(c, h) === dist) out.push(c);
+  }
+  return out;
+};
+// 島 1 つに、ルータ・スイッチ・ホストを置く（コアと、コアから出る島間リンクは置いてあるものとする）。
+// ルータが minRouters 個に満たなければ false
+function growIsland(w, isl, minRouters = 2) {
+  const core = isl.core, slot = isl.index;
+  const inCorridor = (h) => slot === 0 && [...w.corridors.values()].some((keys) => keys.has(cellKey(h.q, h.r)));
+  const free = (h) => hexDist(h, core) <= ISLAND_RADIUS && !at(w, h) && !nearOther(w, h, slot) && !inCorridor(h);
+  // 折れ曲がりが 1 回以下で、島の中の空いたセルだけを通る道。無ければ null
+  const straightish = (from, to) => bentPaths(from, to).find((p) => p.every(free)) ?? null;
+  const angleOf = (h) => Math.atan2(hexZ(h.q, h.r) - core.z, hexX(h.q, h.r) - core.x);
+  // つなぐ: 途中のケーブルと行き先の機器を置き、手順に足す
+  function connect(fromCell, path, to, type, gap) {
+    const run = [fromCell, ...path.map((h) => addCell(w, h, 'cable', slot))];
+    const dev = addCell(w, to, type, slot);
+    run.push(dev);
+    const lanes = fromCell.type === 'core' ? 2 : 1;   // 線の数: コアとルータの間は 2 本、ルータの先は 1 本（島間リンクは 3 本）
+    dev.runEntry = { run, lanes, part: 'i' + slot };
+    w.runs.push(dev.runEntry);
+    for (const c of run) if (c.type === 'cable') w.steps.push({ cell: c, gap: GAP.cable });
+    w.steps.push({ cell: dev, gap });
+    return dev;
+  }
+
+  // ルータ: コアから ROUTER_DIST セル。島間リンクの向きを避け、ルータどうしは離す
+  const routers = [];
+  const wantRouters = randIntIn(ROUTERS_PER_ISLAND);
+  const ringsAround = [];
+  for (let d = ROUTER_DIST[0]; d <= ROUTER_DIST[1]; d++) ringsAround.push(...near(core, d));
+  const cand = shuffle(ringsAround.filter((h) => free(h) &&
+    isl.linkAngles.every((a) => angleDiff(a, angleOf(h)) > LINK_AVOID)));
+  for (const h of cand) {
+    if (routers.length >= wantRouters) break;
+    if (routers.some((r) => hexDist(r, h) < ROUTER_GAP) || !free(h)) continue;
+    const path = straightish(core, h);
+    if (!path) continue;
+    routers.push(connect(core, path, h, 'router', GAP.device));
+  }
+  if (routers.length < minRouters) return false;
+  // スイッチ: ルータから SWITCH_DIST セル（間はケーブル）。まわりにホストを並べる。
+  // 並べたい台数ぶんの空きがある場所を先に探し、無ければ最少の台数ぶんの空きがある場所に置ける台数だけ並べる
+  const switchSpot = (router, need) => {
+    for (const h of shuffle(near(router, SWITCH_DIST).filter(free))) {
+      const path = straightish(router, h);
+      if (!path) continue;
+      const room = near(h, 1).filter((n) => free(n) && !path.some((p) => p.q === n.q && p.r === n.r));
+      if (room.length >= need) return { h, path, room };
+    }
+    return null;
+  };
+  for (const router of routers) {
+    const wantSwitches = Math.random() < TWO_SWITCHES ? 2 : 1;
+    for (let k = 0; k < wantSwitches; k++) {
+      const wantHosts = randIntIn(HOSTS_PER_SWITCH);
+      const spot = switchSpot(router, wantHosts) ?? switchSpot(router, HOSTS_PER_SWITCH[0]);
+      if (!spot) break;
+      const sw = connect(router, spot.path, spot.h, 'switch', GAP.device);
+      router.switches = (router.switches ?? 0) + 1;
+      for (const s of shuffle(spot.room).slice(0, wantHosts)) {
+        const host = connect(sw, [], s, 'host', GAP.host);
+        host.switchCell = sw;
+        isl.hosts.push(host);
+      }
+    }
+  }
+  // スイッチを 1 つも置けなかったルータは、そこへのケーブルごと取り除く（ルータだけで終わる枝を作らない）。
+  // まわりのスイッチやホストに空きを使われて起こる。ほかの島のための印は残るが、間が広がるだけ
+  for (const router of routers) {
+    if (router.switches) continue;
+    const gone = new Set(router.runEntry.run.slice(1));
+    for (const c of gone) w.cellAt.delete(cellKey(c.q, c.r));
+    w.runs.splice(w.runs.indexOf(router.runEntry), 1);
+    for (let i = w.steps.length - 1; i >= 0; i--) if (gone.has(w.steps[i].cell)) w.steps.splice(i, 1);
+  }
+  if (routers.filter((r) => r.switches).length < minRouters || isl.hosts.length < 3) return false;
+  // サービス: 島の最初の 4 台には別々のサービスを割り当てる（どのサービスも 2 つ以上の島にあるようにする）
+  const services = SERVICE_COLORS.length;
+  const order = shuffle([...Array(services).keys()]);
+  shuffle(isl.hosts).forEach((h, i) => { h.service = i < services ? order[i] : randInt(services); });
+  return true;
+}
+// 手順に時刻を付ける（start から duration 秒に収める）。つながりの端の時刻と、ケーブルのセルの入口・出口の向きも決める
+function placeTimes(w, start, duration) {
+  const total = w.steps.reduce((sum, s) => sum + (s.gap ?? s.pause), 0);
+  const scale = duration / total;
+  let t = start;
+  for (const s of w.steps) {
+    if (s.cell) { s.cell.birth = t; s.cell.dur = s.gap * scale; }
+    t += (s.gap ?? s.pause) * scale;
+  }
+  // つながりの端の時刻（ケーブルが伸びてその辺を通る時刻）
+  for (const { run, lanes, part } of w.runs) {
+    for (let i = 0; i + 1 < run.length; i++) {
+      const a = run[i], b = run[i + 1];
+      const time = b.type === 'cable' ? b.birth : a.type === 'cable' ? a.birth + a.dur : b.birth;
+      const d = dirOf(a, b);
+      a.edges[d] = { time, lanes, part };
+      b.edges[(d + 3) % 6] = { time, lanes, part };
+    }
+    for (let i = 1; i + 1 < run.length; i++) {
+      run[i].inDir = dirOf(run[i], run[i - 1]);
+      run[i].outDir = dirOf(run[i], run[i + 1]);
+    }
+  }
+  for (const s of w.steps) if (s.cell) s.cell.ready = s.cell.type === 'cable' ? s.cell.birth + s.cell.dur : s.cell.birth + BASE_TIME + SCAN_TIME;
+  return Math.max(...w.steps.filter((s) => s.cell).map((s) => s.cell.ready));
+}
+// セルを足したり除いたりしたあとに、群島の一覧（セル・ホスト・島ごとのセル）と、セルの番号・隣・消える順を作り直す
+function finishWorld(w) {
+  w.cells = [...w.cellAt.values()];
+  for (const isl of w.islands) if (isl) isl.cells = [];
+  w.cells.forEach((c, i) => {
+    c.index = i;
+    c.part ??= 'i' + c.island;   // 描画の部品の名前（島ごと。島間リンクのケーブルは addLink で付けた名前）
+    const isl = w.islands[c.island];
+    isl.cells.push(c);
+    // 消える順: あとの席の島ほど先に、島の中では外側ほど先に
+    const rank = w.count - 1 - c.island;
+    const d = Math.min(hexDist(c, isl.core), ISLAND_RADIUS + 1);
+    c.order = (rank + 1 - d / (ISLAND_RADIUS + 1)) / w.count;
+  });
+  for (const c of w.cells) c.nbrs = c.edges.map((e, d) => (e ? at(w, { q: c.q + DIRS[d][0], r: c.r + DIRS[d][1] }) : null)).filter(Boolean);
+  for (const isl of w.islands) if (isl) isl.readyAt = Math.max(...isl.cells.filter((c) => !c.link).map((c) => c.ready));
+  w.hosts = w.islands.flatMap((isl) => (isl ? isl.hosts : []));
+}
+
+// 最初の生成: 群島全体を計画する。島の数は先に決める（作り直すたびに選び直すと、計画に失敗しやすい数ほど出にくくなる）
+function planArchipelago() {
+  const count = randIntIn(ISLAND_COUNT);
+  for (;;) {
+    const plan = tryPlan(count);
+    if (plan) return plan;
+  }
+}
+function tryPlan(count) {
+  const w = trialOf(emptyWorld(count));
+  newIsland(w, 0, { q: 0, r: 0 }, 0);
+  for (let i = 1; i < count; i++) newIsland(w, i, coreSpot(w, i), 0);
+  // 島間リンク: 木（それまでの島のうち近いものから）と、最後に足す輪
+  for (let i = 1; i < count; i++) {
+    let parent = 0;
+    for (let j = 0; j < i; j++) if (hexDist(w.islands[j].core, w.islands[i].core) < hexDist(w.islands[parent].core, w.islands[i].core)) parent = j;
+    if (!addLink(w, parent, i, false)) return null;
+  }
+  // 輪のリンクは、向きの隣り合うまわりの島どうしに足す
+  const pairs = shuffle(adjacentPairs(count - 1));
+  let rings = 0;
+  const wantRings = Math.min(randIntIn(RING_LINKS), pairs.length);
+  for (const [a, b] of pairs) if (rings < wantRings && addLink(w, a, b, true)) rings++;
+  if (rings === 0) return null;
+
+  // 島ごとに育てる。島が育ちきったら、次の島への島間リンクを伸ばす
+  w.steps.push({ cell: w.islands[0].core, gap: GAP.device });
+  for (const isl of w.islands) {
+    if (!growIsland(w, isl)) return null;
+    w.steps.push({ pause: GAP.island });
+    const next = w.links.find((l) => !l.ring && l.ib === isl.index + 1);
+    if (next) {
+      for (const c of next.run.slice(1, -1)) w.steps.push({ cell: c, gap: GAP.link });
+      w.steps.push({ cell: next.run[next.run.length - 1], gap: GAP.device });
+    }
+  }
+  for (const s of SERVICE_COLORS.keys()) {
+    if (w.islands.filter((isl) => isl.hosts.some((h) => h.service === s)).length < 2) return null;
+  }
+  // 最後に、輪の島間リンク
+  for (const l of w.links.filter((l) => l.ring)) {
+    for (const c of l.run.slice(1, -1)) w.steps.push({ cell: c, gap: GAP.link });
+  }
+  w.doneAt = placeTimes(w, 0, GEN_TIME);
+  for (const isl of w.islands) isl.bornAt = isl.core.birth;
+  finishWorld(w);
+  delete w.steps; delete w.runs;
+  return w;
+}
+
+// 入れ替わり: まわりの席 slot に、新しい島を計画して足す（中心の島から島間リンクを伸ばし、育ったら隣の島へ輪のリンクを足す）。
+// 足した島と、育ちきる時刻を返す。置ける場所が見つからなければ null。
+// コアの場所は、席の方角の揺れと距離の範囲に入るセルを全部並べ、乱数の順に試す（乱数で選んで試すだけだと、
+// 中心の島の機器に島間リンクの道をふさがれて、何度試しても置けないことがある。席の通り道の先も候補に入る）
+function planNewIsland(slot) {
+  const home = net.base + (slot - 1) * net.span;
+  const drift = Math.min(SLOT_DRIFT, net.span / 4);   // 隣の席の島と寄りすぎないよう、席の間隔の 4 分の 1 まで
+  const spots = [];
+  for (let dq = -ISLAND_DIST[1]; dq <= ISLAND_DIST[1]; dq++) for (let dr = -ISLAND_DIST[1]; dr <= ISLAND_DIST[1]; dr++) {
+    const h = { q: dq, r: dr }, d = hexDist(h, { q: 0, r: 0 });
+    if (d >= ISLAND_DIST[0] && d <= ISLAND_DIST[1] && angleDiff(Math.atan2(hexZ(dq, dr), hexX(dq, dr)), home) <= drift) spots.push(h);
+  }
+  for (const [tries, h] of shuffle(spots).entries()) {
+    const w = trialOf(net);
+    if (at(w, h) || nearOther(w, h, slot)) continue;
+    const isl = newIsland(w, slot, h, clock);
+    const link = addLink(w, 0, slot, false);
+    if (!link) continue;
+    for (const c of link.run.slice(1, -1)) w.steps.push({ cell: c, gap: GAP.link });
+    w.steps.push({ cell: isl.core, gap: GAP.device });
+    // 輪のリンク: 向きの隣り合うまわりの島へ。道は島を育てる前に押さえ（育った機器に道をふさがれないように）、伸ばすのは島が育ってから。
+    // 通せる道が無い置き方は、なるべく選び直す（輪が無いと、混み具合で道を選び分ける所が無くなる）
+    const o = net.outer;
+    const nbs = shuffle([...new Set([(slot - 2 + o) % o + 1, slot % o + 1])].filter((s) => s !== slot && w.islands[s]));
+    const rings = [];
+    const wantRings = randIntIn(RING_LINKS);
+    for (const s of nbs) {
+      if (rings.length >= wantRings) break;
+      const l = addLink(w, slot, s, true);
+      if (l) rings.push(l);
+    }
+    if (!rings.length && nbs.length && tries < spots.length / 2) continue;
+    if (!growIsland(w, isl)) continue;
+    w.steps.push({ pause: GAP.island });
+    for (const l of rings) for (const c of l.run.slice(1, -1)) w.steps.push({ cell: c, gap: GAP.link });
+    const doneAt = placeTimes(w, clock, ISLAND_GROW_TIME);
+    commit(w);
+    finishWorld(net);
+    return { isl, doneAt };
+  }
+  return null;
+}
+// 部品のセルを群島から除き、描画の部品も片付ける。残るセルからは、除いた部品へのつながりを外す
+function removeParts(goneParts) {
+  for (const name of goneParts) if (net.parts.has(name)) removePart(name);
+  for (const c of net.cells) {
+    if (goneParts.has(c.part)) { net.cellAt.delete(cellKey(c.q, c.r)); continue; }
+    c.edges.forEach((e, d) => { if (e && goneParts.has(e.part)) delete c.edges[d]; });
+  }
+  net.nearIsland = new Map();
+  for (const c of net.cellAt.values()) if (!c.link) markNear(net, c, c.island);
+  finishWorld(net);
+}
+// 島（とその島間リンク）を群島から除く
+function removeIsland(isl) {
+  const gone = net.links.filter((l) => l.ia === isl.index || l.ib === isl.index);
+  net.links = net.links.filter((l) => !gone.includes(l));
+  net.islands[isl.index] = null;
+  removeParts(new Set(['i' + isl.index, 'k' + isl.index, ...gone.map((l) => l.part)]));
+}
+// 中心の島の中身を作り直す計画（コアは残す）。外した島間リンク gone を張り直してから、中身を育てる。
+// 中心とのリンクは別の道で、輪のリンクは別の隣り合う組へ（通らなければ元の組へ）引き直す。育ちきる時刻を返す。
+// 中身を置けないときは、リンクだけを張り直す（外したリンクを残すと、島がつながらなくなるため）。中身は次の入れ替わりで試し直す。
+// リンクも張れなければ null
+function planCenterRegrow(gone) {
+  for (let tries = 0; tries < 40; tries++) {
+    const withContents = tries < 30;
+    const w = trialOf(net);
+    const old = w.islands[0];
+    const added = [];
+    let failed = false;
+    for (const l of gone) {
+      if (!l.ring) {
+        const nl = addLink(w, 0, l.ia === 0 ? l.ib : l.ia, false, l);
+        if (nl) added.push(nl); else failed = true;
+        continue;
+      }
+      // 輪のリンク: 向きの隣り合う組のうち、まだ輪のリンクの無い組へ。元の組は最後に試す
+      const alive = (s) => w.islands[s];
+      const pairs = shuffle(adjacentPairs(w.outer)
+        .filter(([a, b]) => alive(a) && alive(b) && !w.links.some((x) => x.ring && [x.ia, x.ib].includes(a) && [x.ia, x.ib].includes(b))));
+      pairs.sort((p, q) => (p.includes(l.ia) && p.includes(l.ib) ? 1 : 0) - (q.includes(l.ia) && q.includes(l.ib) ? 1 : 0));
+      const nl = pairs.reduce((found, [a, b]) => found ?? addLink(w, a, b, true, l), null);
+      if (nl) added.push(nl); else if (tries < 20) failed = true;
+    }
+    if (failed || !reachesAll(w)) continue;
+    // ルータは、いまある島間リンクの出ていく向きを避ける
+    const linkAngles = w.links.filter((l) => l.ia === 0 || l.ib === 0).map((l) => {
+      const c = l.ia === 0 ? l.run[1] : l.run[l.run.length - 2];
+      return Math.atan2(c.z - old.core.z, c.x - old.core.x);
+    });
+    // 張り直したリンクが先に伸び、続いて中身が育つ
+    for (const l of added) for (const c of l.run.slice(1, -1)) w.steps.push({ cell: c, gap: GAP.link });
+    if (withContents) {
+      const isl = { ...old, hosts: [], cells: [], linkAngles, lit: false };
+      w.islands[0] = isl;
+      // まわりの島が多いと、中心の島はリンクで細かく区切られるので、半分の試しのあとはルータ 1 つから置く
+      if (!growIsland(w, isl, tries < 15 ? 2 : 1)) continue;
+    }
+    if (!w.steps.length) return null;
+    const doneAt = placeTimes(w, clock, withContents ? CENTER_GROW_TIME : CENTER_GROW_TIME / 3);
+    commit(w);
+    finishWorld(net);
+    return doneAt;
+  }
+  return null;
+}
+// どの島も、島間リンクをたどって中心の島に届くか
+function reachesAll(w) {
+  const seen = new Set([0]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const l of w.links) if (seen.has(l.ia) !== seen.has(l.ib)) { seen.add(l.ia); seen.add(l.ib); grew = true; }
+  }
+  return w.islands.every((isl) => !isl || seen.has(isl.index));
+}
+// どのサービスも 2 つ以上の島にあるようにする。足りなければ、そのサービスの無い島のホストを 1 台切り替える
+function fixServices() {
+  const alive = net.islands.filter((isl) => isl && !isl.retiring);
+  for (const s of SERVICE_COLORS.keys()) {
+    const has = (isl) => isl.hosts.some((h) => h.service === s);
+    while (alive.filter(has).length < 2) {
+      const cand = alive.filter((isl) => !has(isl)).flatMap((isl) => isl.hosts)
+        .filter((h) => alive.filter((isl) => isl.hosts.some((o) => o !== h && o.service === h.service)).length >= 2);
+      if (!cand.length) break;
+      const h = pick(cand);
+      h.service = s;
+      lights[h.light].idle.copy(serviceColor(h.service));
+    }
+  }
+}
+
+// ---- 群島の形 ----
+// 面・線・光を、部品（島の中身・コア・島間リンク）ごとのメッシュにまとめる。頂点ごとに現れる時刻と消える順を持たせる
+// t0 は部品の基準の時刻。頂点の時刻は t0 からの秒数で持つ（通しの時刻のままだと、長く動かしたときに浮動小数点の精度が落ちる）
+function makeBuffer(t0) { return { t0, pos: [], show: [], order: [], u: [], light: [], pivot: [], hide: [] }; }
+let vertexHide = 1e9;   // pushVertex で付ける、見えなくなる時刻（底板のくっつく辺だけが使う）
+function pushVertex(buf, x, y, z, show, order, u = 0, light = 0, pivot = null) {
+  buf.pos.push(x, y, z); buf.show.push(show - buf.t0); buf.order.push(order); buf.u.push(u); buf.light.push(light);
+  buf.hide.push(vertexHide < 1e9 ? vertexHide - buf.t0 : 1e9);
+  if (pivot) buf.pivot.push(pivot[0], pivot[1]);
+}
+// 面・光の三角形の形
+function toGeometry(buf) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+  g.setAttribute('aShow', new THREE.Float32BufferAttribute(buf.show, 1));
+  g.setAttribute('aOrder', new THREE.Float32BufferAttribute(buf.order, 1));
+  g.setAttribute('aLight', new THREE.Float32BufferAttribute(buf.light, 1));
+  return g;
+}
+// 線の頂点の組（2 つずつで 1 本）を、LineSegments2 の形にする。線分ごとの値は始点の頂点から取る
+function toLineGeometry(buf) {
+  const g = new LineSegmentsGeometry().setPositions(buf.pos);
+  const n = buf.show.length / 2;
+  const order = new Float32Array(n), light = new Float32Array(n), pivot = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    order[i] = buf.order[i * 2];
+    light[i] = buf.light[i * 2];
+    if (buf.pivot.length) pivot.set(buf.pivot.slice(i * 4, i * 4 + 2), i * 2);
+  }
+  const inst = (arr, size) => new THREE.InstancedBufferAttribute(arr, size);
+  g.setAttribute('aShow2', inst(new Float32Array(buf.show), 2));
+  g.setAttribute('aU2', inst(new Float32Array(buf.u), 2));
+  g.setAttribute('aOrder', inst(order, 1));
+  g.setAttribute('aHide', inst(new Float32Array(n).map((_, i) => buf.hide[i * 2]), 1));
+  g.setAttribute('aLight', inst(light, 1));
+  if (buf.pivot.length) g.setAttribute('aPivot', inst(pivot, 2));
+  return g;
+}
+
+const CABLE_Y = 0.03;
+// セル cell の、向き d の辺の中点
+const edgeMid = (cell, d) => [cell.x + (SQRT3 / 2) * Math.cos(-d * Math.PI / 3), cell.z + (SQRT3 / 2) * Math.sin(-d * Math.PI / 3)];
+// 並んだ線の、道筋からのずれ
+const laneOffsets = (n) => (n === 1 ? [0] : n === 2 ? [-0.09, 0.09] : [-0.13, 0, 0.13]);
+// 機器につながるケーブルの端（辺の中点から中心へ。機器の中は面に隠れる）。つながり e の部品のバッファ buf に入れる
+function cableEnd(cell, e, d, buf) {
+  const [mx, mz] = edgeMid(cell, d);
+  const dx = mx - cell.x, dz = mz - cell.z, l = Math.hypot(dx, dz);
+  for (const off of laneOffsets(e.lanes)) {
+    const ox = (-dz / l) * off, oz = (dx / l) * off;
+    pushVertex(buf, mx + ox, CABLE_Y, mz + oz, e.time, cell.order, 0);
+    pushVertex(buf, cell.x + ox, CABLE_Y, cell.z + oz, e.time, cell.order, l);
+  }
+}
+// 部品ごとの描画の層（この順に描く）と素材
+const PART_LAYERS = ['faces', 'lines', 'bases', 'cables', 'lightTris', 'rings', 'hostLines'];
+const LAYER_MATERIALS = {
+  faces: faceMaterial, lines: lineMaterial, bases: baseMaterial, cables: cableMaterial,
+  lightTris: lightMaterial, rings: ringMaterial, hostLines: hostLineMaterial,
+};
+
+// 部品の時刻と、消え方（ほどけ始める時刻・順の基準・広がり）
+function makePart(t0) { return { t0, eraseAt: Infinity, orderBase: 0, spread: ERASE_SPREAD, meshes: [], lights: [] }; }
+function setPartUniforms(part) {
+  netUniforms.uBuild.value = Math.min(clock, part.eraseAt) - part.t0;
+  netUniforms.uTime.value = clock - part.t0;
+  netUniforms.uEraseAt.value = part.eraseAt === Infinity ? 1e9 : part.eraseAt - part.t0;
+  netUniforms.uOrderBase.value = part.orderBase;
+  netUniforms.uSpread.value = part.spread;
+}
+
+// cells の形を、部品ごとのメッシュにして net.parts に足す（部品の基準の時刻は t0）
+function buildCells(cells, t0) {
+  // 部品ごとのバッファ。機器につながるケーブルの端は、そのつながりの部品に入れる（島間リンクが消えるときに一緒に消す）
+  const parts = new Map();
+  const bufsOf = (part) => {
+    if (!parts.has(part)) parts.set(part, Object.fromEntries(PART_LAYERS.map((k) => [k, makeBuffer(t0)])));
+    return parts.get(part);
+  };
+  const deviceAt = (q, r) => { const c = net.cellAt.get(cellKey(q, r)); return c && c.type !== 'cable' ? c : null; };
+  let partLights;   // いま形を作っているセルの部品の光の番号の列
+  const newLight = (idle) => {
+    const id = freeLights.pop() ?? lights.length;
+    lights[id] = { idle: idle.clone(), cur: idle.clone(), flash: new THREE.Color(0, 0, 0) };
+    partLights.push(id);
+    return id;
+  };
+  const portIdle = LINE_COLOR.clone().multiplyScalar(PORT_IDLE);
+
+  for (const cell of cells) {
+    const { x: cx, z: cz, order } = cell;
+    const { faces, lines, bases, cables, lightTris, rings, hostLines } = bufsOf(cell.part);
+    partLights = partOf(cell.part, t0).lights;
+    let lineBuf = lines, lineLight = 0;   // 底板の輪郭は bases に、ケーブルの線は cables に、ホストの箱の線は hostLines に（光の番号を付けて）入れる
+    const line = (ax, ay, az, bx, by, bz, sa, sb, ua = 0) => {
+      const len = Math.hypot(bx - ax, by - ay, bz - az);
+      pushVertex(lineBuf, ax, ay, az, sa, order, ua, lineLight);
+      pushVertex(lineBuf, bx, by, bz, sb, order, ua + len, lineLight);
+    };
+    const mid = (d) => edgeMid(cell, d);
+
+    if (cell.type === 'cable') {
+      lineBuf = cables;
+      // 入口の辺の中点 → セルの中心 → 出口の辺の中点の折れ線（曲がり角は中心で 60° 単位）。伸びる向きに沿って現れる。
+      // 並んだ線は、曲がり角で外側の線が内側の線より長くなるよう、2 本の向きの間（マイター）でつなぐ
+      const [ex, ez] = mid(cell.inDir), [xx, xz] = mid(cell.outDir);
+      const lanes = cell.edges[cell.inDir].lanes;
+      const n1 = [-(cz - ez), cx - ex], n2 = [-(xz - cz), xx - cx];
+      const l1 = Math.hypot(...n1), l2 = Math.hypot(...n2);
+      n1[0] /= l1; n1[1] /= l1; n2[0] /= l2; n2[1] /= l2;
+      const m = 1 + n1[0] * n2[0] + n1[1] * n2[1];
+      const t0 = cell.birth, t1 = cell.birth + cell.dur / 2, t2 = cell.birth + cell.dur;
+      for (const off of laneOffsets(lanes)) {
+        const ax = ex + n1[0] * off, az = ez + n1[1] * off;
+        const bx = cx + (n1[0] + n2[0]) / m * off, bz = cz + (n1[1] + n2[1]) / m * off;
+        const dx = xx + n2[0] * off, dz = xz + n2[1] * off;
+        line(ax, CABLE_Y, az, bx, CABLE_Y, bz, t0, t1);
+        line(bx, CABLE_Y, bz, dx, CABLE_Y, dz, t1, t2, Math.hypot(bx - ax, bz - az));
+      }
+      continue;
+    }
+
+    // 機器: 底板の輪郭 → 走査線で下から上へ
+    const scanAt = cell.birth + BASE_TIME;
+    let height = 1;
+    const showAt = (y) => scanAt + SCAN_TIME * clamp(y / height, 0, 1);
+    // 底板はセルいっぱいに描く。隣も機器のセル（底板がくっつく）なら、その辺は先に現れたほうだけが描き、
+    // あとから現れた隣の輪郭がその辺に届いたときに消す
+    lineBuf = bases;
+    for (let k = 0; k < 6; k++) {
+      const d = (11 - k) % 6;   // 辺 k の向こうの隣の向き（辺 k の中点の角度は 60° + 60°k。隣から見ると同じ式で辺の番号が出る）
+      const nb = deviceAt(cell.q + DIRS[d][0], cell.r + DIRS[d][1]);
+      if (nb && (nb.birth < cell.birth || (nb.birth === cell.birth && nb.index < cell.index))) continue;
+      if (nb) vertexHide = nb.birth + BASE_TIME * ((11 - (d + 3) % 6) % 6 + 0.5) / 6;
+      const a0 = Math.PI / 6 + k * Math.PI / 3, a1 = a0 + Math.PI / 3;
+      line(cx + Math.cos(a0), 0, cz + Math.sin(a0), cx + Math.cos(a1), 0, cz + Math.sin(a1),
+        cell.birth + BASE_TIME * k / 6, cell.birth + BASE_TIME * (k + 1) / 6, k);
+      vertexHide = 1e9;
+    }
+    cell.edges.forEach((e, d) => { if (e) cableEnd(cell, e, d, bufsOf(e.part).cables); });
+    // 角柱（底の多角形 poly を y0〜y1 に立てる）。縦の辺は edgeEvery 本おきに描く（円柱で縦線を減らすとき）
+    function prism(poly, y0, y1, edgeEvery = 1) {
+      const n = poly.length;
+      for (let i = 0; i < n; i++) {
+        const [ax, az] = poly[i], [bx, bz] = poly[(i + 1) % n];
+        const s0 = showAt(y0), s1 = showAt(y1);
+        for (const [p, q, r] of [[[ax, y0, az], [bx, y0, bz], [bx, y1, bz]], [[ax, y0, az], [bx, y1, bz], [ax, y1, az]]]) {
+          for (const v of [p, q, r]) pushVertex(faces, v[0], v[1], v[2], showAt(v[1]), order);
+        }
+        line(ax, y0, az, bx, y0, bz, s0, s0);
+        line(ax, y1, az, bx, y1, bz, s1, s1);
+        if (i % edgeEvery === 0) line(ax, y0, az, ax, y1, az, s0, s1);
+        if (i >= 1 && i < n - 1) {
+          const [fx, fz] = poly[0];
+          pushVertex(faces, fx, y1, fz, s1, order); pushVertex(faces, ax, y1, az, s1, order); pushVertex(faces, bx, y1, bz, s1, order);
+        }
+      }
+    }
+    const hexPoly = (r, rot = Math.PI / 6) => Array.from({ length: 6 }, (_, k) => [cx + r * Math.cos(rot + k * Math.PI / 3), cz + r * Math.sin(rot + k * Math.PI / 3)]);
+    // 前向き f の箱の底
+    const boxPoly = (f, w, d) => {
+      const sx = -f[1], sz = f[0];
+      return [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([a, b]) => [cx + f[0] * a * d / 2 + sx * b * w / 2, cz + f[1] * a * d / 2 + sz * b * w / 2]);
+    };
+    // 面 a→b（底の辺）の前に貼る、光る四角。t は辺に沿った位置（0..1）、y は高さ
+    function lightQuad(a, b, t, y, hw, hh, light) {
+      const ex = b[0] - a[0], ez = b[1] - a[1], el = Math.hypot(ex, ez);
+      const ux = ex / el, uz = ez / el;
+      let nx = uz, nz = -ux;
+      const px = a[0] + ex * t, pz = a[1] + ez * t;
+      if ((px - cx) * nx + (pz - cz) * nz < 0) { nx = -nx; nz = -nz; }
+      const ox = px + nx * 0.012, oz = pz + nz * 0.012;
+      const v = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, -hh], [hw, hh], [-hw, hh]];
+      for (const [du, dy] of v) pushVertex(lightTris, ox + ux * du, y + dy, oz + uz * du, cell.ready, order, 0, light);
+    }
+    const toward = (other) => { const dx = cx - other.x, dz = cz - other.z, l = Math.hypot(dx, dz); return [dx / l, dz / l]; };
+
+    // 頂上で回るリング（弧 3 本）。パケットが通るとその色に染まる
+    const addRing = (R, y) => {
+      const light = newLight(LINE_COLOR.clone().multiplyScalar(1.2));
+      for (let k = 0; k < 3; k++) {
+        for (let i = 0; i < 6; i++) {
+          const a0 = k * TAU / 3 + i * 0.24, a1 = a0 + 0.24, du = 0.24 * R;
+          pushVertex(rings, cx + R * Math.cos(a0), y, cz + R * Math.sin(a0), cell.ready, order, i * du, light, [cx, cz]);
+          pushVertex(rings, cx + R * Math.cos(a1), y, cz + R * Math.sin(a1), cell.ready, order, (i + 1) * du, light, [cx, cz]);
+        }
+      }
+      return light;
+    };
+
+    // ports はパケットが通ると光るもの（ルータはポート、スイッチはランプ）。ring は頂上のリング（コアとルータ）
+    if (cell.type === 'core') {
+      const h = rand(1.0, 1.3), cap = 0.18, ringY = h + cap + 0.22;
+      height = ringY;
+      prism(hexPoly(0.62), 0, h);
+      prism(hexPoly(0.42), h, h + cap);
+      cell.ports = [];
+      cell.ring = addRing(0.78, ringY);
+    } else if (cell.type === 'router') {
+      // コアより小さく低いリングを載せる
+      const r = rand(0.4, 0.48), h = rand(0.55, 0.8), py = h * rand(0.55, 0.75), ringY = h + 0.16;
+      height = ringY;
+      const poly = hexPoly(r);
+      prism(poly, 0, h);
+      cell.ring = addRing(r + 0.14, ringY);
+      cell.ports = [];
+      for (let i = 0; i < 6; i++) {
+        const n = randIntIn([1, 3]);
+        for (let j = 0; j < n; j++) {
+          cell.ports.push(newLight(portIdle));
+          lightQuad(poly[i], poly[(i + 1) % 6], (j + 1) / (n + 1), py, 0.045, 0.045, cell.ports[cell.ports.length - 1]);
+        }
+      }
+    } else if (cell.type === 'switch') {
+      // 背の低い円柱。側面のまわりにランプを並べる
+      const R = rand(0.36, 0.44), h = rand(0.14, 0.2), SIDES = 24;
+      height = h;
+      const poly = Array.from({ length: SIDES }, (_, k) => [cx + R * Math.cos(k / SIDES * TAU), cz + R * Math.sin(k / SIDES * TAU)]);
+      prism(poly, 0, h, SIDES / 6);
+      cell.ports = [];
+      const n = randIntIn([4, 7]), k0 = randInt(SIDES);
+      for (let k = 0; k < n; k++) {
+        const e = (k0 + Math.round(k / n * SIDES)) % SIDES;
+        cell.ports.push(newLight(portIdle));
+        lightQuad(poly[e], poly[(e + 1) % SIDES], 0.5, h * 0.5, 0.03, 0.03, cell.ports[k]);
+      }
+    } else if (cell.type === 'host') {
+      const kind = randInt(3);   // 背の高いラック形・中くらい・平たい箱
+      const w = rand(0.38, 0.55), d = rand(0.3, 0.45), h = [rand(0.7, 1.0), rand(0.4, 0.55), rand(0.2, 0.3)][kind];
+      height = h;
+      const fwd = toward(cell.switchCell);
+      const poly = boxPoly(fwd, w, d);
+      cell.light = newLight(serviceColor(cell.service));
+      lineBuf = hostLines; lineLight = cell.light;
+      prism(poly, 0, h);
+      const sh = Math.min(h * 0.3, 0.13);
+      lightQuad(poly[0], poly[1], 0.5, h - sh - Math.min(0.08, h * 0.15), w * 0.36, sh, cell.light);
+    }
+  }
+
+  // 既にある機器（中心の島のコアなど）から、新しい島間リンクへ出るケーブルの端
+  const inCells = new Set(cells);
+  for (const cell of net.cells) {
+    if (inCells.has(cell) || cell.type === 'cable') continue;
+    cell.edges.forEach((e, d) => { if (e && parts.has(e.part)) cableEnd(cell, e, d, bufsOf(e.part).cables); });
+  }
+  for (const [name, bufs] of parts) {
+    const part = partOf(name, t0);
+    PART_LAYERS.forEach((layer, i) => {
+      const buf = bufs[layer];
+      if (!buf.show.length) return;
+      const m = layer === 'faces' || layer === 'lightTris'
+        ? new THREE.Mesh(toGeometry(buf), LAYER_MATERIALS[layer])
+        : new LineSegments2(toLineGeometry(buf), LAYER_MATERIALS[layer]);
+      m.renderOrder = i;
+      m.frustumCulled = false;
+      // 描く直前に、部品の時刻を uniform に入れる（LineSegments2 が画面の大きさを入れる処理は残す）
+      const before = m.onBeforeRender;
+      m.onBeforeRender = (...args) => { before.apply(m, args); setPartUniforms(part); m.material.uniformsNeedUpdate = true; };
+      part.meshes.push(m);
+      scene.add(m);
+    });
+  }
+}
+// 部品を名前で引く。無ければ基準の時刻 t0 で作る
+function partOf(name, t0) {
+  if (!net.parts.has(name)) net.parts.set(name, makePart(t0));
+  return net.parts.get(name);
+}
+// 部品を片付ける（メッシュを外して GPU のメモリを解放し、光の枠を空ける）
+function removePart(name) {
+  const part = net.parts.get(name);
+  for (const m of part.meshes) { scene.remove(m); m.geometry.dispose(); }
+  for (const id of part.lights) { lights[id] = null; freeLights.push(id); }
+  net.parts.delete(name);
+}
+
+function serviceColor(s) { return new THREE.Color(SERVICE_COLORS[s]).multiplyScalar(SCREEN_LEVEL); }
+
+// ---- 光 ----
+// 光った色は flash に足して、FLASH_DECAY で消す。ホストの色が変わったときは cur が idle へゆっくり移る
+function flashLight(id, color, amount) {
+  const fl = lights[id].flash;
+  fl.setRGB(fl.r + color.r * amount, fl.g + color.g * amount, fl.b + color.b * amount);
+}
+// 光の表（RGBA。決まった大きさで 1 回だけ作り、枠を使い回す）
+const lightData = new Float32Array(LIGHT_CAPACITY * 4);
+netUniforms.uLights.value = new THREE.DataTexture(lightData, LIGHT_TEX_W, LIGHT_CAPACITY / LIGHT_TEX_W, THREE.RGBAFormat, THREE.FloatType);
+function updateLights(dt) {
+  const decay = Math.exp(-dt / FLASH_DECAY), follow = 1 - Math.exp(-dt * 2);
+  lights.forEach((l, i) => {
+    if (!l) { lightData[i * 4] = lightData[i * 4 + 1] = lightData[i * 4 + 2] = 0; return; }
+    l.cur.lerp(l.idle, follow);
+    l.flash.multiplyScalar(decay);
+    lightData[i * 4] = l.cur.r + l.flash.r;
+    lightData[i * 4 + 1] = l.cur.g + l.flash.g;
+    lightData[i * 4 + 2] = l.cur.b + l.flash.b;
+  });
+  netUniforms.uLights.value.needsUpdate = true;
+}
+// 島（null なら群島全体）の光を一度そろって灯す
+function flashIsland(isl) {
+  const white = new THREE.Color(1, 1, 1);
+  for (const c of net.cells) {
+    if (isl && c.island !== isl.index) continue;
+    if (c.type === 'host') flashLight(c.light, lights[c.light].idle, 1.2);
+    else if (c.ports) for (const p of c.ports) flashLight(p, white, 0.9);
+    if (c.ring !== undefined) flashLight(c.ring, white, 0.9);
+  }
+}
+
+// ---- パケット ----
+// 通れる・やりとりできるセルか。ケーブルとコアは現れきったら、ほかの機器は島が育ちきったら。消えていく所は通さない
+// （コアは、中心の島の中身を作り直している間も、島をまたぐパケットを通す）
+const active = (cell) => !cell.retiring && cell.ready <= clock &&
+  (cell.type === 'cable' || cell.type === 'core' || net.islands[cell.island].readyAt <= clock);
+const isRouter = (c) => c.type === 'router' || c.type === 'core';
+
+// src から、ケーブルでつながったセルへの最短経路（ルータの待ち行列を遠回りとみなす）。ホストは途中に通らない
+function shortestFrom(src) {
+  const n = net.cells.length;
+  const dist = new Float64Array(n).fill(Infinity), prev = new Int32Array(n).fill(-1), done = new Uint8Array(n);
+  dist[src.index] = 0;
+  for (;;) {
+    let u = -1;
+    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < Infinity && (u < 0 || dist[i] < dist[u])) u = i;
+    if (u < 0) break;
+    done[u] = 1;
+    const cu = net.cells[u];
+    if (cu.type === 'host' && cu !== src) continue;
+    for (const nb of cu.nbrs) {
+      if (!active(nb)) continue;
+      const w = 1 + (isRouter(nb) ? (nb.queue?.length ?? 0) * QUEUE_COST : 0);
+      if (dist[u] + w < dist[nb.index]) { dist[nb.index] = dist[u] + w; prev[nb.index] = u; }
+    }
+  }
+  return { dist, prev };
+}
+
+// セルの列を通る道筋（点の列）と、止まる所（ルータ）・通る所（スイッチ）
+function buildRoute(path) {
+  const pts = [], stops = [], passes = [];
+  const push = (x, z) => {
+    const last = pts[pts.length - 1];
+    if (last && Math.hypot(last.x - x, last.z - z) < 1e-4) return;
+    pts.push({ x, z, s: last ? last.s + Math.hypot(last.x - x, last.z - z) : 0 });
+  };
+  path.forEach((c, i) => {
+    if (c.type !== 'cable') {
+      push(c.x, c.z);
+      const s = pts[pts.length - 1].s;
+      if (i > 0 && i < path.length - 1) (isRouter(c) ? stops : passes).push({ s, cell: c });
+      return;
+    }
+    const a = path[i - 1], b = path[i + 1];
+    push((a.x + c.x) / 2, (a.z + c.z) / 2);
+    push(c.x, c.z);
+    push((b.x + c.x) / 2, (b.z + c.z) / 2);
+  });
+  return { pts, stops, passes, length: pts[pts.length - 1].s };
+}
+function pointAt(route, s, out) {
+  const p = route.pts;
+  let lo = 0, hi = p.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (p[m].s <= s) lo = m; else hi = m; }
+  const a = p[lo], b = p[hi], t = b.s > a.s ? clamp((s - a.s) / (b.s - a.s), 0, 1) : 0;
+  out.set(a.x + (b.x - a.x) * t, PACKET_Y, a.z + (b.z - a.z) * t);
+  return out;
+}
+const PACKET_Y = 0.08;
+
+function launch(p, cells) {
+  p.cells = cells;
+  p.route = buildRoute(cells);
+  p.s = 0; p.stop = 0; p.pass = 0; p.fromS = 0;
+  p.state = 'move';
+}
+
+// 要求を 1 つ出す。行き先が無ければ何もしない
+function spawnRequest() {
+  const hosts = net.hosts.filter(active);
+  if (!hosts.length) return;
+  const src = pick(hosts);
+  const { dist, prev } = shortestFrom(src);
+  const targets = net.hosts.filter((h) => h !== src && h.service === src.service && h.switchCell !== src.switchCell &&
+    dist[h.index] < Infinity && active(h));
+  const dst = pickWeighted(targets, (h) => (h.island !== src.island ? OTHER_ISLAND_WEIGHT : 1));
+  if (!dst) return;
+  const cells = [];
+  for (let i = dst.index; i >= 0; i = prev[i]) cells.unshift(net.cells[i]);
+  const p = { kind: 'req', color: new THREE.Color(SERVICE_COLORS[src.service]), src, dst };
+  launch(p, cells);
+  packets.push(p);
+}
+
+function updatePackets(dt) {
+  // ルータは待ち行列の先頭から 1 つずつ送り出す
+  for (const c of net.cells) {
+    if (!c.queue?.length) continue;
+    c.busy -= dt;
+    if (c.busy > 0) continue;
+    const p = c.queue.shift();
+    p.state = 'move';
+    p.fromS = p.s;
+    if (c.queue.length) startHop(c);
+  }
+  for (const p of packets) {
+    if (p.state === 'wait') {
+      p.wait -= dt;
+      if (p.wait <= 0) {
+        p.kind = 'res';
+        launch(p, [...p.cells].reverse());
+      }
+      continue;
+    }
+    if (p.state !== 'move') continue;
+    p.s += PACKET_SPEED * CELL * dt;
+    const { stops, passes, length } = p.route;
+    while (p.pass < passes.length && passes[p.pass].s <= p.s) {
+      const sw = passes[p.pass++].cell;
+      flashLight(pick(sw.ports), p.color, 2.2);
+    }
+    if (p.stop < stops.length && stops[p.stop].s <= p.s) {
+      const r = stops[p.stop++].cell;
+      p.s = stops[p.stop - 1].s;
+      p.state = 'queue';
+      (r.queue ??= []).push(p);
+      if (r.queue.length === 1) startHop(r);
+      continue;
+    }
+    if (p.s >= length) {
+      p.s = length;
+      const host = p.kind === 'req' ? p.dst : p.src;
+      flashLight(host.light, p.color, p.kind === 'req' ? 2.5 : 1.5);
+      if (p.kind === 'req') { p.state = 'wait'; p.wait = REPLY_DELAY; } else p.state = 'done';
+    }
+  }
+  packets = packets.filter((p) => p.state !== 'done');
+}
+// ルータが先頭のパケットを送り出し始める。ポートとリングがパケットの色で光る
+function startHop(r) {
+  r.busy = HOP_PAUSE;
+  const p = r.queue[0];
+  if (r.ports.length) {
+    r.portNext = ((r.portNext ?? randInt(r.ports.length)) + 1) % r.ports.length;
+    flashLight(r.ports[r.portNext], p.color, 2.6);
+  }
+  flashLight(r.ring, p.color, 2.6);
+}
+
+// 点の器（パケットの頭と尾、待ち行列の点）
+const MAX_POINTS = 2000;
+const pointGeo = new THREE.BufferGeometry();
+pointGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_POINTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+pointGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(MAX_POINTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+pointGeo.setAttribute('size', new THREE.BufferAttribute(new Float32Array(MAX_POINTS), 1).setUsage(THREE.DynamicDrawUsage));
+const pointMesh = new THREE.Points(pointGeo, packetMaterial);
+pointMesh.frustumCulled = false;
+pointMesh.renderOrder = 10;
+scene.add(pointMesh);
+
+const tmpV = new THREE.Vector3();
+function drawPackets() {
+  const pos = pointGeo.attributes.position.array, col = pointGeo.attributes.color.array, size = pointGeo.attributes.size.array;
+  let n = 0;
+  const put = (v, c, k, sz) => {
+    if (n >= MAX_POINTS) return;
+    pos.set([v.x, v.y, v.z], n * 3);
+    col.set([c.r * k, c.g * k, c.b * k], n * 3);
+    size[n++] = sz;
+  };
+  for (const p of packets) {
+    const look = PACKET_LOOK[p.kind];
+    if (p.state === 'move') {
+      // 頭と尾。尾は最後に止まった所より後ろへは伸ばさない
+      for (let j = 0; j <= look.tail; j++) {
+        const s = p.s - j * look.gap;
+        if (s < p.fromS) break;
+        const k = 3 * (1 - j / (look.tail + 1)) ** 1.5;
+        put(pointAt(p.route, s, tmpV), p.color, k, look.size * (1 - 0.5 * j / (look.tail + 1)));
+      }
+    } else if (p.state === 'queue') {
+      const r = p.route.stops[p.stop - 1].cell;
+      const i = r.queue.indexOf(p);
+      tmpV.set(r.x, deviceTop(r) + QUEUE_GAP * (i + 1), r.z);
+      put(tmpV, p.color, 2.2, look.size * 0.8);
+    }
+  }
+  pointGeo.setDrawRange(0, n);
+  for (const a of ['position', 'color', 'size']) pointGeo.attributes[a].needsUpdate = true;
+}
+const deviceTop = (c) => (c.type === 'core' ? 1.9 : 1.1);   // 待ち行列を積み始める高さ（リングの上）
+
+// ---- ブロードキャスト ----
+// 白い波紋の輪（線分の器）
+const WAVE_SEGMENTS = 48, MAX_WAVES = 4;
+const waveGeo = new THREE.BufferGeometry();
+waveGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_WAVES * WAVE_SEGMENTS * 6), 3).setUsage(THREE.DynamicDrawUsage));
+waveGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(MAX_WAVES * WAVE_SEGMENTS * 6), 3).setUsage(THREE.DynamicDrawUsage));
+const waveMesh = new THREE.LineSegments(waveGeo, broadcastMaterial);
+waveMesh.frustumCulled = false;
+waveMesh.renderOrder = 11;
+scene.add(waveMesh);
+
+function startBroadcast() {
+  const switches = net.cells.filter((c) => c.type === 'switch' && active(c));
+  if (!switches.length || broadcasts.length >= MAX_WAVES) return;
+  const sw = pick(switches);
+  const hosts = net.hosts.filter((h) => h.switchCell === sw).map((h) => ({ h, d: Math.hypot(h.x - sw.x, h.z - sw.z), lit: false }));
+  for (const p of sw.ports) flashLight(p, new THREE.Color(1, 1, 1), 1.5);
+  broadcasts.push({ sw, t: 0, hosts });
+}
+function updateBroadcasts(dt) {
+  const pos = waveGeo.attributes.position.array, col = waveGeo.attributes.color.array;
+  let n = 0;
+  for (const b of broadcasts) {
+    b.t += dt;
+    const k = b.t / BROADCAST_TIME, r = BROADCAST_RADIUS * CELL * Math.sqrt(k), a = 1.6 * (1 - k);
+    for (const e of b.hosts) if (!e.lit && r >= e.d) { e.lit = true; flashLight(e.h.light, new THREE.Color(1, 1, 1), 1.8); }
+    for (let i = 0; i < WAVE_SEGMENTS; i++) {
+      const a0 = i / WAVE_SEGMENTS * TAU, a1 = (i + 1) / WAVE_SEGMENTS * TAU;
+      pos.set([b.sw.x + r * Math.cos(a0), 0.06, b.sw.z + r * Math.sin(a0), b.sw.x + r * Math.cos(a1), 0.06, b.sw.z + r * Math.sin(a1)], n * 6);
+      col.set([a, a, a, a, a, a], n * 6);
+      n++;
+    }
+  }
+  broadcasts = broadcasts.filter((b) => b.t < BROADCAST_TIME);
+  waveGeo.setDrawRange(0, n * 2);
+  waveGeo.attributes.position.needsUpdate = true;
+  waveGeo.attributes.color.needsUpdate = true;
+}
+
+// ---- サービスの切り替え ----
+// ホスト 1 台のサービスを替える。どのサービスも 2 つ以上の島にある状態は崩さない
+function switchService() {
+  const hosts = shuffle(net.hosts.filter(active));
+  for (const h of hosts) {
+    const others = net.hosts.filter((o) => o !== h && o.service === h.service);
+    if (new Set(others.map((o) => o.island)).size < 2) continue;
+    h.service = (h.service + 1 + randInt(SERVICE_COLORS.length - 1)) % SERVICE_COLORS.length;
+    lights[h.light].idle.copy(serviceColor(h.service));
+    return;
+  }
+}
+
+// ---- カメラ ----
+// 立った機器とケーブル（消去中は残っているもの）
+const isShown = (c) => {
+  const p = net.parts.get(c.part);
+  return c.birth <= Math.min(clock, p.eraseAt) && clock < p.eraseAt + (c.order - p.orderBase) * p.spread + ERASE_FADE * 0.5;
+};
+// いまの向きから見た、見えている機器とケーブルの点。注視点からの位置を、カメラの右・上・前の向きに分けて持つ。
+// カメラの距離が d のとき、点は奥行き d + f の所に見え、画面上の位置（視野の tan の単位）は (r, u) / (d + f)
+const framePoints = [];
+function collectFramePoints() {
+  const ce = Math.cos(CAM_ELEVATION), se = Math.sin(CAM_ELEVATION), co = Math.cos(orbit), so = Math.sin(orbit);
+  const fw = [-ce * co, -se, -ce * so], rt = [so, 0, -co];
+  const up = [rt[1] * fw[2] - rt[2] * fw[1], rt[2] * fw[0] - rt[0] * fw[2], rt[0] * fw[1] - rt[1] * fw[0]];
+  framePoints.length = 0;
+  const minR = MIN_EXTENT * CELL;
+  let extent = minR;
+  const add = (x, y, z) => {
+    const py = y - LOOK_Y;
+    framePoints.push({ r: x * rt[0] + z * rt[2], u: x * up[0] + py * up[1] + z * up[2], f: x * fw[0] + py * fw[1] + z * fw[2] });
+  };
+  for (let k = 0; k < 6; k++) add(minR * Math.cos(k * TAU / 6), 0, minR * Math.sin(k * TAU / 6));
+  for (const c of net.cells) {
+    if (!isShown(c)) continue;
+    add(c.x, 0, c.z);
+    if (c.type !== 'cable') add(c.x, 1.2, c.z);
+    extent = Math.max(extent, Math.hypot(c.x, c.z) + 1);
+  }
+  return extent;
+}
+// 距離 d のとき、点が画面上に映る範囲（左右・上下の端）
+function frameBounds(d) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of framePoints) {
+    const z = d + p.f, x = p.r / z, y = p.u / z;
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  return { x0, x1, y0, y1 };
+}
+// 映る範囲の幅と高さが、画面の FRAME_FILL に収まる最短の距離。映る範囲は画面の中でずらして中央に置く（下の lensShift）ので、
+// 注視点を中央にしたときに手前側（画面の下）だけが端に届いて、奥側（画面の上）が空くことがない
+function fitDistance() {
+  const tv = TAN_HALF_FOV * FRAME_FILL, th = tv * camera.aspect;
+  const fits = (d) => { const b = frameBounds(d); return b.x1 - b.x0 <= 2 * th && b.y1 - b.y0 <= 2 * tv; };
+  let lo = Math.max(...framePoints.map((p) => -p.f)) + 1, hi = Math.max(lo * 2, 10);
+  while (!fits(hi)) hi *= 2;
+  for (let i = 0; i < 24; i++) { const m = (lo + hi) / 2; if (fits(m)) hi = m; else lo = m; }
+  return hi;
+}
+// 映る範囲の中心を画面の中央に合わせる、画面の中でのずらし量（視野の tan の単位）。向きと注視点は変えない
+const lensShift = new THREE.Vector2();
+function updateCamera(dt) {
+  orbit = (orbit + ORBIT_SPEED * dt) % TAU;
+  const e = collectFramePoints();
+  const want = fitDistance();
+  const follow = 1 - Math.exp(-dt / ZOOM_LAG);
+  camDist = camDist ? camDist + (want - camDist) * follow : want;
+  const b = frameBounds(camDist);
+  const sx = (b.x0 + b.x1) / 2, sy = (b.y0 + b.y1) / 2;
+  if (lensReady) lensShift.lerp({ x: sx, y: sy }, follow); else { lensShift.set(sx, sy); lensReady = true; }
+  const ce = Math.cos(CAM_ELEVATION);
+  camera.position.set(camDist * ce * Math.cos(orbit), camDist * Math.sin(CAM_ELEVATION) + LOOK_Y, camDist * ce * Math.sin(orbit));
+  camera.lookAt(0, LOOK_Y, 0);
+  // 投影を画面の中でずらす（レンズシフト）。射影行列の 3 列目の x・y に入れる
+  camera.updateProjectionMatrix();
+  camera.projectionMatrix.elements[8] = lensShift.x / (TAN_HALF_FOV * camera.aspect);
+  camera.projectionMatrix.elements[9] = lensShift.y / TAN_HALF_FOV;
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  const near = camDist - e * 0.8, far = camDist + e * 0.8;
+  netUniforms.uFogNear.value = packetMaterial.uniforms.uFogNear.value = near;
+  netUniforms.uFogFar.value = packetMaterial.uniforms.uFogFar.value = far;
+}
+// ---- 群島の一生 ----
+function newArchipelago() {
+  if (net) for (const name of [...net.parts.keys()]) removePart(name);
+  lights = []; freeLights = [];
+  net = planArchipelago();
+  net.parts = new Map();
+  buildCells(net.cells, 0);
+  clock = 0; phase = 'grow'; phaseTime = 0; eraseAt = Infinity; swap = null; swapCount = 0;
+  packets = []; broadcasts = []; spawnCarry = 0;
+  switchWait = randomInterval(SERVICE_SWITCH_INTERVAL);
+  broadcastWait = randomInterval(BROADCAST_INTERVAL);
+}
+function setPhase(p) { phase = p; phaseTime = clock; }
+// 群島をまるごと消し始める（シーン切替）
+function startErase() {
+  if (phase === 'erase') return;
+  eraseAt = clock;
+  for (const part of net.parts.values()) Object.assign(part, { eraseAt: clock, orderBase: 0, spread: ERASE_SPREAD });
+  packets = []; broadcasts = []; swap = null;
+  for (const c of net.cells) if (c.queue) c.queue.length = 0;
+  setPhase('erase');
+}
+
+// ---- 島の入れ替わり ----
+// 島の中身・コアと、その島につながる島間リンクの部品の名前
+const partsOfIsland = (isl) => ['i' + isl.index, 'k' + isl.index, ...net.links.filter((l) => l.ia === isl.index || l.ib === isl.index).map((l) => l.part)];
+// 入れ替わりを始める。前の入れ替わりで育てられなかった所（中心の島の中身・まわりの空いた席）があれば、そこを育てるだけにする。
+// CENTER_EVERY 回に 1 回は、まわりの島の代わりに、中心の島の中身を作り直す
+function startSwap() {
+  if (!net.parts.has('i0') && growCenter([])) return;
+  for (let s = 1; s <= net.outer; s++) if (!net.islands[s] && growSwap(s)) return;
+  if (++swapCount % CENTER_EVERY === 0) {
+    // 中心とまわりの島のリンクを 1 本と、輪のリンクを 1 本（あれば）、張り直す
+    const centerLinks = net.links.filter((l) => !l.ring && (l.ia === 0 || l.ib === 0));
+    const ringLinks = net.links.filter((l) => l.ring);
+    const gone = [pick(centerLinks), ringLinks.length ? pick(ringLinks) : null].filter(Boolean);
+    startDrain(['i0', ...gone.map((l) => l.part)], { center: true, gone });
+    return;
+  }
+  const isl = net.islands.filter((x) => x && x.index > 0).reduce((a, b) => (b.bornAt < a.bornAt ? b : a));
+  isl.retiring = true;
+  startDrain(partsOfIsland(isl), { isl });
+}
+// 消していく部品のセルを通さないようにして、パケットが行き着くのを待ち始める
+function startDrain(parts, info) {
+  const gone = new Set(parts);
+  for (const c of net.cells) if (gone.has(c.part)) c.retiring = true;
+  broadcasts = broadcasts.filter((b) => !b.sw.retiring);
+  swap = { stage: 'drain', t: clock, ...info };
+}
+// 計画したセルの形を作り、育ちきる時刻 doneAt まで待ち始める
+function startGrow(doneAt) {
+  buildCells(net.cells.filter((c) => !net.parts.has(c.part)), clock);
+  fixServices();
+  swap = { stage: 'grow', end: doneAt };
+}
+// 部品をほどき始める（at から duration 秒で、消える順に沿って外側から）
+function unravel(name, at, duration) {
+  const part = net.parts.get(name);
+  if (!part) return;
+  const orders = net.cells.filter((c) => c.part === name).map((c) => c.order);
+  const lo = Math.min(...orders), hi = Math.max(...orders);
+  Object.assign(part, { eraseAt: at, orderBase: lo, spread: duration / Math.max(hi - lo, 1e-3) });
+}
+// パケットを取り除く（ルータの待ち行列からも外す）
+function dropPackets(gone) {
+  packets = packets.filter((p) => !gone.has(p));
+  for (const c of net.cells) {
+    if (!c.queue?.length) continue;
+    const head = c.queue[0];
+    c.queue = c.queue.filter((p) => !gone.has(p));
+    if (c.queue.length && c.queue[0] !== head) startHop(c);
+  }
+}
+// 中心の島の中身を育て、外したリンク gone を張り直す。何もできなければ false
+function growCenter(gone) {
+  const doneAt = planCenterRegrow(gone);
+  if (doneAt !== null) { startGrow(doneAt); return true; }
+  fixServices();   // 中身を除いたので、サービスの偏りは直しておく
+  swap = null;
+  swapAt = clock + SWAP_INTERVAL;
+  return false;
+}
+// 席 slot に新しい島を育てる。置けなければ false を返し、席は空けておく（次の入れ替わりで試し直す。
+// その間に隣の島が入れ替わると、置ける場所が空くことがある）
+function growSwap(slot) {
+  const plan = planNewIsland(slot);
+  if (!plan) { swap = null; swapAt = clock + SWAP_INTERVAL; return false; }
+  startGrow(plan.doneAt);
+  return true;
+}
+// 入れ替わりを進める: drain（消していく所を通るパケットを待つ）→ unravel（ほどく）→ grow（新しく育てる）
+function updateSwap() {
+  if (!swap) { if (clock >= swapAt) startSwap(); return; }
+  if (swap.stage === 'drain') {
+    // 消していく所を通るパケットが行き着くのを待ち、残ったものは取り除く
+    const touching = packets.filter((p) => p.cells.some((c) => c.retiring));
+    if (touching.length && clock - swap.t < DRAIN_MAX) return;
+    dropPackets(new Set(touching));
+    if (swap.center) {
+      // 中心の島は、張り直すリンクと中身だけをほどく（コアとほかのリンクは残り、島をまたぐパケットはコアを通り続ける）
+      for (const l of swap.gone) unravel(l.part, clock, LINK_UNRAVEL);
+      unravel('i0', clock, ISLAND_UNRAVEL);
+      swap = { ...swap, stage: 'unravel', end: clock + Math.max(LINK_UNRAVEL, ISLAND_UNRAVEL) + ERASE_FADE };
+      return;
+    }
+    // 島間リンクを先にほどき、続いて島を外側からほどき、最後にコアを消す
+    const [own, core, ...links] = partsOfIsland(swap.isl);
+    for (const name of links) unravel(name, clock, LINK_UNRAVEL);
+    unravel(own, clock + LINK_UNRAVEL * 0.6, ISLAND_UNRAVEL);
+    unravel(core, clock + LINK_UNRAVEL * 0.6 + ISLAND_UNRAVEL * 0.8, 0);
+    swap = { ...swap, stage: 'unravel', end: clock + LINK_UNRAVEL * 0.6 + ISLAND_UNRAVEL + ERASE_FADE };
+  } else if (swap.stage === 'unravel') {
+    if (clock < swap.end) return;
+    if (swap.center) {
+      net.islands[0].hosts = [];
+      net.links = net.links.filter((l) => !swap.gone.includes(l));
+      removeParts(new Set(['i0', ...swap.gone.map((l) => l.part)]));
+      growCenter(swap.gone);
+      return;
+    }
+    const slot = swap.isl.index;
+    removeIsland(swap.isl);
+    fixServices();
+    growSwap(slot);
+  } else if (clock >= swap.end) {
+    swap = null;
+    swapAt = clock + SWAP_INTERVAL;
+  }
+}
+
+// 同時に流すパケットの数の目安
+function packetTarget() {
+  const islands = net.islands.filter(Boolean);
+  if (phase === 'grow') return packetCount * GROW_SHARE * islands.filter((i) => i.readyAt <= clock).length / islands.length;
+  if (phase === 'run') return packetCount * (GROW_SHARE + (1 - GROW_SHARE) * clamp((clock - phaseTime) / RAMP_TIME, 0, 1));
+  return 0;
+}
+
+function update(dt) {
+  clock += dt;
+  for (const isl of net.islands) {
+    if (isl && !isl.lit && isl.readyAt <= clock && phase !== 'erase') { isl.lit = true; flashIsland(isl); }
+  }
+  if (phase === 'grow' && clock >= net.doneAt) { setPhase('run'); flashIsland(null); swapAt = clock + SWAP_INTERVAL; }
+  else if (phase === 'run') updateSwap();
+  else if (phase === 'erase' && clock - eraseAt >= ERASE_SPREAD + ERASE_FADE + 1) newArchipelago();
+
+  if (phase === 'grow' || phase === 'run') {
+    const target = Math.round(packetTarget());
+    spawnCarry = Math.min(spawnCarry + dt * Math.max(1, target / 4), 2);
+    while (spawnCarry >= 1) {
+      spawnCarry--;
+      if (packets.length < target) spawnRequest();
+    }
+    if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
+  }
+  if (phase === 'run' && (switchWait -= dt) <= 0) { switchService(); switchWait = randomInterval(SERVICE_SWITCH_INTERVAL); }
+
+  updatePackets(dt);
+  updateBroadcasts(dt);
+  updateLights(dt);
+  netUniforms.uSpin.value = (netUniforms.uSpin.value + dt * RING_SPIN) % TAU;
+  updateCamera(dt);
+}
+
+// 確認用: 描かずに sec 秒進める（video-export.mjs の --at "0:fastForward(100)"）
+function fastForward(sec) {
+  for (let t = 0; t < sec; t += 1 / 30) update(1 / 30);
+}
+
+// ---- 強度 ----
+function setPacketCount(value) {
+  packetCount = clamp(value, MIN_PACKETS, MAX_PACKETS);
+}
+
+// ---- メインループ ----
+let last = performance.now();
+function tick(now) {
+  // rAF のタイムスタンプは初期の performance.now() より前のことがあるので負にしない
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  last = now;
+  update(dt);
+  drawPackets();
+  composer.render();
+}
+
+// ---- 入力・UI ----
+// 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
+setupControls({
+  // シーン切替（Space・左右スワイプ）。今の群島を消去して、次の群島を育てる
+  changeScene: startErase,
+  // 強度（↑↓・上下スワイプ）。同時に流れるパケットの数
+  intensity: {
+    up: () => setPacketCount(packetCount * PACKET_STEP),
+    down: () => setPacketCount(packetCount / PACKET_STEP),
+    level: () => logPosition(packetCount, MIN_PACKETS, MAX_PACKETS),   // ゲージの位置（0..1）
+  },
+  onResize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    composer.setSize(innerWidth, innerHeight);
+    updateScreenScale();
+  },
+});
+
+// ---- 開始 ----
+updateScreenScale();
+newArchipelago();
+renderer.setAnimationLoop(tick);
+</script>
+</body>
+</html>
