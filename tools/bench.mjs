@@ -434,8 +434,7 @@ const isCpuPage = (r) => CPU_PAGES.includes(r.page);
 const sceneCell = (r) => r.scene ?? '—';
 const tableRow = (cells) => `| ${cells.join(' | ')} |`;
 
-// docs/performance-data.md に貼る一覧。GPU の時間は条件ごとの表に（CPU で描く作品は除く）、JS の時間は全作品を 1 つの表に、
-// 条件で変わらない値は最後の表にまとめる
+// docs/performance-data.md に貼る一覧。GPU で描く作品は GPU の時間を条件ごとの表に、CPU で描く作品は JS の時間を 1 つの表にまとめる
 function toMarkdown(rows) {
   const lines = [];
   const withRange = (value, min, max, digits) => `${value.toFixed(digits)}（${min.toFixed(digits)}〜${max.toFixed(digits)}）`;
@@ -452,27 +451,14 @@ function toMarkdown(rows) {
     }
     lines.push('');
   }
-  lines.push('### JS の時間', '');
-  lines.push('| 条件 | 作品 | シーン | JS (ms) | JS の p95 (ms) | CPU 基準負荷 (ms) |');
-  lines.push('|---|---|---|---:|---:|---:|');
-  for (const r of rows) {
-    lines.push(tableRow([r.condition, r.page, sceneCell(r), withRange(r.js, r.jsMin, r.jsMax, 3), r.jsP95.toFixed(3), r.cpuReference.toFixed(2)]));
-  }
-  lines.push('');
-  lines.push('### 描画の内容', '');
-  lines.push(`| 作品 | シーン | 描画の解像度（${conditions.join(' / ')}） | 描画命令 | 三角形 |`);
-  lines.push('|---|---|---|---:|---:|');
-  const groups = new Map();
-  for (const r of rows) {
-    const key = `${r.page}/${r.sceneIndex}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(r);
-  }
-  // 条件で値が違うときだけ「/」で並べる
-  const values = (group, get) => [...new Set(group.map(get))].join(' / ');
-  for (const group of groups.values()) {
-    const r = group[0];
-    lines.push(tableRow([r.page, sceneCell(r), values(group, (x) => x.buffer.join('×')), values(group, (x) => x.calls), values(group, (x) => x.triangles)]));
+  const cpuRows = rows.filter(isCpuPage);
+  if (cpuRows.length) {
+    lines.push('### JS の時間（CPU で描く作品）', '');
+    lines.push('| 条件 | 作品 | シーン | JS (ms) | JS の p95 (ms) | CPU 基準負荷 (ms) |');
+    lines.push('|---|---|---|---:|---:|---:|');
+    for (const r of cpuRows) {
+      lines.push(tableRow([r.condition, r.page, sceneCell(r), withRange(r.js, r.jsMin, r.jsMax, 3), r.jsP95.toFixed(3), r.cpuReference.toFixed(2)]));
+    }
   }
   lines.push('');
   return lines.join('\n');

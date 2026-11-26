@@ -28,7 +28,7 @@
 | docs/images/ | README 用のサムネイル |
 | docs/video.md | 動画・静止画の書き出し、変更前後の比較、撮った画像の確認（切り出し・並べ・差・明るさ）のツールの使い方 |
 | docs/performance.md | GPU 負荷と JS の時間の測り方・比べ方と、値の読み方 |
-| docs/performance-data.md | 全作品の GPU 負荷の基準値（測った条件と、作品ごとの注意） |
+| docs/performance-data.md | 全作品の負荷の基準値（GPU 負荷と、CPU で描く作品の JS の時間。測った条件と、作品ごとの注意） |
 | tools/code-size.mjs | 各作品のコード量（JS・GLSL の行数）を数えるスクリプト |
 | tools/bench.mjs | 作品の GPU 負荷と JS の時間をシーン別に測るスクリプト。全作品（`--all`）か、名前で選んだ作品を測り、`--base` で変更前の版と比べる。`--cool` で作品ごとに GPU を冷ましてから測る（[docs/performance.md](docs/performance.md)） |
 | tools/video-export.mjs | 作品を 1 コマずつ描き出して、動画（`.mp4`）か静止画（`.png`）を作るスクリプト（[docs/video.md](docs/video.md)） |

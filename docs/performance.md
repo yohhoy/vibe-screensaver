@@ -60,12 +60,11 @@ node tools/bench.mjs ripple --scene 2 --cool 50       # シーンのある作品
 
 作品ごとの測り方:
 
-- pixelcity・flume は GPU の値を載せない（上の「CPU で描く作品」）。JS の時間は、ほかの作品と同じく JS の表に載る。
+- pixelcity・flume は GPU の値の代わりに JS の時間を載せる（上の「CPU で描く作品」）。GPU で描く作品の JS の時間は載せない。
 - `SCENES` がある drone・ripple・waterfall・penguins・teapot はシーン別に測る。ほかの作品は固定の乱数で 1 行だけ測る。
 - tube・aurora・lavalamp・sandpicture の `COLOR_PRESETS` は配色の定義なので、シーンとして分けない。
 - teapot は 1 シーンずつ `--scene` と `--cool 50` で測る（18 シーンを続けて測ると、後のシーンほどクロックが下がって重く出る）。
 - sandpicture の砂が積もったあとの重さは `--warmup` で測る。基準値は `--warmup` なしで測る。
-- penguins・sandpicture は同じ場面でも FHD と Retina で描画命令や三角形の数が違うことがあるので、その行は FHD / Retina の順に両方を書く。
 
 負荷が変わる変更を入れても、[performance-data.md](performance-data.md) の基準値を測り直すのは指示があったときだけにする。前回の計測から変わったのが測り直す作品だけなら、ほかの作品の値はそのまま使える。performance-data.md の「測った条件」のコミットは新しいハッシュだけにし、作品名などの注記は付けない。
 
