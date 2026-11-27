@@ -24,11 +24,12 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval, IS_TOUCH, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 距離はなるべくセル数（グリッドで何歩か）で表す。セルより小さいもの（機器の寸法など）の長さの単位は、六角セルの中心から角までの距離で、
@@ -37,7 +38,7 @@ const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval
 // 群島の形
 const ISLAND_COUNT = [3, 5];          // 島の数
 const ISLAND_RADIUS = 5;              // 島 1 つの仮の範囲（コアからのセル数）
-const ISLAND_DIST = [8, 10];          // 中心の島のコアから、まわりの島のコアまでのセル数。島ごとに選ぶ
+const ISLAND_DIST = [7, 9];           // 中心の島のコアから、まわりの島のコアまでのセル数。島ごとに選ぶ
 const ISLAND_GAP = 3;                 // 島どうしの間に残す、何も置かないセルの数（島間リンクを除く）
 const ROUTERS_PER_ISLAND = [3, 5];    // 島ごとに目指すルータの数（置ける場所が無ければ減る）
 const ROUTER_DIST = [2, 4];           // コアからルータまでのセル数
@@ -50,11 +51,10 @@ const RING_LINKS = [1, 2];            // 輪の島間リンク（まわりの島
 const SERVICE_COLORS = [0x22e0ff, 0xff3cd8, 0xffa424, 0x4cff5a];   // シアン・マゼンタ・アンバー・グリーン
 
 // 生成と消去の時間（秒）
-const GEN_TIME = 100;                 // 群島が育ちきるまで（下の間隔の合計をこの長さに伸び縮みさせる）
+const GEN_TIME = 90;                  // 群島が育ちきるまで（下の間隔の合計をこの長さに伸び縮みさせる）
 const GAP = { device: 0.6, host: 0.35, cable: 0.3, link: 0.18, island: 2.5 };   // 手順ごとの間隔（比）。island は島が育ちきったあとの間
 const BASE_TIME = 0.4;                // 機器の底板の輪郭を描く時間
 const SCAN_TIME = 0.9;                // 走査線が機器を下から上へ描く時間
-const ERASE_SPREAD = 7;               // 群島をまるごと消すとき、最初にほどけ始めるセルと、最後の（中心の島のコアの）セルの時間差
 const ERASE_FADE = 2;                 // セル 1 つがほどけて消えるまでの時間
 
 // 島の入れ替わり（時間は秒）
@@ -71,11 +71,12 @@ const CENTER_GROW_TIME = 20;          // 中心の島の中身が育ちきるま
 const LINE_COLOR = new THREE.Color(0.42, 0.55, 0.78);   // 機器とケーブルの線（淡い青白）
 const BASE_LEVEL = 0.4;               // 底板の輪郭の明るさ（機器の線に対して）
 const LINE_WIDTH = 1.6;               // 機器の線の太さ（CSS ピクセル）
-const CABLE_WIDTH = 2.4;              // ケーブルの線の太さ（CSS ピクセル）
-const FOG_MIN = 0.28;                 // いちばん奥の線の明るさ（手前を 1 とする）
+const CABLE_WIDTH = 2.2;              // ケーブルの線の太さ（CSS ピクセル）
+const FOG_MIN = 0.28;                 // いちばん奥のパケットと光の明るさ（手前を 1 とする）
+const FOG_TINT = new THREE.Color(0.3, 0.24, 0.42);     // いちばん奥の機器とケーブルの線・面に掛ける色（暗い紫）。あわせて海の霞の色（SEA_FAR）を足す
 const SCAN_GLOW = 2.5;                // 描かれた直後の線の明るさの上乗せ（走査線の光）
 const DASH = 7;                       // 消えるときの点線の細かさ（1 単位の長さあたりの数）
-const FACE_TOP = new THREE.Color(0.02, 0.04, 0.08);     // 機器の面の色（上面）。空より少し明るい紺
+const FACE_TOP = new THREE.Color(0.03, 0.06, 0.12);     // 機器の面の色（上面）。海の明るみより明るい紺にし、どこでも箱として浮かせる
 const FACE_SIDE = new THREE.Color(0.006, 0.012, 0.03);  // 機器の面の色（側面）。上面より暗くして立体感を出す
 const SCREEN_LEVEL = 1.3;             // ホストの画面の明るさ
 const HOST_LINE_LEVEL = 0.6;          // ホストの箱の線の明るさ（画面に対して）
@@ -83,6 +84,7 @@ const RING_SPIN = 0.7;                // コアとルータのリングの回る
 const PORT_IDLE = 0.18;               // ポート・ランプが消えているときの明るさ（線の色に対して）
 const FLASH_DECAY = 0.5;              // 光った光が消える時定数（秒）
 const BLOOM = { strength: 0.5, radius: 0.4, threshold: 0.6 };   // しきい値は、線がわずかに、光と描かれた直後の線が強くにじむ値
+const ABERRATION = 0.005;             // 仕上げの色ずれ（色収差）の、画面の隅での大きさ（画面の幅・高さに対する割合）。中央は 0 で、外へ向けて 2 乗で増える
 const MSAA_SAMPLES = { pc: 0, touch: 4 };   // PC は解像度の倍率が 2 まであるので要らない
 const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };  // 解像度の倍率の上限（pc: PC、touch: スマホなど）
 
@@ -92,14 +94,12 @@ const HOP_PAUSE = 0.35;               // ルータで 1 つを送り出すのに
 const REPLY_DELAY = 0.6;              // 要求が着いてから応答を返すまで（秒）
 const QUEUE_COST = 1.5;               // 経路を選ぶとき、ルータの待ち行列 1 つを何セルぶんの遠回りとみなすか
 const OTHER_ISLAND_WEIGHT = 3;        // 行き先に別の島のホストを選ぶ重み（同じ島を 1 とする）
-const PACKET_LOOK = {                 // 大きさ（単位）・尾の点の数・尾の点の間隔（単位）
-  req: { size: 0.16, tail: 3, gap: 0.09 },
-  res: { size: 0.26, tail: 8, gap: 0.12 },
-};
+const PACKET_LOOK = { size: 0.3, tail: 4, gap: 0.1 };   // 大きさ（単位）・尾の点の数・尾の点の間隔（単位）。要求も応答も同じ
+const PACKET_MIN_PX = 4;              // 頭の点の最小の大きさ（CSS ピクセル）。引いたときも点が見えるように。尾と待ち行列の点は大きさに比例させる
 const QUEUE_GAP = 0.16;               // 待ち行列の点の縦の間隔
-const MIN_PACKETS = 5;
-const MAX_PACKETS = 80;
-const BASE_PACKETS = 20;
+const MIN_PACKETS = 10;
+const MAX_PACKETS = 100;
+const BASE_PACKETS = 25;
 const PACKET_STEP = 1.5;              // ↑↓ 1 回あたりの倍率
 const GROW_SHARE = 0.6;               // 生成の間に流す割合（育ちきった島の割合に掛ける）
 const RAMP_TIME = 12;                 // 群島が完成してから強度の値まで増やす時間（秒）
@@ -108,9 +108,16 @@ const BROADCAST_INTERVAL = [20, 10, 30];       // ブロードキャストの間
 const BROADCAST_RADIUS = 1.4;         // 波紋の広がる半径（セル数）
 const BROADCAST_TIME = 1.4;           // 波紋が広がりきるまでの秒数
 
-// 背景。暗い夜空のようなグラデーション（ブルームのしきい値より暗くし、にじませない）
-const SKY_TOP = new THREE.Color(0.0, 0.0, 0.004);      // 画面の上の色
-const SKY_BOTTOM = new THREE.Color(0.006, 0.014, 0.04);   // 画面の下の色（深い紺）
+// 背景。群島のはるか下に広がる海。ぼんやりした明るみがゆっくり流れ、遠いほど紫の霞に溶ける
+// （群島より十分暗く、ブルームのしきい値より暗くし、にじませない）
+const SEA_DEPTH = 6;                  // 群島から海の面までの深さ（単位）
+const SEA_WAVE = 22;                  // 明るみの大きさ（単位。模様の波長）
+const SEA_FLOW = [TAU / 47, TAU / 61, TAU / 83];   // 模様の流れる速さ（rad/s）。周期をずらして繰り返しを目立たせない
+const SEA_NEAR = new THREE.Color(0.006, 0.014, 0.04);   // 近くの海の地の色（深い紺）
+const SEA_FAR = new THREE.Color(0.016, 0.006, 0.03);    // 遠くの霞の色（暗い紫）
+const SEA_GLOW_A = new THREE.Color(0.0, 0.014, 0.024);  // 明るみの色（くすんだシアン）
+const SEA_GLOW_B = new THREE.Color(0.01, 0.0, 0.024);   // 明るみの色（くすんだ紫）
+const SEA_FADE = [0.8, 3];            // 霞に溶け始める距離と溶けきる距離（カメラの距離に対する倍率）
 
 // カメラ
 const CAM_FOV = 40;
@@ -194,6 +201,17 @@ const NetVertex = /* glsl */`
     vDepth = -mv.z;
     gl_Position = projectionMatrix * mv;
   }`;
+// 遠いほど暗く紫がかった色にし、海の霞を足す（背景の遠くの紫とそろえ、奥の島が霞に溶けて見えるように）。
+// 光（サービスの色）は、色が変わるとサービスを見分けられないので、暗くするだけにする
+const NetFog = /* glsl */`
+  vec3 netFog(vec3 c) {
+    float a = smoothstep(uFogNear, uFogFar, vDepth);
+    #ifdef LIGHT
+    return c * mix(1.0, ${f(FOG_MIN)}, a);
+    #else
+    return c * mix(vec3(1.0), vec3(${FOG_TINT.toArray().map(f)}), a) + vec3(${SEA_FAR.toArray().map(f)}) * a;
+    #endif
+  }`;
 const NetFragment = /* glsl */`
   uniform float uBuild, uTime, uEraseAt, uOrderBase, uSpread, uFogNear, uFogFar;
   uniform vec3 uFaceTop, uFaceSide;
@@ -202,18 +220,18 @@ const NetFragment = /* glsl */`
   #ifdef LIGHT
   varying vec3 vColor;
   #endif
+  ${NetFog}
   void main() {
     if (uBuild < vShow) discard;
     float k = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
-    float fog = mix(1.0, ${f(FOG_MIN)}, smoothstep(uFogNear, uFogFar, vDepth));
     #ifdef FACE
     if (k > 0.3) discard;   // 線より少し早く消し、ほどけていく線の奥を見せる
     // 面の向き（画面上の位置の変化から求める）で、上面と側面の色を塗り分ける
     float up = abs(normalize(cross(dFdx(vWorld), dFdy(vWorld))).y);
-    gl_FragColor = vec4(mix(uFaceSide, uFaceTop, smoothstep(0.5, 0.9, up)) * fog, 1.0);
+    gl_FragColor = vec4(netFog(mix(uFaceSide, uFaceTop, smoothstep(0.5, 0.9, up))), 1.0);
     #else
     if (k > 0.0) discard;   // 光はほどけ始めたら消す
-    gl_FragColor = vec4(vColor * fog, 1.0);
+    gl_FragColor = vec4(netFog(vColor), 1.0);
     #endif
   }`;
 
@@ -253,20 +271,20 @@ const NetLineFragmentHead = /* glsl */`
   varying float vShow, vOrder, vU, vDepth, vHide;
   #ifdef LIGHT
   varying vec3 vNetColor;
-  #endif`;
+  #endif
+  ${NetFog}`;
 const NetLineFragmentMain = /* glsl */`
     if (uBuild < vShow || uBuild >= vHide) discard;
     float netK = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
     if (netK > 0.0 && fract(vU * ${f(DASH)}) < netK) discard;`;
 const NetLineColor = /* glsl */`
-    float netFog = mix(1.0, ${f(FOG_MIN)}, smoothstep(uFogNear, uFogFar, vDepth));
     #ifdef LIGHT
     vec3 netC = vNetColor * LIGHT_SCALE;
     #else
     vec3 netC = diffuse;
     #endif
     netC *= 1.0 + ${f(SCAN_GLOW)} * (1.0 - smoothstep(0.0, 0.3, uBuild - vShow));
-    gl_FragColor = vec4(netC * netFog, alpha);`;
+    gl_FragColor = vec4(netFog(netC), alpha);`;
 function patchLineShader(shader) {
   Object.assign(shader.uniforms, netUniforms);
   const once = (src, a, b) => {
@@ -287,38 +305,71 @@ function patchLineShader(shader) {
   shader.fragmentShader = fr;
 }
 
-// 背景の色。画面いっぱいの板に、上下のグラデーションを描く。暗い色の段差が出ないよう、動かない細かなノイズを混ぜる
-const SkyShader = {
-  uniforms: { uTop: { value: SKY_TOP }, uBottom: { value: SKY_BOTTOM } },
+// 背景の海。メッシュを足さず、画面いっぱいの板で、画素ごとの視線が海の面に当たる所を求め、そこの模様を描く。
+// 模様は sin の重ね合わせで、大きくぼんやりした明るみにする（細かい模様はちらつく）。暗い色の段差が出ないよう、動かない細かなノイズを混ぜる
+const SeaShader = {
+  uniforms: {
+    uInvViewProj: { value: new THREE.Matrix4() }, uCam: { value: new THREE.Vector3() },
+    uFade: { value: new THREE.Vector2(0, 1) }, uFlow: { value: new THREE.Vector3() },
+  },
   vertexShader: /* glsl */`
-    varying vec2 vUv;
+    uniform mat4 uInvViewProj;
+    varying vec4 vFar;
     void main() {
-      vUv = position.xy * 0.5 + 0.5;
+      vFar = uInvViewProj * vec4(position.xy, 1.0, 1.0);
       gl_Position = vec4(position.xy, 1.0, 1.0);
     }`,
   fragmentShader: /* glsl */`
-    uniform vec3 uTop, uBottom;
-    varying vec2 vUv;
+    uniform vec3 uCam, uFlow;
+    uniform vec2 uFade;
+    varying vec4 vFar;
     void main() {
-      vec3 c = mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y));
+      vec3 dir = normalize(vFar.xyz / vFar.w - uCam);
+      float t = dir.y < -0.001 ? (${f(-SEA_DEPTH)} - uCam.y) / dir.y : 1e6;
+      vec2 p = (uCam.xz + dir.xz * t) * ${f(TAU / SEA_WAVE)};
+      p += 0.7 * sin(p.yx * 0.7 + uFlow.z);
+      float a = sin(p.x + uFlow.x) * sin(p.y * 0.8 - uFlow.y);
+      float b = sin(p.x * 0.6 - p.y * 0.9 - uFlow.y) * sin(p.x * 0.9 + p.y * 0.4 + uFlow.x);
+      vec3 c = vec3(${SEA_NEAR.toArray().map(f)}) + vec3(${SEA_GLOW_A.toArray().map(f)}) * smoothstep(0.1, 1.0, a)
+        + vec3(${SEA_GLOW_B.toArray().map(f)}) * smoothstep(0.1, 1.0, b);
+      c = mix(c, vec3(${SEA_FAR.toArray().map(f)}), smoothstep(uFade.x, uFade.y, t));
       float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
       gl_FragColor = vec4(c + n / 255.0, 1.0);
     }`,
 };
 
+// 仕上げ（ブルームのあと）。画面の端ほど、赤と青をわずかに外と内へずらす（色収差）
+const AberrationShader = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec2 d = vUv - 0.5;
+      vec2 o = d * dot(d, d) * ${f(4 * ABERRATION)};
+      gl_FragColor = vec4(texture2D(tDiffuse, vUv + o).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - o).b, 1.0);
+    }`,
+};
+
 // パケットの点。ふちのぼけた丸（加算合成）
 const PacketShader = {
-  uniforms: { uScale: { value: 1 }, uFogNear: { value: 0 }, uFogFar: { value: 1 } },
+  uniforms: { uScale: { value: 1 }, uMinSize: { value: 2 }, uFogNear: { value: 0 }, uFogFar: { value: 1 } },
   vertexShader: /* glsl */`
     attribute float size;
     attribute vec3 color;
-    uniform float uScale;
+    uniform float uScale, uMinSize;
     varying vec3 vColor;
     varying float vDepth;
     void main() {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       vDepth = -mv.z;
-      gl_PointSize = max(2.0, size * uScale / vDepth);
+      gl_PointSize = max(uMinSize * size / ${f(PACKET_LOOK.size)}, size * uScale / vDepth);
       vColor = color;
       gl_Position = projectionMatrix * mv;
     }`,
@@ -352,12 +403,13 @@ composer.setPixelRatio(renderer.getPixelRatio());
 composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM.strength, BLOOM.radius, BLOOM.threshold));
+composer.addPass(new ShaderPass(AberrationShader));
 composer.addPass(new OutputPass());
 
 // 面・線・光で uniform を共有する。時刻の uniform は、部品ごとに描く直前に入れ替える（setPartUniforms）
 const LIGHT_TEX_W = 1024, LIGHT_CAPACITY = LIGHT_TEX_W * 4;   // 光の表の幅と、入る光の数
 const netUniforms = {
-  uBuild: { value: 0 }, uTime: { value: 0 }, uEraseAt: { value: 1e9 }, uOrderBase: { value: 0 }, uSpread: { value: ERASE_SPREAD },
+  uBuild: { value: 0 }, uTime: { value: 0 }, uEraseAt: { value: 1e9 }, uOrderBase: { value: 0 }, uSpread: { value: 1 },
   uFogNear: { value: 0 }, uFogFar: { value: 1 },
   uFaceTop: { value: FACE_TOP }, uFaceSide: { value: FACE_SIDE },
   uLights: { value: null }, uSpin: { value: 0 },
@@ -396,15 +448,15 @@ const broadcastMaterial = new THREE.LineBasicMaterial({
 function updateScreenScale() {
   for (const m of lineMaterials) m.resolution.set(innerWidth, innerHeight);
   packetMaterial.uniforms.uScale.value = renderer.domElement.height / (2 * TAN_HALF_FOV);
+  packetMaterial.uniforms.uMinSize.value = PACKET_MIN_PX * renderer.getPixelRatio();
 }
 
 // ---- 状態 ----
 let packetCount = BASE_PACKETS;   // 強度（同時に流れるパケットの数）
 let net = null;          // いまの群島（planArchipelago() の戻り値）
 let clock = 0;           // いまの群島が始まってからの秒数
-let phase = 'grow';      // grow（最初の生成）・run（稼働と入れ替わり）・erase（群島をまるごと消す）
+let phase = 'grow';      // grow（最初の生成）・run（稼働と入れ替わり）
 let phaseTime = 0;       // いまの段階に入った時刻（clock）
-let eraseAt = Infinity;  // 群島をまるごと消し始めた時刻（clock）
 let swap = null;         // 入れ替わりの途中なら { stage（drain・unravel・grow）, isl（消す島）または center と gone（張り直すリンク）, t, end }、無ければ null
 let swapAt = 0;          // 次の入れ替わりを始める時刻（clock）
 let swapCount = 0;       // いまの群島で始めた入れ替わりの回数
@@ -420,11 +472,21 @@ let lights = [];         // 光ごとの { idle（灯り続ける色）, cur（�
 let freeLights = [];     // 空いた光の枠の番号（次の島で使い回す）
 
 // ---- 背景 ----
-// 空の色。群島より先に描き、群島の面がその上を塗りつぶす
-const sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ ...SkyShader, depthTest: false, depthWrite: false }));
-sky.frustumCulled = false;
-sky.renderOrder = -3;
-scene.add(sky);
+// 群島より先に描き、群島の面がその上を塗りつぶす
+const sea = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ ...SeaShader, depthTest: false, depthWrite: false }));
+sea.frustumCulled = false;
+sea.renderOrder = -3;
+scene.add(sea);
+// カメラを動かしたあとに、視線の向きと霞の距離を渡し、模様を流す
+function updateSea(dt) {
+  const u = sea.material.uniforms;
+  camera.updateMatrixWorld();
+  u.uInvViewProj.value.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
+  u.uCam.value.copy(camera.position);
+  u.uFade.value.set(SEA_FADE[0] * camDist, SEA_FADE[1] * camDist);
+  const fl = u.uFlow.value;
+  fl.set((fl.x + dt * SEA_FLOW[0]) % TAU, (fl.y + dt * SEA_FLOW[1]) % TAU, (fl.z + dt * SEA_FLOW[2]) % TAU);
+}
 
 // ---- 群島の計画 ----
 // 群島（net）は、セル・島・島間リンクと描画の部品を持ち続ける。最初の生成では群島全体を、入れ替わりでは島 1 つを計画して足す。
@@ -885,7 +947,7 @@ const LAYER_MATERIALS = {
 };
 
 // 部品の時刻と、消え方（ほどけ始める時刻・順の基準・広がり）
-function makePart(t0) { return { t0, eraseAt: Infinity, orderBase: 0, spread: ERASE_SPREAD, meshes: [], lights: [] }; }
+function makePart(t0) { return { t0, eraseAt: Infinity, orderBase: 0, spread: 1, meshes: [], lights: [] }; }
 function setPartUniforms(part) {
   netUniforms.uBuild.value = Math.min(clock, part.eraseAt) - part.t0;
   netUniforms.uTime.value = clock - part.t0;
@@ -1295,20 +1357,19 @@ function drawPackets() {
     size[n++] = sz;
   };
   for (const p of packets) {
-    const look = PACKET_LOOK[p.kind];
     if (p.state === 'move') {
       // 頭と尾。尾は最後に止まった所より後ろへは伸ばさない
-      for (let j = 0; j <= look.tail; j++) {
-        const s = p.s - j * look.gap;
+      for (let j = 0; j <= PACKET_LOOK.tail; j++) {
+        const s = p.s - j * PACKET_LOOK.gap;
         if (s < p.fromS) break;
-        const k = 3 * (1 - j / (look.tail + 1)) ** 1.5;
-        put(pointAt(p.route, s, tmpV), p.color, k, look.size * (1 - 0.5 * j / (look.tail + 1)));
+        const k = 3 * (1 - j / (PACKET_LOOK.tail + 1)) ** 1.5;
+        put(pointAt(p.route, s, tmpV), p.color, k, PACKET_LOOK.size * (1 - 0.5 * j / (PACKET_LOOK.tail + 1)));
       }
     } else if (p.state === 'queue') {
       const r = p.route.stops[p.stop - 1].cell;
       const i = r.queue.indexOf(p);
       tmpV.set(r.x, deviceTop(r) + QUEUE_GAP * (i + 1), r.z);
-      put(tmpV, p.color, 2.2, look.size * 0.8);
+      put(tmpV, p.color, 2.2, PACKET_LOOK.size * 0.8);
     }
   }
   pointGeo.setDrawRange(0, n);
@@ -1440,27 +1501,21 @@ function updateCamera(dt) {
   netUniforms.uFogFar.value = packetMaterial.uniforms.uFogFar.value = far;
 }
 // ---- 群島の一生 ----
+// 新しい群島を最初から育てる。シーン切替でも、カメラと背景の動きを含めて、ページを開いたときと同じ状態から始める
 function newArchipelago() {
   if (net) for (const name of [...net.parts.keys()]) removePart(name);
   lights = []; freeLights = [];
   net = planArchipelago();
   net.parts = new Map();
   buildCells(net.cells, 0);
-  clock = 0; phase = 'grow'; phaseTime = 0; eraseAt = Infinity; swap = null; swapCount = 0;
+  clock = 0; phase = 'grow'; phaseTime = 0; swap = null; swapCount = 0;
+  orbit = 0; camDist = 0; lensReady = false;
+  netUniforms.uSpin.value = 0; sea.material.uniforms.uFlow.value.set(0, 0, 0);
   packets = []; broadcasts = []; spawnCarry = 0;
   switchWait = randomInterval(SERVICE_SWITCH_INTERVAL);
   broadcastWait = randomInterval(BROADCAST_INTERVAL);
 }
 function setPhase(p) { phase = p; phaseTime = clock; }
-// 群島をまるごと消し始める（シーン切替）
-function startErase() {
-  if (phase === 'erase') return;
-  eraseAt = clock;
-  for (const part of net.parts.values()) Object.assign(part, { eraseAt: clock, orderBase: 0, spread: ERASE_SPREAD });
-  packets = []; broadcasts = []; swap = null;
-  for (const c of net.cells) if (c.queue) c.queue.length = 0;
-  setPhase('erase');
-}
 
 // ---- 島の入れ替わり ----
 // 島の中身・コアと、その島につながる島間リンクの部品の名前
@@ -1574,28 +1629,24 @@ function updateSwap() {
 function packetTarget() {
   const islands = net.islands.filter(Boolean);
   if (phase === 'grow') return packetCount * GROW_SHARE * islands.filter((i) => i.readyAt <= clock).length / islands.length;
-  if (phase === 'run') return packetCount * (GROW_SHARE + (1 - GROW_SHARE) * clamp((clock - phaseTime) / RAMP_TIME, 0, 1));
-  return 0;
+  return packetCount * (GROW_SHARE + (1 - GROW_SHARE) * clamp((clock - phaseTime) / RAMP_TIME, 0, 1));
 }
 
 function update(dt) {
   clock += dt;
   for (const isl of net.islands) {
-    if (isl && !isl.lit && isl.readyAt <= clock && phase !== 'erase') { isl.lit = true; flashIsland(isl); }
+    if (isl && !isl.lit && isl.readyAt <= clock) { isl.lit = true; flashIsland(isl); }
   }
   if (phase === 'grow' && clock >= net.doneAt) { setPhase('run'); flashIsland(null); swapAt = clock + SWAP_INTERVAL; }
   else if (phase === 'run') updateSwap();
-  else if (phase === 'erase' && clock - eraseAt >= ERASE_SPREAD + ERASE_FADE + 1) newArchipelago();
 
-  if (phase === 'grow' || phase === 'run') {
-    const target = Math.round(packetTarget());
-    spawnCarry = Math.min(spawnCarry + dt * Math.max(1, target / 4), 2);
-    while (spawnCarry >= 1) {
-      spawnCarry--;
-      if (packets.length < target) spawnRequest();
-    }
-    if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
+  const target = Math.round(packetTarget());
+  spawnCarry = Math.min(spawnCarry + dt * Math.max(1, target / 4), 2);
+  while (spawnCarry >= 1) {
+    spawnCarry--;
+    if (packets.length < target) spawnRequest();
   }
+  if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
   if (phase === 'run' && (switchWait -= dt) <= 0) { switchService(); switchWait = randomInterval(SERVICE_SWITCH_INTERVAL); }
 
   updatePackets(dt);
@@ -1603,6 +1654,7 @@ function update(dt) {
   updateLights(dt);
   netUniforms.uSpin.value = (netUniforms.uSpin.value + dt * RING_SPIN) % TAU;
   updateCamera(dt);
+  updateSea(dt);
 }
 
 // 確認用: 描かずに sec 秒進める（video-export.mjs の --at "0:fastForward(100)"）
@@ -1629,8 +1681,8 @@ function tick(now) {
 // ---- 入力・UI ----
 // 暗転・全画面・カーソルを隠す処理・画面を消さない処理・キーとスワイプ・強度のゲージは common.js
 setupControls({
-  // シーン切替（Space・左右スワイプ）。今の群島を消去して、次の群島を育てる
-  changeScene: startErase,
+  // シーン切替（Space・左右スワイプ）。暗転して、次の群島を最初から育てる
+  changeScene: () => fadeAndRun(newArchipelago),
   // 強度（↑↓・上下スワイプ）。同時に流れるパケットの数
   intensity: {
     up: () => setPacketCount(packetCount * PACKET_STEP),
