@@ -147,7 +147,7 @@ setupControls({
 
 - 新作は既存ファイル（[pipes.html](pipes.html) など）を土台にし、`<head>`、`#hud`、節の順番を揃える。
 - [index.html](index.html) の作品一覧にリンクを追加・更新する。
-- README.md の作品ごとの節（1 行の概要・操作）を更新する。
+- README.md の作品ごとの節（概要・操作）を更新する。説明の長さと書くことは new-work スキルの「仕上げる」に沿う。
 - 新作や見た目が大きく変わったときは、README.md のサムネイル（`docs/images/<作品名>.jpg`、640×360）を撮り直し、作品ごとの節の見出しの下に載せる。`node tools/video-export.mjs <作品名> --hidden off --out <作品名>.png` で撮り（HUD は写らない。起動直後に絵が揃わない作品は `--warmup` を長くする）、`node tools/img.mjs grid <作品名>.png --max 640 --out docs/images/<作品名>.jpg` で 640×360 にする。隠し要素は写さない。README で「隠し要素」として扱うものを、サムネイルで見せてしまわないため。
 - `docs/specs/<作品名>.md` の仕様（と、コースや景色などの定義）を更新する。新作ならファイルを作る。
 - 見た目を変えたときは、`node tools/video-compare.mjs` で変更前後を並べて確認する（[docs/video.md](docs/video.md)）。
