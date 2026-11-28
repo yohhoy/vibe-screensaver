@@ -110,6 +110,15 @@ const RAMP_TIME = 12;                 // 群島が完成してから強度の値
 const BROADCAST_INTERVAL = [20, 10, 30];       // ブロードキャストの間隔 [平均, 下限, 上限]（秒）
 const BROADCAST_RADIUS = 1.4;         // 波紋の広がる半径（セル数）
 const BROADCAST_TIME = 1.4;           // 波紋が広がりきるまでの秒数
+const FAULT_INTERVAL = [90, 45, 180]; // リンク障害の間隔 [平均, 下限, 上限]（秒）
+const FAULT_TIME = { blink: 2, down: 12, repair: 1.5 };   // 障害の段階ごとの秒数: 赤く瞬く・点線で止まる・点線が埋まって元の色に戻る
+const FAULT_COLOR = new THREE.Color(1.6, 0.14, 0.1);   // 障害の起きたリンクの線の色（ブルームでにじむ明るさ）
+const FAULT_BLINKS = 4;               // 赤く瞬く回数
+const FAULT_RED = { blinkOff: 0.2, down: 0.55 };   // 線の色に障害の色を混ぜる割合（0..1）: 瞬きの消えている間・点線で止まっている間（瞬きの点いている間は 1）
+const FAULT_DASH = 0.5;               // 止まっている間の点線の欠ける割合
+const DROP_TIME = 1.6;                // 欠落したパケットが海へ落ちながら消えるまでの秒数
+const DROP_GRAVITY = 3;               // 落ちる加速度（単位/秒²）
+const DROP_GREY = new THREE.Color(0.35, 0.37, 0.42);   // 欠落したパケットの、抜けたあとの色
 
 // 背景。群島のはるか下に広がる海。ぼんやりした明るみがゆっくり流れ、遠いほど紫の霞に溶ける
 // （群島より十分暗く、ブルームのしきい値より暗くし、にじませない）
@@ -289,6 +298,7 @@ const NetLineVertexMain = /* glsl */`
     #endif`;
 const NetLineFragmentHead = /* glsl */`
   uniform float uBuild, uTime, uEraseAt, uOrderBase, uSpread, uFogNear, uFogFar;
+  uniform vec2 uFault;   // リンク障害: x は点線の欠ける割合、y は障害の色の混ぜ具合
   varying float vShow, vOrder, vU, vDepth, vHide;
   #ifdef LIGHT
   varying vec3 vNetColor;
@@ -297,7 +307,8 @@ const NetLineFragmentHead = /* glsl */`
 const NetLineFragmentMain = /* glsl */`
     if (uBuild < vShow || uBuild >= vHide) discard;
     float netK = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
-    if (netK > 0.0 && fract(vU * ${f(DASH)}) < netK) discard;`;
+    if (netK > 0.0 && fract(vU * ${f(DASH)}) < netK) discard;
+    if (fract(vU * ${f(DASH)}) < uFault.x) discard;`;
 const NetLineColor = /* glsl */`
     #ifdef LIGHT
     vec3 netC = vNetColor * LIGHT_SCALE;
@@ -305,6 +316,7 @@ const NetLineColor = /* glsl */`
     vec3 netC = diffuse;
     #endif
     netC *= 1.0 + ${f(SCAN_GLOW)} * (1.0 - smoothstep(0.0, 0.3, uBuild - vShow));
+    netC = mix(netC, vec3(${f(FAULT_COLOR.r)}, ${f(FAULT_COLOR.g)}, ${f(FAULT_COLOR.b)}), uFault.y);
     gl_FragColor = vec4(netFog(netC), alpha);`;
 function patchLineShader(shader) {
   Object.assign(shader.uniforms, netUniforms);
@@ -431,7 +443,7 @@ composer.addPass(new OutputPass());
 const LIGHT_TEX_W = 1024, LIGHT_CAPACITY = LIGHT_TEX_W * 4;   // 光の表の幅と、入る光の数
 const netUniforms = {
   uBuild: { value: 0 }, uTime: { value: 0 }, uEraseAt: { value: 1e9 }, uOrderBase: { value: 0 }, uSpread: { value: 1 },
-  uFogNear: { value: 0 }, uFogFar: { value: 1 },
+  uFogNear: { value: 0 }, uFogFar: { value: 1 }, uFault: { value: new THREE.Vector2(0, 0) },
   uFaceTop: { value: FACE_TOP }, uFaceSide: { value: FACE_SIDE },
   uLights: { value: null }, uSpin: { value: 0 },
 };
@@ -485,6 +497,8 @@ let packets = [];
 let broadcasts = [];
 let spawnCarry = 0;      // 要求を出すペースの端数（次のフレームへ持ち越す）
 let broadcastWait = 0;   // 次のブロードキャストまでの秒数
+let fault = null;        // リンク障害の途中なら { link, part, t（始まった時刻）, dropped（欠落させたか） }、無ければ null
+let faultWait = 0;       // 次のリンク障害までの秒数
 let orbit = 0;           // カメラの方位
 let camDist = 0;         // カメラの距離（0 なら最初のフレームで目安に合わせる）
 let lensReady = false;   // 画面の中でのずらし量（lensShift）と注視点（camFocus）を、最初のフレームで合わせたか
@@ -975,8 +989,9 @@ const LAYER_MATERIALS = {
 };
 
 // 部品の時刻と、消え方（ほどけ始める時刻・順の基準・広がり）
-function makePart(t0) { return { t0, eraseAt: Infinity, orderBase: 0, spread: 1, meshes: [], lights: [] }; }
+function makePart(t0) { return { t0, eraseAt: Infinity, orderBase: 0, spread: 1, fault: new THREE.Vector2(0, 0), meshes: [], lights: [] }; }
 function setPartUniforms(part) {
+  netUniforms.uFault.value.copy(part.fault);
   netUniforms.uBuild.value = Math.min(clock, part.eraseAt) - part.t0;
   netUniforms.uTime.value = clock - part.t0;
   netUniforms.uEraseAt.value = part.eraseAt === Infinity ? 1e9 : part.eraseAt - part.t0;
@@ -1225,9 +1240,9 @@ function flashIsland(isl) {
 }
 
 // ---- パケット ----
-// 通れる・やりとりできるセルか。ケーブルとコアは現れきったら、ほかの機器は島が育ちきったら。消えていく所は通さない
+// 通れる・やりとりできるセルか。ケーブルとコアは現れきったら、ほかの機器は島が育ちきったら。消えていく所と、障害で止まっているリンクは通さない
 // （コアは、中心の島の中身を作り直している間も、島をまたぐパケットを通す）
-const active = (cell) => !cell.retiring && cell.ready <= clock &&
+const active = (cell) => !cell.retiring && !cell.down && cell.ready <= clock &&
   (cell.type === 'cable' || cell.type === 'core' || net.islands[cell.island].readyAt <= clock);
 const isRouter = (c) => c.type === 'router' || c.type === 'core';
 
@@ -1264,7 +1279,7 @@ function buildRoute(path) {
     if (c.type !== 'cable') {
       push(c.x, c.z);
       const s = pts[pts.length - 1].s;
-      if (i > 0 && i < path.length - 1) (isRouter(c) ? stops : passes).push({ s, cell: c });
+      if (i > 0 && i < path.length - 1) (isRouter(c) ? stops : passes).push({ s, cell: c, i });
       return;
     }
     const a = path[i - 1], b = path[i + 1];
@@ -1315,11 +1330,13 @@ function updatePackets(dt) {
     c.busy -= dt;
     if (c.busy > 0) continue;
     const p = c.queue.shift();
+    if (fault) reroute(p);
     p.state = 'move';
     p.fromS = p.s;
     if (c.queue.length) startHop(c);
   }
   for (const p of packets) {
+    if (p.state === 'fall') { if ((p.t += dt) >= DROP_TIME) p.state = 'done'; continue; }
     if (p.state === 'wait') {
       p.wait -= dt;
       if (p.wait <= 0) {
@@ -1374,7 +1391,7 @@ pointMesh.frustumCulled = false;
 pointMesh.renderOrder = 10;
 scene.add(pointMesh);
 
-const tmpV = new THREE.Vector3();
+const tmpV = new THREE.Vector3(), tmpC = new THREE.Color();
 function drawPackets() {
   const pos = pointGeo.attributes.position.array, col = pointGeo.attributes.color.array, size = pointGeo.attributes.size.array;
   let n = 0;
@@ -1398,6 +1415,11 @@ function drawPackets() {
       const i = r.queue.indexOf(p);
       tmpV.set(r.x, deviceTop(r) + QUEUE_GAP * (i + 1), r.z);
       put(tmpV, p.color, 2.2, PACKET_LOOK.size * 0.8);
+    } else if (p.state === 'fall') {
+      // 欠落したパケット: 色が灰色へ抜け、海へ落ちながら薄れる
+      const k = p.t / DROP_TIME;
+      pointAt(p.route, p.s, tmpV).y -= 0.5 * DROP_GRAVITY * p.t * p.t;
+      put(tmpV, tmpC.copy(p.color).lerp(DROP_GREY, Math.min(1, k * 3)), 2.5 * (1 - k) ** 1.5, PACKET_LOOK.size);
     }
   }
   pointGeo.setDrawRange(0, n);
@@ -1442,6 +1464,77 @@ function updateBroadcasts(dt) {
   waveGeo.setDrawRange(0, n * 2);
   waveGeo.attributes.position.needsUpdate = true;
   waveGeo.attributes.color.needsUpdate = true;
+}
+
+// ---- リンク障害 ----
+// 島間リンクが 1 本止まり、パケットは輪の迂回路へ回る。しばらくして点線が埋まり、元に戻る。
+// 止めても群島が分かれないリンク（輪の一部）のうち、そのとき最も流量の多いものを選ぶ。入れ替わりの間は起こさず、障害の間は入れ替わりを待たせる
+function startFault() {
+  if (phase !== 'run' || swap || fault) return;
+  const islands = net.islands.filter(Boolean);
+  const connectedWithout = (cut) => {
+    const seen = new Set([0]), todo = [0];
+    while (todo.length) {
+      const i = todo.pop();
+      for (const l of net.links) {
+        if (l === cut || (l.ia !== i && l.ib !== i)) continue;
+        const j = l.ia === i ? l.ib : l.ia;
+        if (!seen.has(j)) { seen.add(j); todo.push(j); }
+      }
+    }
+    return islands.every((isl) => seen.has(isl.index));
+  };
+  const links = net.links.filter((l) => l.run.every(active) && connectedWithout(l));
+  if (!links.length) return;
+  // そのとき最も流量の多いリンクを止める。同じ数なら乱数で選ぶ。流量は、これから渡るパケットと、応答として戻ってくるパケットの数
+  // （要求は、渡り終えていても応答が同じ道を戻ってくるので数える。応答は、最後に止まったルータより先にあるときだけ数える）
+  const flow = (l) => packets.filter((p) => {
+    const k = p.cells.indexOf(l.run[1]);
+    return k >= 0 && (p.kind === 'req' || k > (p.route.stops[p.stop - 1]?.i ?? 0));
+  }).length;
+  const most = Math.max(...links.map(flow));
+  const link = pick(links.filter((l) => flow(l) === most));
+  // 瞬き始めた時から、新しく経路を選ぶパケットと、手前のコアから送り出すパケット（reroute）はこのリンクを避ける。
+  // 瞬く前から渡っていて、点線になる瞬間にまだ渡りきっていないパケットは欠落する（dropOnLink）
+  for (const c of link.run) if (c.type === 'cable') c.down = true;
+  fault = { link, part: net.parts.get(link.part), t: clock, dropped: false };
+}
+// 始まってからの秒数で、リンクの線の点線と色を決める: 赤く瞬く → 点線で止まる → 点線が埋まって元の色に戻る
+function updateFault() {
+  if (!fault) return;
+  const t = clock - fault.t, { blink, down, repair } = FAULT_TIME;
+  if (t < blink) {
+    fault.part.fault.set(0, Math.floor(t / blink * FAULT_BLINKS * 2) % 2 ? FAULT_RED.blinkOff : 1);
+    return;
+  }
+  if (!fault.dropped) { fault.dropped = true; dropOnLink(); }
+  const e = clamp((blink + down + repair - t) / repair, 0, 1);   // 止まっている間は 1、元に戻ると 0
+  fault.part.fault.set(FAULT_DASH * e, FAULT_RED.down * e);
+  if (e === 0) {
+    for (const c of fault.link.run) c.down = false;
+    fault = null;
+  }
+}
+// 点線になった瞬間にリンクの上を渡っているパケットは欠落し、海へ落ちる
+function dropOnLink() {
+  for (const p of packets) {
+    const last = p.route.stops[p.stop - 1];
+    if (p.state === 'move' && last && p.cells[last.i + 1]?.down) { p.state = 'fall'; p.t = 0; }
+  }
+}
+// ルータから送り出すパケットの残りの道が止まったリンクを通るなら、そのルータから行き先への道を選び直す
+// （止まる直前に経路を選んだパケットは、リンクの手前のコアで待ち行列に入り、ここで迂回路へ向きを変える）
+function reroute(p) {
+  const stop = p.route.stops[p.stop - 1];
+  if (!p.cells.slice(stop.i + 1).some((c) => c.down)) return;
+  const dst = p.kind === 'req' ? p.dst : p.src;
+  const { dist, prev } = shortestFrom(stop.cell);
+  if (dist[dst.index] === Infinity) return;
+  const tail = [];
+  for (let i = dst.index; i !== stop.cell.index; i = prev[i]) tail.unshift(net.cells[i]);
+  // 通ってきた所は変わらないので、道筋の上の位置（s・stop・pass）はそのまま使える
+  p.cells = [...p.cells.slice(0, stop.i + 1), ...tail];
+  p.route = buildRoute(p.cells);
 }
 
 // ---- カメラ ----
@@ -1532,8 +1625,9 @@ function newArchipelago() {
   clock = 0; phase = 'grow'; phaseTime = 0; swap = null; swapCount = 0;
   orbit = 0; camDist = 0; lensReady = false;
   netUniforms.uSpin.value = 0; sea.material.uniforms.uFlow.value.set(0, 0, 0);
-  packets = []; broadcasts = []; spawnCarry = 0;
+  packets = []; broadcasts = []; spawnCarry = 0; fault = null;
   broadcastWait = randomInterval(BROADCAST_INTERVAL);
+  faultWait = randomInterval(FAULT_INTERVAL);
 }
 function setPhase(p) { phase = p; phaseTime = clock; }
 
@@ -1607,7 +1701,7 @@ function growSwap(slot) {
 }
 // 入れ替わりを進める: drain（消していく所を通るパケットを待つ）→ unravel（ほどく）→ grow（新しく育てる）
 function updateSwap() {
-  if (!swap) { if (clock >= swapAt) startSwap(); return; }
+  if (!swap) { if (clock >= swapAt && !fault) startSwap(); return; }
   if (swap.stage === 'drain') {
     // 消していく所を通るパケットが行き着くのを待ち、残ったものは取り除く
     const touching = packets.filter((p) => p.cells.some((c) => c.retiring));
@@ -1667,9 +1761,12 @@ function update(dt) {
     if (packets.length < target) spawnRequest();
   }
   if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
+  // 起こせないとき（生成中・入れ替わりの間）は見送り、次の間隔を待つ
+  if ((faultWait -= dt) <= 0) { startFault(); faultWait = randomInterval(FAULT_INTERVAL); }
 
   updatePackets(dt);
   updateBroadcasts(dt);
+  updateFault();
   updateLights(dt);
   netUniforms.uSpin.value = (netUniforms.uSpin.value + dt * RING_SPIN) % TAU;
   updateCamera(dt);

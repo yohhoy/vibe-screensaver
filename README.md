@@ -260,6 +260,14 @@ WebGL2 対応のブラウザとインターネット接続が必要です。ス�
 
 </details>
 
+## [六角ネットワーク](https://yohhoy.github.io/vibe-screensaver/hexnet.html)
+
+[<img src="docs/images/hexnet.jpg" width="480" alt="六角ネットワーク">](https://yohhoy.github.io/vibe-screensaver/hexnet.html)
+
+暗い海の上に浮かぶ、六角セルでできたネットワークの群島。ケーブルが伸びた先にルータが立ち、ホストが並んで、島が 1 つずつ育っていきます。サービスごとの色のパケットがルータを経由して島をまたいで行き交い、ときどきリンクが切れると、迂回路へ流れを変えます。
+
+シーン切替: 新しい群島 / 強度: パケットの量
+
 ## 開発者向け情報
 
 実装の方針は [DEVELOPMENT.md](DEVELOPMENT.md)、作品ごとの仕様は [docs/specs/](docs/specs/) を参照してください。調整用の定数は、各 HTML ファイル冒頭の「設定」節にあります。
