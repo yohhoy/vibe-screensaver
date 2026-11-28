@@ -29,7 +29,7 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 // 共通の入力・UI と小さな関数（common.js）
-const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval, IS_TOUCH, fadeAndRun, logPosition, setupControls, compactHdrFormat } = Common;
+const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval, sideRandom, IS_TOUCH, fadeAndRun, isFading, logPosition, setupControls, compactHdrFormat } = Common;
 
 // ---- 設定 ----
 // 距離はなるべくセル数（グリッドで何歩か）で表す。セルより小さいもの（機器の寸法など）の長さの単位は、六角セルの中心から角までの距離で、
@@ -94,7 +94,10 @@ const MAX_PIXEL_RATIO = { pc: 2, touch: 1.5 };  // 解像度の倍率の上限�
 
 // パケット
 const PACKET_SPEED = 1.5;             // 速さ（セル/秒）
-const HOP_PAUSE = 0.35;               // ルータで 1 つを送り出すのにかかる時間（秒）
+const HOP_PAUSE = { core: 0.35, router: 0.5 };   // ルータの出口で 1 つを送り出すのにかかる時間（秒）。コアルータは島をまたぐ流れをさばくので速い
+const QUEUE_SHARE = 0.3;                         // ルータ（コアを含む）の出口ごとの待ち行列に並べる数の、強度の値に対する割合。あふれたパケットは黙って捨てる
+                                                 // （最初の強度ではまずあふれず、強度が高いと、ふだんもときどきあふれる）
+const QUEUE_MIN = 3;                             // 待ち行列に並べる数の最小
 const REPLY_DELAY = 0.6;              // 要求が着いてから応答を返すまで（秒）
 const QUEUE_COST = 1.5;               // 経路を選ぶとき、ルータの待ち行列 1 つを何セルぶんの遠回りとみなすか
 const OTHER_ISLAND_WEIGHT = 3;        // 行き先に別の島のホストを選ぶ重み（同じ島を 1 とする）
@@ -119,6 +122,26 @@ const FAULT_DASH = 0.5;               // 止まっている間の点線の欠け
 const DROP_TIME = 1.6;                // 欠落したパケットが海へ落ちながら消えるまでの秒数
 const DROP_GRAVITY = 3;               // 落ちる加速度（単位/秒²）
 const DROP_GREY = new THREE.Color(0.35, 0.37, 0.42);   // 欠落したパケットの、抜けたあとの色
+
+// 隠し要素の DDoS 攻撃（時間は秒）
+const DDOS_INTERVAL = [600, 300, 1200];   // 間隔 [平均, 下限, 上限]
+// ボットにするホストの割合（ねらわれた島以外の島ごと）。中心の島は、島の数ごとに低くする（中心の島のボットの流れは必ず中心のコアを通り、
+// それだけで中心のコアが詰まって、まわりの島をねらえなくなる。島が多いほど、まわりの島どうしの流れも中心を通るので、さらに低くする）
+const DDOS_BOTS = { outer: 0.4, center: { 3: 0.2, 4: 0.15, 5: 0.05 } };
+const DDOS_INFECT = 6;                    // 乗っ取りの段の秒数（撃ち始めるまで）
+const DDOS_STAGGER = 0.3;                 // ボットを 1 台ずつ染める・戻す間（乗っ取りの段に収まらなければ縮める）
+const DDOS_RESTORE = 3;                   // 最後の攻撃のパケットが着いてから、落ちたホストが戻るまでの秒数
+const DDOS_DOWN_HITS = 15;                // ねらわれたホストが落ちるまでに着く攻撃のパケットの数（画面が光りっぱなしになったあと）
+const DDOS_FIRE = 1.5;                    // ボット 1 台が撃つ間隔（一定）
+const DDOS_ATTACK = 15;                   // ボット 1 台が撃ち続ける秒数（撃ち終えたら正常に戻る）
+const DDOS_MAX = 700;                     // 攻撃のパケットの数の上限（強度に数えない。ふつうは届かない、点の器を守るための値）
+const DDOS_SATURATE = 1.5;                // ねらわれたホストの画面の光の上乗せの上限（画面の色に対して）
+const BOT_TINT = 0.3;                     // ボットの面（上面）に足す、ねらわれたサービスの色の強さ
+const BOT_TINT_SIDE = 0.3;                // 側面に足す強さ（上面に対して。面の明暗の差を残す）
+// 乗っ取られた瞬間（ねらわれたサービスの色）と正常に戻った瞬間（白）の光: 面の染まり具合の最初の値（乗っ取りで落ち着いたあとを 1 とする）・
+// その減る時定数（秒）・箱の線と画面に足す光の強さ
+const BOT_FLASH = { face: 3, decay: 0.6, light: 2.5 };
+const DOWN_GREY = DROP_GREY.clone().multiplyScalar(0.7);   // 落ちたホストの画面の色（箱の線はこれを HOST_LINE_LEVEL 倍にする）
 
 // 背景。群島のはるか下に広がる海。ぼんやりした明るみがゆっくり流れ、遠いほど紫の霞に溶ける
 // （群島より十分暗く、ブルームのしきい値より暗くし、にじませない）
@@ -215,15 +238,26 @@ const NetVertex = /* glsl */`
   attribute float aOrder;    // 消える順（0..1）
   varying float vShow, vOrder, vDepth;
   varying vec3 vWorld;
-  #ifdef LIGHT
-  attribute float aLight;
+  #if defined(LIGHT) || defined(FACE)
+  attribute float aLight;    // 光の表の番号（面は、ホストなら画面の光の番号、ほかは -1）
   uniform sampler2D uLights;
+  #endif
+  #ifdef LIGHT
   varying vec3 vColor;
   #endif
+  #ifdef FACE
+  varying float vTint;       // ボットの面の染まり具合（光の表の a）。正ならねらわれたサービスの色、負なら白（正常に戻った瞬間の光）
+  #endif
   void main() {
-    #ifdef LIGHT
+    #if defined(LIGHT) || defined(FACE)
     int i = int(aLight + 0.5);
-    vColor = texelFetch(uLights, ivec2(i % LIGHT_TEX_W, i / LIGHT_TEX_W), 0).rgb;
+    vec4 light = texelFetch(uLights, ivec2(i % LIGHT_TEX_W, i / LIGHT_TEX_W), 0);
+    #endif
+    #ifdef LIGHT
+    vColor = light.rgb;
+    #endif
+    #ifdef FACE
+    vTint = aLight < 0.0 ? 0.0 : light.a;
     #endif
     vShow = aShow; vOrder = aOrder;
     vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
@@ -244,11 +278,14 @@ const NetFog = /* glsl */`
   }`;
 const NetFragment = /* glsl */`
   uniform float uBuild, uTime, uEraseAt, uOrderBase, uSpread, uFogNear, uFogFar;
-  uniform vec3 uFaceTop, uFaceSide;
+  uniform vec3 uFaceTop, uFaceSide, uBotTint;
   varying float vShow, vOrder, vDepth;
   varying vec3 vWorld;
   #ifdef LIGHT
   varying vec3 vColor;
+  #endif
+  #ifdef FACE
+  varying float vTint;
   #endif
   ${NetFog}
   void main() {
@@ -256,9 +293,11 @@ const NetFragment = /* glsl */`
     float k = (uTime - uEraseAt - (vOrder - uOrderBase) * uSpread) / ${f(ERASE_FADE)};
     #ifdef FACE
     if (k > 0.3) discard;   // 線より少し早く消し、ほどけていく線の奥を見せる
-    // 面の向き（画面上の位置の変化から求める）で、上面と側面の色を塗り分ける
-    float up = abs(normalize(cross(dFdx(vWorld), dFdy(vWorld))).y);
-    gl_FragColor = vec4(netFog(mix(uFaceSide, uFaceTop, smoothstep(0.5, 0.9, up))), 1.0);
+    // 面の向き（画面上の位置の変化から求める）で、上面と側面の色を塗り分ける。ボットの面には、ねらわれたサービスの色を足す
+    float up = smoothstep(0.5, 0.9, abs(normalize(cross(dFdx(vWorld), dFdy(vWorld))).y));
+    vec3 tint = vTint >= 0.0 ? uBotTint : vec3(${f(BOT_TINT)});
+    vec3 face = mix(uFaceSide, uFaceTop, up) + tint * abs(vTint) * mix(${f(BOT_TINT_SIDE)}, 1.0, up);
+    gl_FragColor = vec4(netFog(face), 1.0);
     #else
     if (k > 0.0) discard;   // 光はほどけ始めたら消す
     gl_FragColor = vec4(netFog(vColor), 1.0);
@@ -444,7 +483,7 @@ const LIGHT_TEX_W = 1024, LIGHT_CAPACITY = LIGHT_TEX_W * 4;   // 光の表の幅
 const netUniforms = {
   uBuild: { value: 0 }, uTime: { value: 0 }, uEraseAt: { value: 1e9 }, uOrderBase: { value: 0 }, uSpread: { value: 1 },
   uFogNear: { value: 0 }, uFogFar: { value: 1 }, uFault: { value: new THREE.Vector2(0, 0) },
-  uFaceTop: { value: FACE_TOP }, uFaceSide: { value: FACE_SIDE },
+  uFaceTop: { value: FACE_TOP }, uFaceSide: { value: FACE_SIDE }, uBotTint: { value: new THREE.Color(0, 0, 0) },
   uLights: { value: null }, uSpin: { value: 0 },
 };
 const netMaterial = (defines, extra = {}) => new THREE.ShaderMaterial({
@@ -1011,7 +1050,7 @@ function buildCells(cells, t0) {
   let partLights;   // いま形を作っているセルの部品の光の番号の列
   const newLight = (idle) => {
     const id = freeLights.pop() ?? lights.length;
-    lights[id] = { idle: idle.clone(), cur: idle.clone(), flash: new THREE.Color(0, 0, 0) };
+    lights[id] = { idle: idle.clone(), cur: idle.clone(), flash: new THREE.Color(0, 0, 0), tint: 0 };
     partLights.push(id);
     return id;
   };
@@ -1022,6 +1061,7 @@ function buildCells(cells, t0) {
     const { faces, lines, bases, cables, lightTris, rings, hostLines } = bufsOf(cell.part);
     partLights = partOf(cell.part, t0).lights;
     let lineBuf = lines, lineLight = 0;   // 底板の輪郭は bases に、ケーブルの線は cables に、ホストの箱の線は hostLines に（光の番号を付けて）入れる
+    let faceLight = -1;                   // 面に付ける光の番号（ホストだけ。DDoS 攻撃でボットの面を染める）
     const line = (ax, ay, az, bx, by, bz, sa, sb, ua = 0) => {
       const len = Math.hypot(bx - ax, by - ay, bz - az);
       pushVertex(lineBuf, ax, ay, az, sa, order, ua, lineLight);
@@ -1075,14 +1115,14 @@ function buildCells(cells, t0) {
         const [ax, az] = poly[i], [bx, bz] = poly[(i + 1) % n];
         const s0 = showAt(y0), s1 = showAt(y1);
         for (const [p, q, r] of [[[ax, y0, az], [bx, y0, bz], [bx, y1, bz]], [[ax, y0, az], [bx, y1, bz], [ax, y1, az]]]) {
-          for (const v of [p, q, r]) pushVertex(faces, v[0], v[1], v[2], showAt(v[1]), order);
+          for (const v of [p, q, r]) pushVertex(faces, v[0], v[1], v[2], showAt(v[1]), order, 0, faceLight);
         }
         line(ax, y0, az, bx, y0, bz, s0, s0);
         line(ax, y1, az, bx, y1, bz, s1, s1);
         if (i % edgeEvery === 0) line(ax, y0, az, ax, y1, az, s0, s1);
         if (i >= 1 && i < n - 1) {
           const [fx, fz] = poly[0];
-          pushVertex(faces, fx, y1, fz, s1, order); pushVertex(faces, ax, y1, az, s1, order); pushVertex(faces, bx, y1, bz, s1, order);
+          for (const [vx, vz] of [[fx, fz], [ax, az], [bx, bz]]) pushVertex(faces, vx, y1, vz, s1, order, 0, faceLight);
         }
       }
     }
@@ -1161,7 +1201,7 @@ function buildCells(cells, t0) {
       const fwd = toward(cell.switchCell);
       const poly = boxPoly(fwd, w, d);
       cell.light = newLight(serviceColor(cell.service));
-      lineBuf = hostLines; lineLight = cell.light;
+      lineBuf = hostLines; lineLight = faceLight = cell.light;
       prism(poly, 0, h);
       const sh = Math.min(h * 0.3, 0.13);
       lightQuad(poly[0], poly[1], 0.5, h - sh - Math.min(0.08, h * 0.15), w * 0.36, sh, cell.light);
@@ -1219,12 +1259,13 @@ netUniforms.uLights.value = new THREE.DataTexture(lightData, LIGHT_TEX_W, LIGHT_
 function updateLights(dt) {
   const decay = Math.exp(-dt / FLASH_DECAY), follow = 1 - Math.exp(-dt * 2);
   lights.forEach((l, i) => {
-    if (!l) { lightData[i * 4] = lightData[i * 4 + 1] = lightData[i * 4 + 2] = 0; return; }
+    if (!l) { lightData.fill(0, i * 4, i * 4 + 4); return; }
     l.cur.lerp(l.idle, follow);
     l.flash.multiplyScalar(decay);
     lightData[i * 4] = l.cur.r + l.flash.r;
     lightData[i * 4 + 1] = l.cur.g + l.flash.g;
     lightData[i * 4 + 2] = l.cur.b + l.flash.b;
+    lightData[i * 4 + 3] = l.tint;   // ボットの面の染まり具合（面のシェーダーが使う）
   });
   netUniforms.uLights.value.needsUpdate = true;
 }
@@ -1245,6 +1286,7 @@ function flashIsland(isl) {
 const active = (cell) => !cell.retiring && !cell.down && cell.ready <= clock &&
   (cell.type === 'cable' || cell.type === 'core' || net.islands[cell.island].readyAt <= clock);
 const isRouter = (c) => c.type === 'router' || c.type === 'core';
+const queueMax = () => Math.max(QUEUE_MIN, Math.round(packetCount * QUEUE_SHARE));   // ルータの出口ごとの待ち行列に並べる数
 
 // src から、ケーブルでつながったセルへの最短経路（ルータの待ち行列を遠回りとみなす）。ホストは途中に通らない
 function shortestFrom(src) {
@@ -1307,13 +1349,15 @@ function launch(p, cells) {
 }
 
 // 要求を 1 つ出す。行き先が無ければ何もしない
+// ふだんのやりとりをするホストか（DDoS 攻撃のボットと、ねらわれたホストは外す）
+const talks = (h) => active(h) && !h.bot && !h.attacked;
 function spawnRequest() {
-  const hosts = net.hosts.filter(active);
+  const hosts = net.hosts.filter(talks);
   if (!hosts.length) return;
   const src = pick(hosts);
   const { dist, prev } = shortestFrom(src);
   const targets = net.hosts.filter((h) => h !== src && h.service === src.service && h.switchCell !== src.switchCell &&
-    dist[h.index] < Infinity && active(h));
+    dist[h.index] < Infinity && talks(h));
   const dst = pickWeighted(targets, (h) => (h.island !== src.island ? OTHER_ISLAND_WEIGHT : 1));
   if (!dst) return;
   const cells = [];
@@ -1324,16 +1368,19 @@ function spawnRequest() {
 }
 
 function updatePackets(dt) {
-  // ルータは待ち行列の先頭から 1 つずつ送り出す
+  // ルータは出口ごとに、待ち行列の先頭から 1 つずつ送り出す（塔に並べた一覧 queue からも抜く）
   for (const c of net.cells) {
     if (!c.queue?.length) continue;
-    c.busy -= dt;
-    if (c.busy > 0) continue;
-    const p = c.queue.shift();
-    if (fault) reroute(p);
-    p.state = 'move';
-    p.fromS = p.s;
-    if (c.queue.length) startHop(c);
+    for (const [key, out] of c.outs) {
+      if ((out.busy -= dt) > 0) continue;
+      const p = out.queue.shift();
+      c.queue.splice(c.queue.indexOf(p), 1);
+      if (fault) reroute(p);   // 迂回で向かう先が変わっても、この出口から送り出す
+      p.state = 'move';
+      p.fromS = p.s;
+      if (out.queue.length) startHop(c, out);
+      else c.outs.delete(key);   // 空いた出口は消す（次に並ぶときに作り直し、送り出し始める）
+    }
   }
   for (const p of packets) {
     if (p.state === 'fall') { if ((p.t += dt) >= DROP_TIME) p.state = 'done'; continue; }
@@ -1355,24 +1402,38 @@ function updatePackets(dt) {
     if (p.stop < stops.length && stops[p.stop].s <= p.s) {
       const r = stops[p.stop++].cell;
       p.s = stops[p.stop - 1].s;
+      const out = outOf(r, p);
+      if (out.queue.length >= queueMax()) { p.state = 'done'; continue; }   // あふれたパケットは黙って捨てる
       p.state = 'queue';
+      out.queue.push(p);
       (r.queue ??= []).push(p);
-      if (r.queue.length === 1) startHop(r);
+      if (out.queue.length === 1) startHop(r, out);
       continue;
     }
     if (p.s >= length) {
       p.s = length;
+      if (p.kind === 'atk') { hitTarget(p); p.state = 'done'; continue; }
       const host = p.kind === 'req' ? p.dst : p.src;
+      if (host.crashed) { p.state = 'done'; continue; }   // 落ちたホストは応えない
       flashLight(host.light, p.color, p.kind === 'req' ? 2.5 : 1.5);
       if (p.kind === 'req') { p.state = 'wait'; p.wait = REPLY_DELAY; } else p.state = 'done';
     }
   }
   packets = packets.filter((p) => p.state !== 'done');
 }
-// ルータが先頭のパケットを送り出し始める。ポートとリングがパケットの色で光る
-function startHop(r) {
-  r.busy = HOP_PAUSE;
-  const p = r.queue[0];
+// ルータの出口。コアルータは、次に向かうセルごとに出口を分け、出口ごとの待ち行列から並行して送り出す
+// （島をまたぐ流れを方向ごとにさばき、1 つの方向が詰まっても、ほかの方向は待たせない）。ルータは出口が 1 つ。
+// 待ち行列の上限は出口ごと。塔は 1 本のままで、全部の出口で待っているパケットを着いた順に積む（queue）
+function outOf(r, p) {
+  const key = r.type === 'core' ? p.cells[p.route.stops[p.stop - 1].i + 1] : r;   // 次に向かうセル（セルの番号は、島の入れ替わりで振り直されるので使わない）
+  r.outs ??= new Map();
+  if (!r.outs.has(key)) r.outs.set(key, { queue: [], busy: 0 });
+  return r.outs.get(key);
+}
+// ルータが出口 out の先頭のパケットを送り出し始める。ポートとリングがパケットの色で光る
+function startHop(r, out) {
+  const p = out.queue[0];
+  out.busy = HOP_PAUSE[r.type];
   if (r.ports.length) {
     r.portNext = ((r.portNext ?? randInt(r.ports.length)) + 1) % r.ports.length;
     flashLight(r.ports[r.portNext], p.color, 2.6);
@@ -1381,7 +1442,7 @@ function startHop(r) {
 }
 
 // 点の器（パケットの頭と尾、待ち行列の点）
-const MAX_POINTS = 2000;
+const MAX_POINTS = 5000;   // 攻撃のパケット（DDOS_MAX）とふだんのパケットの頭と尾が収まる数
 const pointGeo = new THREE.BufferGeometry();
 pointGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_POINTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
 pointGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(MAX_POINTS * 3), 3).setUsage(THREE.DynamicDrawUsage));
@@ -1468,9 +1529,9 @@ function updateBroadcasts(dt) {
 
 // ---- リンク障害 ----
 // 島間リンクが 1 本止まり、パケットは輪の迂回路へ回る。しばらくして点線が埋まり、元に戻る。
-// 止めても群島が分かれないリンク（輪の一部）のうち、そのとき最も流量の多いものを選ぶ。入れ替わりの間は起こさず、障害の間は入れ替わりを待たせる
+// 止めても群島が分かれないリンク（輪の一部）のうち、そのとき最も流量の多いものを選ぶ。入れ替わりと DDoS 攻撃の間は起こさず、障害の間は入れ替わりを待たせる
 function startFault() {
-  if (phase !== 'run' || swap || fault) return;
+  if (phase !== 'run' || swap || fault || ddos) return;
   const islands = net.islands.filter(Boolean);
   const connectedWithout = (cut) => {
     const seen = new Set([0]), todo = [0];
@@ -1527,7 +1588,7 @@ function dropOnLink() {
 function reroute(p) {
   const stop = p.route.stops[p.stop - 1];
   if (!p.cells.slice(stop.i + 1).some((c) => c.down)) return;
-  const dst = p.kind === 'req' ? p.dst : p.src;
+  const dst = p.kind === 'res' ? p.src : p.dst;
   const { dist, prev } = shortestFrom(stop.cell);
   if (dist[dst.index] === Infinity) return;
   const tail = [];
@@ -1535,6 +1596,142 @@ function reroute(p) {
   // 通ってきた所は変わらないので、道筋の上の位置（s・stop・pass）はそのまま使える
   p.cells = [...p.cells.slice(0, stop.i + 1), ...tail];
   p.route = buildRoute(p.cells);
+}
+
+// ---- DDoS 攻撃（隠し要素） ----
+// 群島じゅうのホストの一部（ボット）が乗っ取られて面が染まり、ホスト 1 台へ、ふだんと同じ見た目のパケットを撃ち続ける。
+// ねらわれたホストは過負荷で灰色になって落ちる。ボットが撃ち終えて 1 台ずつ白く光って正常に戻ると、攻撃がやみ、ねらわれたホストに色が戻る。
+// 乗っ取り → 増勢 → 飽和 → 回復。攻撃の間は、リンク障害を起こさず、島の入れ替わりを待たせる。
+// 乱数は Math.random と別の列にし、ふだんの絵の乱数の列を変えない（攻撃のパケットの道筋とルータの光り方は、ふだんのパケットと同じ処理を使う）
+const ddosRandom = sideRandom();
+const ddosPick = (arr) => arr[Math.floor(ddosRandom() * arr.length)];
+const WHITE = new THREE.Color(1, 1, 1);
+let ddos = null;          // 攻撃の途中なら { t（始まってからの秒数）, target（ねらわれたホスト）, bots, color, hits（着いた攻撃のパケットの数）, down（落ちたか）, restoreAt（ねらわれたホストが戻る時刻）, restored（戻したか） }、無ければ null
+let ddosPending = false;  // 時刻が来た（C キーが押された）が、まだ起こせない（生成中・入れ替わり中・リンク障害中）
+let ddosWait = randomInterval(DDOS_INTERVAL, ddosRandom);   // 次に起こすまでの秒数
+
+// 起こせない状態なら、起こせるようになるまで待ってから始める（beginDDoS）
+function startDDoS() {
+  if (ddos || ddosPending || isFading()) return;
+  ddosPending = true;
+}
+// ねらうホストとボットを選んで始める
+function beginDDoS() {
+  if (phase !== 'run' || swap || fault) return;
+  ddosPending = false;
+  ddosRandom.reseed();
+  ddosWait = randomInterval(DDOS_INTERVAL, ddosRandom);
+  // ねらうのは、同じ色のホストがほかの島 2 つ以上にあるホスト（無ければ 1 つ以上）。まわりの島のホストを先に考える
+  const others = (h) => new Set(net.hosts.filter((o) => o.service === h.service && o.island !== h.island).map((o) => o.island)).size;
+  const outer = net.hosts.filter((h) => h.island > 0 && active(h));
+  let cands = outer.filter((h) => others(h) >= 2);
+  if (!cands.length) cands = outer.filter((h) => others(h) >= 1);
+  // 中心の島のコアより、ねらわれた島のコアのほうが詰まる見込みの島を選ぶ。
+  // 無ければ、中心の島のホストをねらう（いちばん詰まる中心のコアが、ねらわれた島のコアになる）
+  const isles = [...new Set(cands.map((h) => h.island))].map((isl) => ({ isl, ...attackLoad(isl) }));
+  const good = isles.filter((e) => e.core > e.center);
+  const inner = net.hosts.filter((h) => h.island === 0 && active(h));
+  const target = good.length ? ddosPick(cands.filter((h) => h.island === ddosPick(good).isl))
+    : ddosPick(inner.filter((h) => others(h) >= 2)) ?? ddosPick(inner.filter((h) => others(h) >= 1)) ?? ddosPick(cands);
+  if (!target) return;
+  // ボットは、ねらわれた島以外の島ごとに、ホストの botShare の割合（1 台以上）。染める順は群島じゅうで混ぜる
+  let hosts = [];
+  for (const isl of net.islands) {
+    if (!isl || isl.index === target.island) continue;
+    const own = ddosShuffle(net.hosts.filter((h) => h.island === isl.index && active(h)));
+    hosts.push(...own.slice(0, Math.max(1, Math.round(own.length * botShare(isl.index)))));
+  }
+  hosts = ddosShuffle(hosts);
+  const gap = Math.min(DDOS_STAGGER, DDOS_INFECT * 0.8 / hosts.length);
+  const bots = hosts.map((host, i) => {
+    host.bot = true;   // 乗っ取られたら、ふだんのやりとりをやめる
+    // at: 染め始める時刻、next: 次に撃つ時刻、back: 撃ち終えて正常に戻る時刻。撃ち始めと戻る時刻は、染める順に同じ間でずらす
+    const next = DDOS_INFECT + i * gap;
+    return { host, at: i * gap, next, back: next + DDOS_ATTACK };
+  });
+  const color = new THREE.Color(SERVICE_COLORS[target.service]);
+  netUniforms.uBotTint.value.copy(color).multiplyScalar(BOT_TINT);
+  ddos = { t: 0, target, bots, color, hits: 0, down: false };
+}
+const botShare = (isl) => (isl === 0 ? DDOS_BOTS.center[net.islands.filter(Boolean).length] : DDOS_BOTS.outer);
+// 島 isl のホストをねらったときの、攻撃の流れの見積もり。ボットになりそうなホスト（ほかの島のホスト × botShare）から、
+// 島 isl のコアへの最短経路に沿って流れを足し合わせ、ルータごとに、送り出せる速さで頭打ちにして先へ渡す。
+// 中心の島のコアと島 isl のコアの、入ってくる量 ÷ 送り出せる速さ（1 を超えると詰まる）を返す
+// （攻撃の流れは、どのコアでも 1 つの出口に集まるので、コアの出口ごとの待ち行列でも、コア 1 つとして見積もればよい）
+function attackLoad(isl) {
+  const core = net.cells.find((c) => c.type === 'core' && c.island === isl);
+  const center = net.cells.find((c) => c.type === 'core' && c.island === 0);
+  const { dist, prev } = shortestFrom(core);
+  const inflow = new Float64Array(net.cells.length);
+  for (const h of net.hosts) if (h.island !== isl && active(h) && dist[h.index] < Infinity) inflow[h.index] += botShare(h.island) / DDOS_FIRE;
+  const reach = net.cells.filter((c) => c !== core && dist[c.index] < Infinity).sort((a, b) => dist[b.index] - dist[a.index]);
+  for (const c of reach) inflow[prev[c.index]] += isRouter(c) ? Math.min(inflow[c.index], 1 / HOP_PAUSE[c.type]) : inflow[c.index];
+  return { center: inflow[center.index] * HOP_PAUSE.core, core: inflow[core.index] * HOP_PAUSE.core };
+}
+function ddosShuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(ddosRandom() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+  return arr;
+}
+
+function updateDDoS(dt) {
+  if (!ddos) return;
+  const d = ddos, t = (d.t += dt);
+  // 増勢の始まりから、ねらわれたホストのふだんのやりとりを止め、1 点へ集まるのを攻撃だけにする
+  if (t >= DDOS_INFECT) d.target.attacked = true;
+  let live = packets.filter((p) => p.kind === 'atk').length;
+  let tree = null;   // ねらわれたホストからの最短経路。このコマに撃つボットで使い回す（経路の重みは向きによらない）
+  for (const b of d.bots) {
+    // 乗っ取られた瞬間に、箱ごと、ねらわれたサービスの色で強く光り、面が暗く染まった色へ落ち着く。
+    // 正常に戻る瞬間も同じように、箱ごと白く強く光り、面が紺に戻る（面の染まり具合を負にすると白）
+    if (t < b.at) continue;
+    if (!b.infected) { b.infected = true; flashLight(b.host.light, serviceColor(d.target.service), BOT_FLASH.light); }
+    if (t >= b.back) {
+      if (!b.cured) { b.cured = true; b.host.bot = false; flashLight(b.host.light, WHITE, BOT_FLASH.light); }
+      lights[b.host.light].tint = -BOT_FLASH.face * Math.exp(-(t - b.back) / BOT_FLASH.decay);
+      continue;
+    }
+    lights[b.host.light].tint = 1 + (BOT_FLASH.face - 1) * Math.exp(-(t - b.at) / BOT_FLASH.decay);
+    if (t < b.next) continue;
+    b.next += DDOS_FIRE;   // 一定の間隔で撃ち続ける
+    if (live >= DDOS_MAX) continue;
+    tree ??= shortestFrom(d.target);
+    if (tree.dist[b.host.index] === Infinity) continue;
+    const cells = [];
+    for (let i = b.host.index; i >= 0; i = tree.prev[i]) cells.push(net.cells[i]);
+    const p = { kind: 'atk', color: d.color, src: b.host, dst: d.target };
+    launch(p, cells);
+    packets.push(p);
+    live++;
+  }
+  // 攻撃のパケットが十分に着くと、ねらわれたホストが落ちる（箱の線と画面が灰色へ移る）
+  if (!d.down && d.hits >= DDOS_DOWN_HITS) {
+    d.down = d.target.crashed = true;
+    lights[d.target.light].idle.copy(DOWN_GREY);
+  }
+  // 全部のボットが撃ち終え、最後の攻撃のパケットが着いてから DDOS_RESTORE 秒たったら、ねらわれたホストに色を戻す
+  if (d.restoreAt === undefined && d.bots.every((b) => t >= b.back) && !packets.some((p) => p.kind === 'atk')) d.restoreAt = t + DDOS_RESTORE;
+  if (t >= d.restoreAt && !d.restored) {
+    d.restored = true;
+    const h = d.target;
+    h.crashed = h.attacked = false;
+    lights[h.light].idle.copy(serviceColor(h.service));
+    flashLight(h.light, lights[h.light].idle, 2.5);
+  }
+  // ねらわれたホストが戻り、ボットの光が収まったら終える
+  if (t >= d.restoreAt && d.bots.every((b) => t >= b.back + BOT_FLASH.decay * 6)) {
+    for (const b of d.bots) lights[b.host.light].tint = 0;
+    ddos = null;
+  }
+}
+// 攻撃のパケットが、ねらわれたホストに着いた。落ちる前は画面が着くたびに明るくなり、光りっぱなしになる（上乗せに上限を設ける）。
+// 落ちたあとは、手前で吸い込まれて消える
+function hitTarget(p) {
+  const h = p.dst;
+  if (h.crashed) return;
+  ddos.hits++;
+  flashLight(h.light, p.color, 0.5);
+  const l = lights[h.light], over = (l.flash.r + l.flash.g + l.flash.b) / ((l.idle.r + l.idle.g + l.idle.b) * DDOS_SATURATE);
+  if (over > 1) l.flash.multiplyScalar(1 / over);
 }
 
 // ---- カメラ ----
@@ -1626,6 +1823,7 @@ function newArchipelago() {
   orbit = 0; camDist = 0; lensReady = false;
   netUniforms.uSpin.value = 0; sea.material.uniforms.uFlow.value.set(0, 0, 0);
   packets = []; broadcasts = []; spawnCarry = 0; fault = null;
+  ddos = null; ddosPending = false;   // DDoS 攻撃は打ち切る（待ち時間は隠し要素の乱数なので持ち越す）
   broadcastWait = randomInterval(BROADCAST_INTERVAL);
   faultWait = randomInterval(FAULT_INTERVAL);
 }
@@ -1677,9 +1875,13 @@ function dropPackets(gone) {
   packets = packets.filter((p) => !gone.has(p));
   for (const c of net.cells) {
     if (!c.queue?.length) continue;
-    const head = c.queue[0];
     c.queue = c.queue.filter((p) => !gone.has(p));
-    if (c.queue.length && c.queue[0] !== head) startHop(c);
+    for (const [key, out] of c.outs) {
+      const head = out.queue[0];
+      out.queue = out.queue.filter((p) => !gone.has(p));
+      if (!out.queue.length) c.outs.delete(key);
+      else if (out.queue[0] !== head) startHop(c, out);
+    }
   }
 }
 // 中心の島の中身を育て、外したリンク gone を張り直す。何もできなければ false
@@ -1701,7 +1903,7 @@ function growSwap(slot) {
 }
 // 入れ替わりを進める: drain（消していく所を通るパケットを待つ）→ unravel（ほどく）→ grow（新しく育てる）
 function updateSwap() {
-  if (!swap) { if (clock >= swapAt && !fault) startSwap(); return; }
+  if (!swap) { if (clock >= swapAt && !fault && !ddos) startSwap(); return; }
   if (swap.stage === 'drain') {
     // 消していく所を通るパケットが行き着くのを待ち、残ったものは取り除く
     const touching = packets.filter((p) => p.cells.some((c) => c.retiring));
@@ -1751,6 +1953,7 @@ function update(dt) {
   for (const isl of net.islands) {
     if (isl && !isl.lit && isl.readyAt <= clock) { isl.lit = true; flashIsland(isl); }
   }
+  if (ddosPending) beginDDoS();   // 入れ替わりより先に始める（同じコマに入れ替わりの時刻が来ても、攻撃を待たせない）
   if (phase === 'grow' && clock >= net.doneAt) { setPhase('run'); flashIsland(null); swapAt = clock + SWAP_INTERVAL; }
   else if (phase === 'run') updateSwap();
 
@@ -1758,15 +1961,18 @@ function update(dt) {
   spawnCarry = Math.min(spawnCarry + dt * Math.max(1, target / 4), 2);
   while (spawnCarry >= 1) {
     spawnCarry--;
-    if (packets.length < target) spawnRequest();
+    if (packets.length - (ddos ? packets.filter((p) => p.kind === 'atk').length : 0) < target) spawnRequest();   // 攻撃のパケットは強度に数えない
   }
   if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
   // 起こせないとき（生成中・入れ替わりの間）は見送り、次の間隔を待つ
   if ((faultWait -= dt) <= 0) { startFault(); faultWait = randomInterval(FAULT_INTERVAL); }
+  // DDoS 攻撃の間と、起こせるようになるのを待つ間は、次の攻撃の待ち時間を進めない
+  if (!ddos && !ddosPending && (ddosWait -= dt) <= 0) startDDoS();
 
   updatePackets(dt);
   updateBroadcasts(dt);
   updateFault();
+  updateDDoS(dt);
   updateLights(dt);
   netUniforms.uSpin.value = (netUniforms.uSpin.value + dt * RING_SPIN) % TAU;
   updateCamera(dt);
@@ -1805,6 +2011,7 @@ setupControls({
     down: () => setPacketCount(packetCount / PACKET_STEP),
     level: () => logPosition(packetCount, MIN_PACKETS, MAX_PACKETS),   // ゲージの位置（0..1）
   },
+  keys: { KeyC: startDDoS },   // 隠し要素の DDoS 攻撃（操作ガイドには表示しない）
   onResize() {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();

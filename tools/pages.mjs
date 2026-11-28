@@ -44,6 +44,7 @@ export const HIDDEN = {
   orrery: 'startComet',
   marbles: 'startMascot',
   flume: 'startDuck',
+  hexnet: 'startDDoS',
 };
 
 // kind（'scenes'・'presets'）を選べる作品の名前を「・」でつなぐ（使い方やエラーの表示用）
