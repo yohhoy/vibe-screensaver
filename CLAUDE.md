@@ -21,7 +21,7 @@
 
 ## ツール
 
-- 動画・静止画の書き出し（video-export.mjs）、変更前後の比較（video-compare.mjs）、画像の切り出し・並べ・明るさ（img.mjs）は、先に [docs/video.md](docs/video.md) を読む。画像の加工に ffmpeg のフィルタや PIL を手で組まない。
+- 動画・静止画の書き出し（video-export.mjs）、変更前後の比較（video-compare.mjs）、画像の切り出し・並べ・明るさ（img.mjs）の使い方は [docs/video.md](docs/video.md) にある。スキルにコマンドが書いてあるときはそのまま使い、docs/video.md は読まない。スキルに無い使い方をするとき・引数を変えるとき・失敗したときだけ、`grep -n '^#' docs/video.md` で見出しを出し、関係する節を読む。画像の加工に ffmpeg のフィルタや PIL を手で組まない。
 - GPU の負荷と JS の時間（bench.mjs）は、指示があったときだけ測る。測るときは先に [docs/performance.md](docs/performance.md) を読む。
 
 ## 画像の確かめ方
