@@ -15,8 +15,8 @@
 </head>
 <body>
 <div id="hud">
-  <span class="pc-only">Space: 次の群島 / F・ダブルクリック: 全画面 / ↑↓: パケットの量</span>
-  <span class="touch-only">左右スワイプ: 次の群島 / 上下スワイプ: パケットの量</span>
+  <span class="pc-only">Space: 新しい群島へ / F・ダブルクリック: 全画面 / ↑↓: パケットの量</span>
+  <span class="touch-only">左右スワイプ: 新しい群島へ / 上下スワイプ: パケットの量</span>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -37,14 +37,18 @@ const { TAU, clamp, rand, randInt, randIntIn, pick, pickWeighted, randomInterval
 
 // 群島の形
 const ISLAND_COUNT = [3, 5];          // 島の数
-const ISLAND_RADIUS = 5;              // 島 1 つの仮の範囲（コアからのセル数）
-const ISLAND_DIST = [7, 9];           // 中心の島のコアから、まわりの島のコアまでのセル数。島ごとに選ぶ
-const ISLAND_GAP = 3;                 // 島どうしの間に残す、何も置かないセルの数（島間リンクを除く）
-const ROUTERS_PER_ISLAND = [3, 5];    // 島ごとに目指すルータの数（置ける場所が無ければ減る）
-const ROUTER_DIST = [2, 4];           // コアからルータまでのセル数
+// 島の数ごとの島の大きさ。島が多いほど小さくし、群島全体の機器の量をそろえる。
+// radius: 島 1 つの仮の範囲（コアからのセル数）、dist: 中心の島のコアから、まわりの島のコアまでのセル数（島ごとに選ぶ）、
+// routers: 島ごとに目指すルータの数（置ける場所が無ければ減る）、routerDist: コアからルータまでのセル数
+const ISLAND_SIZES = {
+  3: { radius: 6, dist: [9, 10], routers: [3, 5], routerDist: [2, 5] },
+  4: { radius: 5, dist: [7, 9], routers: [2, 4], routerDist: [2, 4] },
+  5: { radius: 4, dist: [6, 8], routers: [2, 3], routerDist: [2, 3] },
+};
+const ISLAND_GAP = 2;                 // 島どうしの間に残す、何も置かないセルの数（島間リンクを除く）
 const ROUTER_GAP = 2;                 // ルータどうしの最小のセル数
 const LINK_AVOID = 0.9;               // ルータを置かない、島間リンクの出ていく向きからの角度 (rad)
-const SWITCH_DIST = 2;                // ルータからスイッチまでのセル数（間はケーブル）
+const SWITCH_DIST = [1, 2];           // ルータからスイッチまでのセル数。スイッチごとに選ぶ（1 なら隣り合わせ、2 なら間にケーブル 1 セル）
 const TWO_SWITCHES = 0.8;             // ルータにスイッチを 2 個つなぐ確率（ほかは 1 個）
 const HOSTS_PER_SWITCH = [2, 5];
 const RING_LINKS = [1, 2];            // 輪の島間リンク（まわりの島どうし）の本数。最初の生成と、入れ替わりで島を足すとき
@@ -97,13 +101,12 @@ const OTHER_ISLAND_WEIGHT = 3;        // 行き先に別の島のホストを選
 const PACKET_LOOK = { size: 0.3, tail: 4, gap: 0.1 };   // 大きさ（単位）・尾の点の数・尾の点の間隔（単位）。要求も応答も同じ
 const PACKET_MIN_PX = 4;              // 頭の点の最小の大きさ（CSS ピクセル）。引いたときも点が見えるように。尾と待ち行列の点は大きさに比例させる
 const QUEUE_GAP = 0.16;               // 待ち行列の点の縦の間隔
-const MIN_PACKETS = 10;
+const MIN_PACKETS = 11;
 const MAX_PACKETS = 100;
 const BASE_PACKETS = 25;
 const PACKET_STEP = 1.5;              // ↑↓ 1 回あたりの倍率
 const GROW_SHARE = 0.6;               // 生成の間に流す割合（育ちきった島の割合に掛ける）
 const RAMP_TIME = 12;                 // 群島が完成してから強度の値まで増やす時間（秒）
-const SERVICE_SWITCH_INTERVAL = [10, 5, 15];   // ホストがサービスを切り替える間隔 [平均, 下限, 上限]（秒）
 const BROADCAST_INTERVAL = [20, 10, 30];       // ブロードキャストの間隔 [平均, 下限, 上限]（秒）
 const BROADCAST_RADIUS = 1.4;         // 波紋の広がる半径（セル数）
 const BROADCAST_TIME = 1.4;           // 波紋が広がりきるまでの秒数
@@ -124,7 +127,7 @@ const CAM_FOV = 40;
 const CAM_ELEVATION = THREE.MathUtils.degToRad(30);
 const ORBIT_SPEED = TAU / 90;         // 周回の速さ (rad/s)
 const ZOOM_LAG = 5;                   // 距離が目安の距離を追う時定数（秒）
-const MIN_EXTENT = 5;                 // 映す範囲の最小の半径（セル数。最初の島の仮の範囲が収まる大きさ）
+const MIN_EXTENT = 5;                 // 映す範囲の最小の半径（セル数）。中心の島のコアのまわりに取り、生成の始めに寄りすぎないようにする
 const FRAME_FILL = 0.92;              // 群島を画面の縦横の何割の内側に収めるか
 const LOOK_Y = 0.4;                   // 注視点の高さ
 
@@ -169,6 +172,24 @@ function bentPaths(a, b) {
     return shuffle([walk(legs), walk([...legs].reverse())]);
   }
   return [];
+}
+// a から b への、折れ曲がりが 2 回の道（途中のセルの列）を全部。a からまっすぐ進んだ先 p で 60° 折れ、そこから折れ曲がり
+// 1 回以下の道で b へ向かう。島間リンクで、1 回以下の道が中心の島などにふさがれているときに回り込むのに使う
+function twoBendPaths(a, b) {
+  const out = [];
+  for (let d = 0; d < 6; d++) {
+    const leg = [];
+    for (let m = 1; m <= 2 * hexDist(a, b); m++) {
+      const p = { q: a.q + DIRS[d][0] * m, r: a.r + DIRS[d][1] * m };
+      if (p.q === b.q && p.r === b.r) break;
+      leg.push(p);
+      for (const rest of bentPaths(p, b)) {
+        const turn = (dirOf(p, rest[0] ?? b) - d + 6) % 6;
+        if (turn === 1 || turn === 5) out.push([...leg, ...rest]);
+      }
+    }
+  }
+  return out;
 }
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) { const j = randInt(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; }
@@ -463,11 +484,10 @@ let swapCount = 0;       // いまの群島で始めた入れ替わりの回数
 let packets = [];
 let broadcasts = [];
 let spawnCarry = 0;      // 要求を出すペースの端数（次のフレームへ持ち越す）
-let switchWait = 0;      // 次にホストがサービスを切り替えるまでの秒数
 let broadcastWait = 0;   // 次のブロードキャストまでの秒数
 let orbit = 0;           // カメラの方位
 let camDist = 0;         // カメラの距離（0 なら最初のフレームで目安に合わせる）
-let lensReady = false;   // 画面の中でのずらし量（lensShift）を、最初のフレームで合わせたか
+let lensReady = false;   // 画面の中でのずらし量（lensShift）と注視点（camFocus）を、最初のフレームで合わせたか
 let lights = [];         // 光ごとの { idle（灯り続ける色）, cur（いまの色。idle へゆっくり移る）, flash（光った分。だんだん消える） }。空いた枠は null
 let freeLights = [];     // 空いた光の枠の番号（次の島で使い回す）
 
@@ -496,8 +516,11 @@ function updateSea(dt) {
 function emptyWorld(count) {
   const base = rand(0, TAU);
   const outer = count - 1;   // まわりの島の数
-  const span = outer === 2 ? rand(1.9, 2.3) : TAU / outer;   // まわりが 2 つのときは反対側にしない（輪のリンクが中心を通る）
-  return { count, outer, base, span, cellAt: new Map(), nearIsland: new Map(), corridors: new Map(), islands: [], links: [], linkSeq: 0 };
+  // まわりが 3 つ以上なら、中心の島のまわりを等間隔に囲み、輪は一周する。2 つなら 60° 離して並べ、中心の島とあわせて
+  // 正三角形にする（輪は外側の辺。間隔が広いと、輪のリンクが中心の島の範囲を通ってしまう）
+  const closed = outer > 2;
+  const span = closed ? TAU / outer : Math.PI / 3;
+  return { count, outer, closed, base, span, size: ISLAND_SIZES[count], cellAt: new Map(), nearIsland: new Map(), corridors: new Map(), islands: [], links: [], linkSeq: 0 };
 }
 // 計画の写し。セルの地図・印・島・島間リンクの並びを写し、この計画で足す手順（steps）とつながり（runs）を持つ
 function trialOf(w) {
@@ -526,7 +549,7 @@ function addCell(w, h, type, island, mark = true) {
 // まわりの席 slot のコアの場所。席の向きへ、中心のコアからちょうど d 歩のセルを探す
 // （同じ長さでも、向きによって歩数が 1 割ほど変わるため、遠くから寄せる）
 function coreSpot(w, slot) {
-  const a = w.base + (slot - 1) * w.span + rand(-0.2, 0.2), d = randIntIn(ISLAND_DIST);
+  const a = w.base + (slot - 1) * w.span + rand(-0.2, 0.2), d = randIntIn(w.size.dist);
   let len = d * 1.2 * CELL, h;
   do { h = fromXZ(Math.cos(a) * len, Math.sin(a) * len); len -= 0.05; } while (hexDist(h, { q: 0, r: 0 }) > d);
   return h;
@@ -542,13 +565,15 @@ function newIsland(w, slot, h, bornAt) {
 function addLink(w, ia, ib, ring, old = null) {
   const A = w.islands[ia].core, B = w.islands[ib].core;
   const ok = (path) => path.every((h) => !at(w, h) &&
-    w.islands.every((isl) => !isl || isl.index === ia || isl.index === ib || hexDist(h, isl.core) > ISLAND_RADIUS + 1));
+    w.islands.every((isl) => !isl || isl.index === ia || isl.index === ib || hexDist(h, isl.core) > w.size.radius + 1));
   // 元の道（A から B の向きに並べる。元のリンクが逆向きに引かれていれば裏返す）
   const oldPath = !old ? null : old.ia === ia && old.ib === ib ? old.run.slice(1, -1)
     : old.ia === ib && old.ib === ia ? old.run.slice(1, -1).reverse() : null;
   const oldKeys = oldPath && new Set(oldPath.map((c) => cellKey(c.q, c.r)));
   const same = (p) => (oldKeys && p.every((h) => oldKeys.has(cellKey(h.q, h.r))) ? 1 : 0);
+  // 折れ曲がり 1 回以下の道が無ければ、2 回の道のうち短いものを使う（輪のリンクが中心の島を回り込むときなど）
   const path = bentPaths(A, B).sort((p, q) => same(p) - same(q)).find(ok) ??
+    shuffle(twoBendPaths(A, B)).sort((p, q) => same(p) - same(q) || p.length - q.length).find(ok) ??
     (oldPath?.every((h) => !at(w, h)) ? oldPath.map((c) => ({ q: c.q, r: c.r })) : null);
   if (!path) return null;
   const owner = Math.max(ia, ib);   // 消える順は、あとの席の島に合わせる
@@ -560,7 +585,7 @@ function addLink(w, ia, ib, ring, old = null) {
   // 中心の島からまわりの席への通り道（中心の島の範囲の中の部分）を取っておく。席の島が消えても残し、
   // 中心の島の中身はそこに置かない（新しい島へのリンクの道を、中心の島の機器にふさがれないように）
   if (ia === 0 && !ring) {
-    w.corridors.set(ib, new Set(run.filter((c) => c.type === 'cable' && hexDist(c, A) <= ISLAND_RADIUS + 1).map((c) => cellKey(c.q, c.r))));
+    w.corridors.set(ib, new Set(run.filter((c) => c.type === 'cable' && hexDist(c, A) <= w.size.radius + 1).map((c) => cellKey(c.q, c.r))));
   }
   w.runs.push({ run, lanes: 3, part });
   // コアからリンクが出ていく向き（ルータはこの向きを避ける）
@@ -569,8 +594,8 @@ function addLink(w, ia, ib, ring, old = null) {
   w.islands[ib].linkAngles.push(Math.atan2(last.z - B.z, last.x - B.x));
   return link;
 }
-// まわりの席の、向きの隣り合う組（まわりが 2 つなら 1 組）
-const adjacentPairs = (outer) => (outer === 2 ? [[1, 2]] : Array.from({ length: outer }, (_, i) => [i + 1, (i + 1) % outer + 1]));
+// まわりの席の、向きの隣り合う組。closed なら一周する（まわりが 2 つなら 1 組）
+const adjacentPairs = (outer, closed) => Array.from({ length: closed ? outer : outer - 1 }, (_, i) => [i + 1, (i + 1) % outer + 1]);
 const near = (h, dist) => {
   const out = [];
   for (let dq = -dist; dq <= dist; dq++) for (let dr = -dist; dr <= dist; dr++) {
@@ -584,7 +609,7 @@ const near = (h, dist) => {
 function growIsland(w, isl, minRouters = 2) {
   const core = isl.core, slot = isl.index;
   const inCorridor = (h) => slot === 0 && [...w.corridors.values()].some((keys) => keys.has(cellKey(h.q, h.r)));
-  const free = (h) => hexDist(h, core) <= ISLAND_RADIUS && !at(w, h) && !nearOther(w, h, slot) && !inCorridor(h);
+  const free = (h) => hexDist(h, core) <= w.size.radius && !at(w, h) && !nearOther(w, h, slot) && !inCorridor(h);
   // 折れ曲がりが 1 回以下で、島の中の空いたセルだけを通る道。無ければ null
   const straightish = (from, to) => bentPaths(from, to).find((p) => p.every(free)) ?? null;
   const angleOf = (h) => Math.atan2(hexZ(h.q, h.r) - core.z, hexX(h.q, h.r) - core.x);
@@ -601,11 +626,11 @@ function growIsland(w, isl, minRouters = 2) {
     return dev;
   }
 
-  // ルータ: コアから ROUTER_DIST セル。島間リンクの向きを避け、ルータどうしは離す
+  // ルータ: コアから routerDist セル。島間リンクの向きを避け、ルータどうしは離す
   const routers = [];
-  const wantRouters = randIntIn(ROUTERS_PER_ISLAND);
+  const wantRouters = randIntIn(w.size.routers);
   const ringsAround = [];
-  for (let d = ROUTER_DIST[0]; d <= ROUTER_DIST[1]; d++) ringsAround.push(...near(core, d));
+  for (let d = w.size.routerDist[0]; d <= w.size.routerDist[1]; d++) ringsAround.push(...near(core, d));
   const cand = shuffle(ringsAround.filter((h) => free(h) &&
     isl.linkAngles.every((a) => angleDiff(a, angleOf(h)) > LINK_AVOID)));
   for (const h of cand) {
@@ -616,10 +641,10 @@ function growIsland(w, isl, minRouters = 2) {
     routers.push(connect(core, path, h, 'router', GAP.device));
   }
   if (routers.length < minRouters) return false;
-  // スイッチ: ルータから SWITCH_DIST セル（間はケーブル）。まわりにホストを並べる。
+  // スイッチ: ルータから SWITCH_DIST セル。まわりにホストを並べる。距離はスイッチごとに乱数の順に試す。
   // 並べたい台数ぶんの空きがある場所を先に探し、無ければ最少の台数ぶんの空きがある場所に置ける台数だけ並べる
-  const switchSpot = (router, need) => {
-    for (const h of shuffle(near(router, SWITCH_DIST).filter(free))) {
+  const switchSpot = (router, need, dists) => {
+    for (const d of dists) for (const h of shuffle(near(router, d).filter(free))) {
       const path = straightish(router, h);
       if (!path) continue;
       const room = near(h, 1).filter((n) => free(n) && !path.some((p) => p.q === n.q && p.r === n.r));
@@ -631,7 +656,8 @@ function growIsland(w, isl, minRouters = 2) {
     const wantSwitches = Math.random() < TWO_SWITCHES ? 2 : 1;
     for (let k = 0; k < wantSwitches; k++) {
       const wantHosts = randIntIn(HOSTS_PER_SWITCH);
-      const spot = switchSpot(router, wantHosts) ?? switchSpot(router, HOSTS_PER_SWITCH[0]);
+      const dists = shuffle(Array.from({ length: SWITCH_DIST[1] - SWITCH_DIST[0] + 1 }, (_, i) => SWITCH_DIST[0] + i));
+      const spot = switchSpot(router, wantHosts, dists) ?? switchSpot(router, HOSTS_PER_SWITCH[0], dists);
       if (!spot) break;
       const sw = connect(router, spot.path, spot.h, 'switch', GAP.device);
       router.switches = (router.switches ?? 0) + 1;
@@ -652,10 +678,14 @@ function growIsland(w, isl, minRouters = 2) {
     for (let i = w.steps.length - 1; i >= 0; i--) if (gone.has(w.steps[i].cell)) w.steps.splice(i, 1);
   }
   if (routers.filter((r) => r.switches).length < minRouters || isl.hosts.length < 3) return false;
-  // サービス: 島の最初の 4 台には別々のサービスを割り当てる（どのサービスも 2 つ以上の島にあるようにする）
-  const services = SERVICE_COLORS.length;
-  const order = shuffle([...Array(services).keys()]);
-  shuffle(isl.hosts).forEach((h, i) => { h.service = i < services ? order[i] : randInt(services); });
+  // サービス: 同じスイッチのホストには、なるべく別々のサービスを割り当てる。そのうえで島の中で少ないものから選ぶので、
+  // ホストが 4 台以上の島には全サービスがそろう（どのサービスも 2 つ以上の島にあるようにする）
+  const used = SERVICE_COLORS.map(() => 0);
+  for (const h of isl.hosts) {
+    const taken = isl.hosts.filter((o) => o.switchCell === h.switchCell && o.service !== undefined).map((o) => o.service);
+    h.service = shuffle([...used.keys()]).sort((a, b) => taken.includes(a) - taken.includes(b) || used[a] - used[b])[0];
+    used[h.service]++;
+  }
   return true;
 }
 // 手順に時刻を付ける（start から duration 秒に収める）。つながりの端の時刻と、ケーブルのセルの入口・出口の向きも決める
@@ -695,8 +725,8 @@ function finishWorld(w) {
     isl.cells.push(c);
     // 消える順: あとの席の島ほど先に、島の中では外側ほど先に
     const rank = w.count - 1 - c.island;
-    const d = Math.min(hexDist(c, isl.core), ISLAND_RADIUS + 1);
-    c.order = (rank + 1 - d / (ISLAND_RADIUS + 1)) / w.count;
+    const d = Math.min(hexDist(c, isl.core), w.size.radius + 1);
+    c.order = (rank + 1 - d / (w.size.radius + 1)) / w.count;
   });
   for (const c of w.cells) c.nbrs = c.edges.map((e, d) => (e ? at(w, { q: c.q + DIRS[d][0], r: c.r + DIRS[d][1] }) : null)).filter(Boolean);
   for (const isl of w.islands) if (isl) isl.readyAt = Math.max(...isl.cells.filter((c) => !c.link).map((c) => c.ready));
@@ -715,14 +745,10 @@ function tryPlan(count) {
   const w = trialOf(emptyWorld(count));
   newIsland(w, 0, { q: 0, r: 0 }, 0);
   for (let i = 1; i < count; i++) newIsland(w, i, coreSpot(w, i), 0);
-  // 島間リンク: 木（それまでの島のうち近いものから）と、最後に足す輪
-  for (let i = 1; i < count; i++) {
-    let parent = 0;
-    for (let j = 0; j < i; j++) if (hexDist(w.islands[j].core, w.islands[i].core) < hexDist(w.islands[parent].core, w.islands[i].core)) parent = j;
-    if (!addLink(w, parent, i, false)) return null;
-  }
+  // 島間リンク: 中心の島からまわりの島へ（入れ替わりで島を 1 つ消しても、残りはつながったままになる）と、最後に足す輪
+  for (let i = 1; i < count; i++) if (!addLink(w, 0, i, false)) return null;
   // 輪のリンクは、向きの隣り合うまわりの島どうしに足す
-  const pairs = shuffle(adjacentPairs(count - 1));
+  const pairs = shuffle(adjacentPairs(w.outer, w.closed));
   let rings = 0;
   const wantRings = Math.min(randIntIn(RING_LINKS), pairs.length);
   for (const [a, b] of pairs) if (rings < wantRings && addLink(w, a, b, true)) rings++;
@@ -760,10 +786,10 @@ function tryPlan(count) {
 function planNewIsland(slot) {
   const home = net.base + (slot - 1) * net.span;
   const drift = Math.min(SLOT_DRIFT, net.span / 4);   // 隣の席の島と寄りすぎないよう、席の間隔の 4 分の 1 まで
-  const spots = [];
-  for (let dq = -ISLAND_DIST[1]; dq <= ISLAND_DIST[1]; dq++) for (let dr = -ISLAND_DIST[1]; dr <= ISLAND_DIST[1]; dr++) {
+  const spots = [], [lo, hi] = net.size.dist;
+  for (let dq = -hi; dq <= hi; dq++) for (let dr = -hi; dr <= hi; dr++) {
     const h = { q: dq, r: dr }, d = hexDist(h, { q: 0, r: 0 });
-    if (d >= ISLAND_DIST[0] && d <= ISLAND_DIST[1] && angleDiff(Math.atan2(hexZ(dq, dr), hexX(dq, dr)), home) <= drift) spots.push(h);
+    if (d >= lo && d <= hi && angleDiff(Math.atan2(hexZ(dq, dr), hexX(dq, dr)), home) <= drift) spots.push(h);
   }
   for (const [tries, h] of shuffle(spots).entries()) {
     const w = trialOf(net);
@@ -775,8 +801,8 @@ function planNewIsland(slot) {
     w.steps.push({ cell: isl.core, gap: GAP.device });
     // 輪のリンク: 向きの隣り合うまわりの島へ。道は島を育てる前に押さえ（育った機器に道をふさがれないように）、伸ばすのは島が育ってから。
     // 通せる道が無い置き方は、なるべく選び直す（輪が無いと、混み具合で道を選び分ける所が無くなる）
-    const o = net.outer;
-    const nbs = shuffle([...new Set([(slot - 2 + o) % o + 1, slot % o + 1])].filter((s) => s !== slot && w.islands[s]));
+    const nbs = shuffle(adjacentPairs(net.outer, net.closed).filter((p) => p.includes(slot))
+      .map(([a, b]) => (a === slot ? b : a)).filter((s) => w.islands[s]));
     const rings = [];
     const wantRings = randIntIn(RING_LINKS);
     for (const s of nbs) {
@@ -832,7 +858,7 @@ function planCenterRegrow(gone) {
       }
       // 輪のリンク: 向きの隣り合う組のうち、まだ輪のリンクの無い組へ。元の組は最後に試す
       const alive = (s) => w.islands[s];
-      const pairs = shuffle(adjacentPairs(w.outer)
+      const pairs = shuffle(adjacentPairs(w.outer, w.closed)
         .filter(([a, b]) => alive(a) && alive(b) && !w.links.some((x) => x.ring && [x.ia, x.ib].includes(a) && [x.ia, x.ib].includes(b))));
       pairs.sort((p, q) => (p.includes(l.ia) && p.includes(l.ib) ? 1 : 0) - (q.includes(l.ia) && q.includes(l.ib) ? 1 : 0));
       const nl = pairs.reduce((found, [a, b]) => found ?? addLink(w, a, b, true, l), null);
@@ -870,6 +896,7 @@ function reachesAll(w) {
   return w.islands.every((isl) => !isl || seen.has(isl.index));
 }
 // どのサービスも 2 つ以上の島にあるようにする。足りなければ、そのサービスの無い島のホストを 1 台切り替える
+// （なるべく、同じスイッチのホストにそのサービスが無いものを選ぶ）
 function fixServices() {
   const alive = net.islands.filter((isl) => isl && !isl.retiring);
   for (const s of SERVICE_COLORS.keys()) {
@@ -878,7 +905,8 @@ function fixServices() {
       const cand = alive.filter((isl) => !has(isl)).flatMap((isl) => isl.hosts)
         .filter((h) => alive.filter((isl) => isl.hosts.some((o) => o !== h && o.service === h.service)).length >= 2);
       if (!cand.length) break;
-      const h = pick(cand);
+      const fresh = cand.filter((h) => !net.islands[h.island].hosts.some((o) => o !== h && o.switchCell === h.switchCell && o.service === s));
+      const h = pick(fresh.length ? fresh : cand);
       h.service = s;
       lights[h.light].idle.copy(serviceColor(h.service));
     }
@@ -1416,19 +1444,6 @@ function updateBroadcasts(dt) {
   waveGeo.attributes.color.needsUpdate = true;
 }
 
-// ---- サービスの切り替え ----
-// ホスト 1 台のサービスを替える。どのサービスも 2 つ以上の島にある状態は崩さない
-function switchService() {
-  const hosts = shuffle(net.hosts.filter(active));
-  for (const h of hosts) {
-    const others = net.hosts.filter((o) => o !== h && o.service === h.service);
-    if (new Set(others.map((o) => o.island)).size < 2) continue;
-    h.service = (h.service + 1 + randInt(SERVICE_COLORS.length - 1)) % SERVICE_COLORS.length;
-    lights[h.light].idle.copy(serviceColor(h.service));
-    return;
-  }
-}
-
 // ---- カメラ ----
 // 立った機器とケーブル（消去中は残っているもの）
 const isShown = (c) => {
@@ -1447,6 +1462,7 @@ function collectFramePoints() {
   let extent = minR;
   const add = (x, y, z) => {
     const py = y - LOOK_Y;
+    x -= camFocus.x; z -= camFocus.y;
     framePoints.push({ r: x * rt[0] + z * rt[2], u: x * up[0] + py * up[1] + z * up[2], f: x * fw[0] + py * fw[1] + z * fw[2] });
   };
   for (let k = 0; k < 6; k++) add(minR * Math.cos(k * TAU / 6), 0, minR * Math.sin(k * TAU / 6));
@@ -1454,7 +1470,7 @@ function collectFramePoints() {
     if (!isShown(c)) continue;
     add(c.x, 0, c.z);
     if (c.type !== 'cable') add(c.x, 1.2, c.z);
-    extent = Math.max(extent, Math.hypot(c.x, c.z) + 1);
+    extent = Math.max(extent, Math.hypot(c.x - camFocus.x, c.z - camFocus.y) + 1);
   }
   return extent;
 }
@@ -1479,18 +1495,23 @@ function fitDistance() {
 }
 // 映る範囲の中心を画面の中央に合わせる、画面の中でのずらし量（視野の tan の単位）。向きと注視点は変えない
 const lensShift = new THREE.Vector2();
+// 注視点（x, z）。群島の島のコアの重心で、入れ替わりで島が置き直されると、なめらかに後を追う
+const camFocus = new THREE.Vector2();
 function updateCamera(dt) {
   orbit = (orbit + ORBIT_SPEED * dt) % TAU;
+  const follow = 1 - Math.exp(-dt / ZOOM_LAG);
+  const cores = net.islands.filter(Boolean).map((isl) => isl.core);
+  const focus = { x: cores.reduce((a, c) => a + c.x, 0) / cores.length, y: cores.reduce((a, c) => a + c.z, 0) / cores.length };
+  if (lensReady) camFocus.lerp(focus, follow); else camFocus.set(focus.x, focus.y);
   const e = collectFramePoints();
   const want = fitDistance();
-  const follow = 1 - Math.exp(-dt / ZOOM_LAG);
   camDist = camDist ? camDist + (want - camDist) * follow : want;
   const b = frameBounds(camDist);
   const sx = (b.x0 + b.x1) / 2, sy = (b.y0 + b.y1) / 2;
   if (lensReady) lensShift.lerp({ x: sx, y: sy }, follow); else { lensShift.set(sx, sy); lensReady = true; }
   const ce = Math.cos(CAM_ELEVATION);
-  camera.position.set(camDist * ce * Math.cos(orbit), camDist * Math.sin(CAM_ELEVATION) + LOOK_Y, camDist * ce * Math.sin(orbit));
-  camera.lookAt(0, LOOK_Y, 0);
+  camera.position.set(camFocus.x + camDist * ce * Math.cos(orbit), camDist * Math.sin(CAM_ELEVATION) + LOOK_Y, camFocus.y + camDist * ce * Math.sin(orbit));
+  camera.lookAt(camFocus.x, LOOK_Y, camFocus.y);
   // 投影を画面の中でずらす（レンズシフト）。射影行列の 3 列目の x・y に入れる
   camera.updateProjectionMatrix();
   camera.projectionMatrix.elements[8] = lensShift.x / (TAN_HALF_FOV * camera.aspect);
@@ -1512,7 +1533,6 @@ function newArchipelago() {
   orbit = 0; camDist = 0; lensReady = false;
   netUniforms.uSpin.value = 0; sea.material.uniforms.uFlow.value.set(0, 0, 0);
   packets = []; broadcasts = []; spawnCarry = 0;
-  switchWait = randomInterval(SERVICE_SWITCH_INTERVAL);
   broadcastWait = randomInterval(BROADCAST_INTERVAL);
 }
 function setPhase(p) { phase = p; phaseTime = clock; }
@@ -1647,7 +1667,6 @@ function update(dt) {
     if (packets.length < target) spawnRequest();
   }
   if ((broadcastWait -= dt) <= 0) { startBroadcast(); broadcastWait = randomInterval(BROADCAST_INTERVAL); }
-  if (phase === 'run' && (switchWait -= dt) <= 0) { switchService(); switchWait = randomInterval(SERVICE_SWITCH_INTERVAL); }
 
   updatePackets(dt);
   updateBroadcasts(dt);
