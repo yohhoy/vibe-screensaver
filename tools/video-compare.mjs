@@ -20,7 +20,6 @@ const KEPT_DIR = path.join(ROOT, '.kept');   // --keep で変更前の版を控�
 const VIDEO_WIDTH = 1920;         // 比較動画の幅（px）。列が 1 つのときは半分にする
 const SHEET_MAX = 1536;           // 確認用の画像の長辺の上限（px）。これより大きいと、読むときに縮小され、トークンも増える
 const X264_CRF = 20;              // 比較動画の画質（小さいほど高画質。0..51）
-const CAPTURE_TRIES = 3;          // 読み込みの失敗（net::ERR_）で撮影が止まったときに、試す回数
 
 const USAGE = `使い方: node tools/video-compare.mjs <作品名> [オプション]
 
@@ -93,15 +92,7 @@ async function capture(exporter, options, code, out) {
   if (presets) args.push('--presets', presets);
   // --at の時刻は動画の中の秒なので、場面ごとにその始まりの時刻で実行する
   if (code) for (let k = 0; k < sceneCount; k++) args.push('--at', `${k * Number(seconds)}:${code}`);
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await run(process.execPath, args);
-      return;
-    } catch (e) {
-      if (attempt >= CAPTURE_TRIES || !e.message.includes('net::ERR_')) throw e;
-      console.error('読み込みに失敗したので撮り直す');
-    }
-  }
+  await run(process.execPath, args);   // 読み込みの失敗は video-export が撮り直す
 }
 
 // ---- 比べる ----

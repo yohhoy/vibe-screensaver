@@ -20,6 +20,7 @@ const FPS = 30;
 const JPEG_QUALITY = 0.95;       // コマの画質（0..1）。PNG は 1 枚数 MB あり、約 500 枚で Chrome の Blob のメモリ上限に達する
 const X264_CRF = 18;             // 動画の画質（小さいほど高画質。0..51）
 const STALL_MS = 180000;         // この時間コマが届かなければ、止まったとみなす
+const LOAD_TRIES = 3;            // 読み込みの失敗（net::ERR_）で撮影が止まったときに、試す回数
 const BLANK_LEVEL = 4;           // 場面の中ほどのコマの最も明るい値（0..255）がこれ未満なら、描けていないと警告する
 const THUMBS_COLS = 4;            // 確認用の画像の列数
 const THUMBS_ROWS = 3;            // 確認用の画像の行数
@@ -286,7 +287,8 @@ function parseOptions() {
   const at = values.at.map((spec) => {
     const m = spec.match(/^([\d.]+):(.+)$/s);
     const frame = m && Math.round(Number(m[1]) * FPS);
-    if (!m || !(frame < totalFrames)) throw new Error(`--at は「動画の中の秒:式」で書く: ${spec}`);
+    if (!m) throw new Error(`--at は「動画の中の秒:式」で書く: ${spec}`);
+    if (!(frame < totalFrames)) throw new Error(`--at の時刻は 0〜${(totalFrames - 1) / FPS} 秒（最後のコマ）までにする: ${spec}`);
     return { frame, code: m[2] };
   });
   return {
@@ -446,4 +448,15 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(`Error: ${e.message}`); process.exit(1); });
+// 読み込みの失敗（net::ERR_）は一時的なことが多いので、Chrome から撮り直す
+async function mainWithRetry() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await main();
+    } catch (e) {
+      if (attempt >= LOAD_TRIES || !e.message.includes('net::ERR_')) throw e;
+      console.error('読み込みに失敗したので撮り直す');
+    }
+  }
+}
+mainWithRetry().catch((e) => { console.error(`Error: ${e.message}`); process.exit(1); });
